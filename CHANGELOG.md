@@ -11,7 +11,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
      marker last in the file so the link definitions come along. -->
 <!-- #region changelog -->
 
-## [Unreleased]
+## [0.1.0] - 2026-09-05
 
 ### Added
 
@@ -87,5 +87,7 @@ journal entries, on any server that speaks the standard.
   collection URL, `get_free_busy` with a client-side fallback where the server
   will not compute one, and full-text search per allowed calendar — never at
   the home set, which would reach every calendar underneath it.
+
+[0.1.0]: https://github.com/ni-c/caldav-mcp/releases/tag/v0.1.0
 
 <!-- #endregion changelog -->

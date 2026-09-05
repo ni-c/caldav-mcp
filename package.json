@@ -1,6 +1,6 @@
 {
   "name": "@ni-c/caldav-mcp",
-  "version": "0.1.0-rc.1",
+  "version": "0.1.0",
   "mcpName": "io.github.ni-c/caldav-mcp",
   "description": "Model Context Protocol (MCP) server for CalDAV calendars: events, tasks and journals over the open standard",
   "keywords": [
