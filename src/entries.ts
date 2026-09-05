@@ -47,16 +47,35 @@ export interface ResourceDocument {
 }
 
 /**
- * The file name of a resource, from its href.
+ * The file name of a resource, from the href a multistatus reported it under.
  *
  * Percent-encoding is preserved: the name is what goes into an id and what is
  * appended to the collection URL to reach the resource again, so decoding it
  * here would produce a URL that does not resolve.
+ *
+ * The href is a value the server chose, so it gets the same two checks every
+ * other server-supplied link gets. `resolveHref` pins it to the configured
+ * origin. The parent-directory check is the one that matters here: a REPORT is
+ * issued against one collection, and a response naming a resource in a
+ * different one would otherwise be filed under the calendar that was asked —
+ * so an entry out of a collection the operator fenced off would be listed as
+ * belonging to one they allowed, with an id that then reads a different
+ * resource. Empty means "not from this collection, drop it", which is what the
+ * caller already does with an unnamed resource.
  */
-export function resourceNameOf(href: string, origin: string): string {
-  const path = href.startsWith('http')
-    ? new URL(href).pathname
-    : new URL(href, origin).pathname;
+export function resourceNameOf(
+  href: string,
+  api: Pick<CalDavApi, 'resolveHref'>,
+  calendar: Pick<CalendarEntry, 'url' | 'path'>
+): string {
+  let path: string;
+  try {
+    path = new URL(api.resolveHref(href, calendar.url)).pathname;
+  } catch {
+    return '';
+  }
+  const parent = path.replace(/[^/]*$/, '');
+  if (parent !== calendar.path) return '';
   const parts = path.split('/').filter((part) => part.length > 0);
   return parts[parts.length - 1] ?? '';
 }
@@ -72,7 +91,7 @@ async function queryCalendar(
   for (const response of responses) {
     const data = response.props['calendar-data'];
     if (typeof data !== 'string' || data.length === 0) continue;
-    const name = resourceNameOf(response.href, api.origin);
+    const name = resourceNameOf(response.href, api, calendar);
     if (name === '') continue;
     documents.push({
       calendar,

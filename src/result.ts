@@ -7,6 +7,7 @@ import { CalDavApiError } from './api.js';
 import { sanitizeText, wrapUntrusted } from './analyze.js';
 import { parseDavError, XmlValueError } from './dav-xml.js';
 import {
+  AllowlistError,
   CalendarNotAllowedError,
   PreconditionFailedError,
   ResultTooLargeError,
@@ -300,6 +301,7 @@ export async function run(
       error instanceof ToolInputError ||
       error instanceof ResultTooLargeError ||
       error instanceof CalendarNotAllowedError ||
+      error instanceof AllowlistError ||
       error instanceof XmlValueError
     ) {
       return errorResult(

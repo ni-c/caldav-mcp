@@ -1,12 +1,11 @@
-# Template. Placeholders: {{REPO}}. Drop the documentation link if there is no site.
 blank_issues_enabled: true
 contact_links:
   - name: Question or discussion
-    url: https://github.com/ni-c/{{REPO}}/discussions
+    url: https://github.com/ni-c/caldav-mcp/discussions
     about: Setup help, "how do I…", ideas that are not yet concrete features
   - name: Security vulnerability
-    url: https://github.com/ni-c/{{REPO}}/security/advisories/new
+    url: https://github.com/ni-c/caldav-mcp/security/advisories/new
     about: Please report vulnerabilities privately, never as a public issue
   - name: Documentation
-    url: https://{{REPO}}.ni-c.de
+    url: https://caldav-mcp.ni-c.de
     about: Guides, configuration and full tool reference

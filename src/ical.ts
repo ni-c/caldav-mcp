@@ -354,10 +354,24 @@ export function newCalendar(
  * and iTIP uses it to decide whether an update supersedes what an attendee
  * already has. Incrementing it is what makes a change visible to the other side;
  * `DTSTAMP` and `LAST-MODIFIED` are the timestamps clients sort and sync on.
+ *
+ * Which is exactly why answering an invitation must not touch it. RFC 5546
+ * §3.2.3 has an attendee **echo** the organiser's `SEQUENCE` in a REPLY, and
+ * for a good reason: a reply carrying a higher number claims to be a newer
+ * revision of the event than the one the organiser sent. Clients that compare
+ * sequences then treat the attendee's copy as the current one, and the
+ * organiser's next genuine update arrives looking stale and is ignored — an
+ * accepted invitation that silently stops receiving changes. `DTSTAMP` still
+ * moves, because a reply does need to be orderable against other replies.
  */
-export function touch(component: ICAL.Component): void {
-  const sequence = readInt(component, 'sequence') ?? 0;
-  component.updatePropertyWithValue('sequence', sequence + 1);
+export function touch(
+  component: ICAL.Component,
+  options: { bumpSequence?: boolean } = {}
+): void {
+  if (options.bumpSequence !== false) {
+    const sequence = readInt(component, 'sequence') ?? 0;
+    component.updatePropertyWithValue('sequence', sequence + 1);
+  }
   const now = ICAL.Time.fromJSDate(new Date(), true);
   component.updatePropertyWithValue('dtstamp', now);
   component.updatePropertyWithValue('last-modified', now);

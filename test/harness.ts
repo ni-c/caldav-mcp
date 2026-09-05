@@ -47,6 +47,11 @@ export interface FakeOptions {
   refuseCollation?: boolean;
   /** Refuse a free-busy query, so the computed fallback is exercised. */
   refuseFreeBusy?: boolean;
+  /**
+   * Answer a REPORT with hrefs pointing somewhere else than the collection
+   * that was asked, the way a hostile or broken server can.
+   */
+  forgeHrefs?: (path: string, name: string) => string;
 }
 
 export class FakeCalDav {
@@ -338,7 +343,7 @@ export class FakeCalDav {
           : 'C:calendar-data';
       parts.push(
         this.response(
-          `${path}${name}`,
+          this.options.forgeHrefs?.(path, name) ?? `${path}${name}`,
           `<${etag}>${resource.etag}</${etag}>` +
             `<${cdata}>${escapeXml(resource.ics)}</${cdata}>`
         )

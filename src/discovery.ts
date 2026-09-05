@@ -4,6 +4,7 @@ import {
   normalisePath,
   type CalendarEntry,
 } from './calendars.js';
+import { AllowlistError } from './errors.js';
 import {
   hrefsOf,
   privileges,
@@ -82,6 +83,7 @@ export class Discovery {
   private principalPromise: Promise<Principal> | undefined;
   private calendars: { at: number; registry: CalendarRegistry } | undefined;
   private inFlight: Promise<CalendarRegistry> | undefined;
+  private warnedUnmatched = false;
 
   constructor(api: CalDavApi, allowlist: readonly string[]) {
     this.api = api;
@@ -246,6 +248,49 @@ export class Discovery {
     // Stable order, so two runs of the same listing agree.
     found.sort((left, right) => left.path.localeCompare(right.path));
     const registry = new CalendarRegistry(dedupe(found), this.allowlist);
+
+    // The allowlist is checked here because here is the first moment it can be:
+    // its entries are matched against calendars that do not exist until this
+    // method has run.
+    //
+    // An ambiguous entry is refused rather than resolved. Only a bare final
+    // segment can be ambiguous, and `work` standing for two different
+    // collections is not something to settle by picking one — either choice
+    // silently grants access to a collection the operator may not have meant,
+    // and the failure would be invisible because the server would carry on
+    // working. Refusing costs a startup error; guessing costs a fence.
+    const ambiguous = registry.ambiguous();
+    if (ambiguous.length > 0) {
+      throw new AllowlistError(
+        `caldav-mcp: CALDAV_CALENDARS cannot be applied as written. ` +
+          ambiguous
+            .map(
+              ({ entry, paths }) =>
+                `"${entry}" matches ${paths.length} calendars (${paths.join(', ')})`
+            )
+            .join('; ') +
+          '. Name those calendars by full path instead of by their last segment.'
+      );
+    }
+
+    // An entry matching nothing is a warning, not an error: it is usually a
+    // typo, but it is also what a calendar that was deleted upstream looks
+    // like, and refusing to start over a stale name would be worse than saying
+    // so. Once per process — the registry is rebuilt whenever the cache
+    // expires, and the same warning on a loop teaches people to ignore it.
+    if (!this.warnedUnmatched) {
+      const unmatched = registry.unmatched();
+      if (unmatched.length > 0) {
+        this.warnedUnmatched = true;
+        console.error(
+          `caldav-mcp: CALDAV_CALENDARS names ${unmatched.length} entr` +
+            `${unmatched.length === 1 ? 'y' : 'ies'} matching no calendar on ` +
+            `this account: ${unmatched.join(', ')}. Check the spelling — an ` +
+            `entry that matches nothing grants nothing.`
+        );
+      }
+    }
+
     this.calendars = { at: Date.now(), registry };
     return registry;
   }

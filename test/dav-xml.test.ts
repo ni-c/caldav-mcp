@@ -221,6 +221,45 @@ END:VCALENDAR</C:calendar-data>
   });
 });
 
+describe('the iCalendar document inside a multistatus', () => {
+  function dataOf(ics: string): string {
+    const xml =
+      `<?xml version="1.0"?><D:multistatus xmlns:D="DAV:" ` +
+      `xmlns:C="urn:ietf:params:xml:ns:caldav"><D:response>` +
+      `<D:href>/tester/work/a.ics</D:href><D:propstat>` +
+      `<D:status>HTTP/1.1 200 OK</D:status><D:prop>` +
+      `<C:calendar-data>${ics}</C:calendar-data>` +
+      `</D:prop></D:propstat></D:response></D:multistatus>`;
+    return String(parseMultiStatus(xml, 'test')[0]?.props['calendar-data']);
+  }
+
+  it('decodes the entities the parser was told to leave alone', () => {
+    // `calendar-data` is a stop node and the one property read straight out of
+    // `props` rather than through `textOf`, so it used to skip decoding
+    // entirely: an event called `Tom & Jerry` arrived as `Tom &amp; Jerry` and
+    // ical.js put the escaped form in the summary.
+    expect(dataOf('SUMMARY:Tom &amp; Jerry &lt;3&gt;')).toBe(
+      'SUMMARY:Tom & Jerry <3>'
+    );
+  });
+
+  it('will not let an entity invent a second property', () => {
+    // The reason the decoder refuses control characters, on the document it
+    // was written for. CRLF is what separates one iCalendar property from the
+    // next, so a decoded `&#13;&#10;` inside a SUMMARY would end that property
+    // and start an ATTENDEE line nobody wrote — an RSVP forged by a string.
+    const forged = dataOf(
+      'SUMMARY:harmless&#13;&#10;ATTENDEE;PARTSTAT=ACCEPTED:mailto:x@y.z'
+    );
+    expect(forged).toContain('&#13;&#10;');
+    expect(forged.split(/\r?\n/)).toHaveLength(1);
+  });
+
+  it('leaves a hex reference to a control character alone too', () => {
+    expect(dataOf('SUMMARY:a&#x0D;&#x0A;b')).toBe('SUMMARY:a&#x0D;&#x0A;b');
+  });
+});
+
 describe('reading a DAV error document', () => {
   it('names the precondition and the message', () => {
     const document = `<?xml version="1.0"?>

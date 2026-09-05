@@ -394,16 +394,21 @@ export function applyCommonFields(
  * update the ETag just prevented. What the caller gets instead is a sentence
  * they can act on — what the entry is now, that nothing was written, and that
  * the same call will work on top of the current version.
+ *
+ * `bumpSequence: false` is for a write made *as an attendee* rather than as the
+ * organiser — see {@link touch}, which explains why answering an invitation
+ * must leave the counter where the organiser put it.
  */
 export async function commit(
   context: ToolContext,
   loaded: LoadedEntry,
-  describe: (component: ICAL.Component) => Record<string, unknown>
+  describe: (component: ICAL.Component) => Record<string, unknown>,
+  options: { bumpSequence?: boolean } = {}
 ): Promise<{ etag: string | undefined }> {
   if (loaded.createdOverride) {
     loaded.root.addSubcomponent(loaded.target);
   }
-  touch(loaded.target);
+  touch(loaded.target, options);
   const ics = serialize(loaded.root);
 
   try {

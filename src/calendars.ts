@@ -113,14 +113,6 @@ export function resourceUrl(
   return url.toString();
 }
 
-/** Raised at startup for an allowlist that cannot be applied as written. */
-export class AllowlistError extends Error {
-  constructor(message: string) {
-    super(message);
-    this.name = 'AllowlistError';
-  }
-}
-
 export class CalendarRegistry implements CalendarLookup {
   private readonly all: readonly CalendarEntry[];
   private readonly permitted: readonly CalendarEntry[];

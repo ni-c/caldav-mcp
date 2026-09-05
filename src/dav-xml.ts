@@ -234,6 +234,20 @@ export function parseMultiStatus(xml: string, what: string): DavResponse[] {
       if (!isOkStatus(String(stat.status ?? ''))) continue;
       Object.assign(props, (stat.prop ?? {}) as Record<string, unknown>);
     }
+    // `calendar-data` is a stop node, so it arrives as raw source with its
+    // entities intact, and it is the one property read straight out of `props`
+    // instead of through `textOf` — which is where every other value is
+    // decoded. So an event called `Tom & Jerry` reached the model as
+    // `Tom &amp; Jerry`, and ical.js parsed the escaped form into the summary.
+    //
+    // Decoding it here rather than at the reader is what keeps the guard in
+    // `decodeXmlText` on the path it was written for: that function's whole
+    // reason for refusing a numeric reference to a control character is this
+    // document, where a decoded `&#13;&#10;` would end one property and start
+    // another that nobody wrote.
+    if (typeof props['calendar-data'] === 'string') {
+      props['calendar-data'] = decodeXmlText(props['calendar-data']);
+    }
     return {
       href,
       props,

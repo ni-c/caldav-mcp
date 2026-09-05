@@ -523,6 +523,54 @@ describe('writing', () => {
     expect(stored).toMatch(/ORGANIZER[^\r\n]*alice@example\.net/);
   });
 
+  it('answers without claiming to be a newer revision than the organiser', async () => {
+    // RFC 5546 §3.2.3: an attendee echoes the organiser's SEQUENCE in a reply.
+    // Bumping it says "this is a newer revision of the event than the one you
+    // sent", so a client comparing sequences treats the attendee's copy as
+    // current and ignores the organiser's next real update as stale — an
+    // accepted invitation that quietly stops receiving changes. Editing the
+    // same event as its owner is the opposite case, and must still bump.
+    fake.seed(
+      'work',
+      'invited.ics',
+      [
+        'BEGIN:VCALENDAR',
+        'VERSION:2.0',
+        'PRODID:-//t//EN',
+        'BEGIN:VEVENT',
+        'UID:invited@example.net',
+        'DTSTAMP:20260901T120000Z',
+        'DTSTART:20260908T070000Z',
+        'DTEND:20260908T080000Z',
+        'SEQUENCE:3',
+        'SUMMARY:Invitation',
+        'ORGANIZER;CN=Alice:mailto:alice@example.net',
+        'ATTENDEE;CN=Me;PARTSTAT=NEEDS-ACTION:mailto:me@example.net',
+        'END:VEVENT',
+        'END:VCALENDAR',
+        '',
+      ].join('\r\n')
+    );
+    const listing = await data('list_events', WINDOW);
+    const invitation = (
+      listing.events as { id: string; summary?: string }[]
+    ).find((entry) => entry.summary === 'Invitation');
+
+    await data('respond_to_event', {
+      id: invitation?.id,
+      response: 'ACCEPTED',
+    });
+    const afterReply = fake.stored('work', 'invited.ics') ?? '';
+    expect(afterReply).toMatch(/^SEQUENCE:3\r?$/m);
+    // The reply still has to be orderable against other replies.
+    expect(afterReply).not.toContain('DTSTAMP:20260901T120000Z');
+
+    await data('update_event', { id: invitation?.id, summary: 'Renamed' });
+    expect(fake.stored('work', 'invited.ics') ?? '').toMatch(
+      /^SEQUENCE:4\r?$/m
+    );
+  });
+
   it('creates and deletes a task and a journal entry', async () => {
     const task = await data('create_task', {
       calendar_id: WORK,
@@ -656,5 +704,58 @@ describe('read-only mode', () => {
     // Identical once the name is taken out: a suppressed tool is not
     // advertised as existing-but-refused, which would be advertising a refusal.
     expect(await message('delete_event')).toBe(await message('no_such_tool'));
+  });
+});
+
+describe('an allowlist that cannot be applied', () => {
+  afterEach(() => {
+    vi.unstubAllGlobals();
+    vi.restoreAllMocks();
+  });
+
+  it('refuses an entry that names two calendars, rather than picking one', async () => {
+    // Only a bare last segment can be ambiguous, and settling it by choosing
+    // would silently grant access to a collection the operator may not have
+    // meant — while the server carried on looking healthy. The check runs at
+    // discovery because that is the first moment the entries have anything to
+    // be matched against.
+    await session.close();
+    fake = new FakeCalDav({
+      calendars: [{ name: 'team/work' }, { name: 'personal/work' }],
+    });
+    fake.install();
+    session = await connect({ calendars: ['work'] });
+
+    const result = await call('list_calendars');
+    expect((result as { isError?: boolean }).isError).toBe(true);
+    const message = textOf(result);
+    expect(message).toContain('cannot be applied as written');
+    expect(message).toContain('/tester/personal/work/');
+    expect(message).toContain('/tester/team/work/');
+    // The way out is named, because "ambiguous" without a remedy is a riddle.
+    expect(message).toMatch(/full path/);
+  });
+
+  it('warns once about an entry that matches nothing, and keeps working', async () => {
+    // A typo usually, but also what an upstream deletion looks like — so it is
+    // a warning rather than a refusal. Once per process: the registry is
+    // rebuilt whenever its cache expires, and a warning on a loop is a warning
+    // people learn to skip.
+    await session.close();
+    const warn = vi.spyOn(console, 'error').mockImplementation(() => undefined);
+    fake = new FakeCalDav();
+    fake.install();
+    session = await connect({ calendars: ['work', 'wrok'] });
+
+    const first = await data('list_calendars');
+    const second = await data('list_calendars');
+    expect((first.calendars as unknown[]).length).toBe(1);
+    expect((second.calendars as unknown[]).length).toBe(1);
+
+    const lines = warn.mock.calls
+      .map((args) => String(args[0]))
+      .filter((line) => line.includes('matching no calendar'));
+    expect(lines).toHaveLength(1);
+    expect(lines[0]).toContain('wrok');
   });
 });

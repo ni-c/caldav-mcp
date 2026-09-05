@@ -93,19 +93,31 @@ export function shapeEntry(
   const alarms = readAlarms(component);
   const attachments = readAttachments(component);
 
+  // Four fields that look structural and are not. A UID is chosen by whatever
+  // created the entry and is free text in practice — Apple writes a GUID,
+  // Google writes base32, and an invitation from a stranger can write a
+  // paragraph. STATUS is an enumeration in the RFC and an arbitrary token in
+  // the wild, since `X-` values are legal. URL is a URL somebody else picked.
+  // An RRULE round-trips through a string that carries whatever the parser
+  // accepted. All four are read by a model, so all four go through the same
+  // cleaning as a summary; only the fenced body was covered before.
+  const uid = optional(readText(component, 'uid'), 200);
+  const status = optional(readText(component, 'status'), 100);
+  const url = optional(readText(component, 'url'), 2000);
+
   const rrule = component.getFirstProperty('rrule');
   const entry: Record<string, unknown> = {
     id,
     series_id: seriesId,
     calendar: options.calendar.path,
-    ...maybe('uid', readText(component, 'uid')),
+    ...maybe('uid', uid),
     ...maybe('summary', summary),
     ...maybe('description', description),
     ...maybe('location', location),
     ...maybe('comment', comment),
     ...(categories.length > 0 ? { categories } : {}),
-    ...maybe('status', readText(component, 'status')),
-    ...maybe('url', readText(component, 'url')),
+    ...maybe('status', status),
+    ...maybe('url', url),
     ...maybe('created', isoOf(component, 'created')),
     ...maybe('last_modified', isoOf(component, 'last-modified')),
     ...maybe('sequence', readInt(component, 'sequence')),
@@ -118,7 +130,7 @@ export function shapeEntry(
         }),
     ...maybe(
       'recurrence_rule',
-      rrule === null ? undefined : String(rrule.getFirstValue())
+      rrule === null ? undefined : optional(String(rrule.getFirstValue()), 500)
     ),
     ...(alarms.length > 0 ? { alarms } : {}),
     ...(attachments.length > 0 ? { attachments } : {}),
@@ -168,7 +180,9 @@ export function shapeEntry(
 
   // The signals run over every field somebody else could have written, joined,
   // so a phrase split across a summary and a location is still found.
-  const searchable = [summary, description, location, comment]
+  // The UID is in here for the same reason it is cleaned above: it is a field
+  // a sender fills in freely, and it reaches the model like any other string.
+  const searchable = [summary, description, location, comment, uid]
     .filter((value): value is string => value !== undefined)
     .join('\n');
   const warnings = detectSuspicious(searchable);
@@ -194,6 +208,14 @@ export function shapeEntry(
 
 function maybe(key: string, value: unknown): Record<string, unknown> {
   return value === undefined ? {} : { [key]: value };
+}
+
+/** `sanitizeText` for a value that may not be there, keeping it absent. */
+function optional(
+  value: string | undefined,
+  limit: number
+): string | undefined {
+  return value === undefined ? undefined : sanitizeText(value, limit);
 }
 
 /**

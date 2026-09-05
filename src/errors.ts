@@ -43,6 +43,24 @@ export class CalendarNotAllowedError extends Error {
 }
 
 /**
+ * `CALDAV_CALENDARS` cannot be applied as written.
+ *
+ * Distinct from {@link CalendarNotAllowedError}, which is the fence doing its
+ * job: this one says the fence itself is not buildable, so no call can be
+ * answered until the operator changes the configuration. It surfaces on the
+ * first tool call rather than at process start because the entries are matched
+ * against calendars that only exist after discovery — and discovery needs the
+ * network, which a server that must stay startable without credentials cannot
+ * do before it is asked.
+ */
+export class AllowlistError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = 'AllowlistError';
+  }
+}
+
+/**
  * A resource changed between the read and the write, so nothing was written.
  *
  * Carries the state read back afterwards, so the tool can tell the caller what

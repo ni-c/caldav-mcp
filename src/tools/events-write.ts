@@ -622,9 +622,16 @@ export function registerEventWriteTools(
         mine.setParameter('partstat', args.response);
         mine.setParameter('rsvp', 'FALSE');
 
-        await commit(context, loaded, (component) => ({
-          summary: readText(component, 'summary') ?? '(no title)',
-        }));
+        // As an attendee, not as the organiser: the SEQUENCE stays where the
+        // organiser put it. See `touch` in src/ical.ts.
+        await commit(
+          context,
+          loaded,
+          (component) => ({
+            summary: readText(component, 'summary') ?? '(no title)',
+          }),
+          { bumpSequence: false }
+        );
 
         return ownWordsResult({
           responded: true,
