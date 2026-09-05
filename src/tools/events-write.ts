@@ -709,7 +709,15 @@ function applyTimes(
   });
 }
 
-/** Sets an RRULE from its raw text, refusing anything ical.js cannot read. */
+/**
+ * Sets an RRULE from its raw text, refusing anything that is not one.
+ *
+ * The `freq` check is not belt and braces. `ICAL.Recur.fromString` is lenient:
+ * handed prose it does not throw, it returns a rule whose frequency is null and
+ * serialises as `FREQ=null` — which this server would then write into a real
+ * calendar, where every other client has to deal with it. Only a rule naming a
+ * frequency is a rule.
+ */
 function setRecurrence(component: ICAL.Component, rule: string): void {
   const text = rule.trim().replace(/^RRULE:/i, '');
   let recur: ICAL.Recur;
@@ -719,6 +727,17 @@ function setRecurrence(component: ICAL.Component, rule: string): void {
     throw new ToolInputError(
       `caldav-mcp: "${rule}" is not a recurrence rule this server can read. ` +
         'Expected an RFC 5545 RRULE value, e.g. "FREQ=WEEKLY;BYDAY=MO;COUNT=10".'
+    );
+  }
+  if (
+    recur.freq === null ||
+    recur.freq === undefined ||
+    String(recur.freq).length === 0
+  ) {
+    throw new ToolInputError(
+      `caldav-mcp: "${rule}" names no frequency, so it is not a recurrence ` +
+        'rule. Expected an RFC 5545 RRULE value beginning with FREQ=, ' +
+        'e.g. "FREQ=WEEKLY;BYDAY=MO;COUNT=10".'
     );
   }
   const property = new ICAL.Property('rrule', component);

@@ -222,11 +222,37 @@ const pad2 = (value: number): string => String(value).padStart(2, '0');
 const pad4 = (value: number): string => String(value).padStart(4, '0');
 
 /**
+ * Properties that describe the *series* and must not travel into an override.
+ *
+ * An override is one instance; carrying the recurrence rule into it would make
+ * that instance a series of its own.
+ */
+const SERIES_ONLY = new Set([
+  'rrule',
+  'rdate',
+  'exdate',
+  'recurrence-id',
+  'dtstamp',
+  'last-modified',
+  'sequence',
+]);
+
+/**
  * Builds an override for an occurrence that has never been edited.
  *
- * Only the identity and the times are copied. Everything else is left to the
- * master, which is what iCalendar means: an override carries the fields that
- * differ, and a reader falls back to the master for the rest.
+ * **The whole master is copied**, not just the identity and the times. This is
+ * the part of RFC 5545 that is easy to get backwards: a component with a
+ * RECURRENCE-ID is a *complete replacement* for that instance, not a delta over
+ * the master. A reader does not fall back to the master for a property the
+ * override omits — it simply does not have one.
+ *
+ * So an override built from times alone silently drops the summary, the
+ * attendees, the reminders and the description of that one occurrence. Nothing
+ * reports it: the series still looks right, and one instance quietly loses
+ * everything. Copying first and editing after is what makes "change just this
+ * one" mean what it says.
+ *
+ * The subcomponents come along too, so an occurrence keeps its alarms.
  */
 function cloneAsOverride(
   master: ICAL.Component,
@@ -235,22 +261,50 @@ function cloneAsOverride(
   fallbackZone: string
 ): ICAL.Component {
   const override = new ICAL.Component(kind);
+  for (const property of master.getAllProperties()) {
+    if (SERIES_ONLY.has(property.name.toLowerCase())) continue;
+    override.addProperty(new ICAL.Property(property.toJSON(), override));
+  }
+  for (const child of master.getAllSubcomponents()) {
+    override.addSubcomponent(new ICAL.Component(child.toJSON(), override));
+  }
+
   const uid = readText(master, 'uid');
   if (uid !== undefined) override.updatePropertyWithValue('uid', uid);
   override.updatePropertyWithValue(
     'dtstamp',
     ICAL.Time.fromJSDate(new Date(), true)
   );
+
+  const zone = at.zone ?? (at.allDay ? undefined : fallbackZone);
   writeTime(override, 'recurrence-id', {
     instant: at.instant,
-    zone: at.zone ?? (at.allDay ? undefined : fallbackZone),
+    zone,
     allDay: at.allDay,
   });
+
+  // The instance keeps the master's duration, shifted to this occurrence.
+  const masterStart = master.getFirstProperty('dtstart');
+  const masterEnd =
+    master.getFirstProperty('dtend') ?? master.getFirstProperty('due');
+  let durationMs = 0;
+  if (masterStart !== null && masterEnd !== null) {
+    durationMs =
+      (masterEnd.getFirstValue() as ICAL.Time).toJSDate().getTime() -
+      (masterStart.getFirstValue() as ICAL.Time).toJSDate().getTime();
+  }
   writeTime(override, 'dtstart', {
     instant: at.instant,
-    zone: at.zone ?? (at.allDay ? undefined : fallbackZone),
+    zone,
     allDay: at.allDay,
   });
+  if (masterEnd !== null) {
+    writeTime(override, masterEnd.name.toLowerCase(), {
+      instant: new Date(at.instant.getTime() + durationMs),
+      zone,
+      allDay: at.allDay,
+    });
+  }
   return override;
 }
 

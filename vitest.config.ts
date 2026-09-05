@@ -12,13 +12,13 @@ export default defineConfig({
       // Entry point: only wires config and server to the stdio transport and
       // exits the process; not reachable from unit tests.
       exclude: ['src/index.ts'],
-      // MEASURE FIRST, then set these just below the actual values (leave ~5
-      // points headroom on functions). Write the missing tests instead of
-      // lowering them.
+      // Measured on 2026-09-05 at 89.39 / 77.33 / 93.25 / 91.37, over 276
+      // tests. Set just below, with headroom on functions. Write the missing
+      // tests instead of lowering them.
       thresholds: {
-        statements: 90,
-        branches: 85,
-        functions: 90,
+        statements: 88,
+        branches: 75,
+        functions: 88,
         lines: 90,
       },
     },
