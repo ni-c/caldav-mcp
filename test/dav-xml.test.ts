@@ -184,6 +184,51 @@ describe('parsing a multistatus', () => {
     ).toThrow(/DOCTYPE or ENTITY/);
   });
 
+  it('refuses a DOCTYPE inside CDATA as well, which is the documented trade', () => {
+    // The lock scans the raw text, so a literal `<!DOCTYPE` anywhere — even
+    // inside a CDATA section a non-conforming server might use — fails the
+    // document. A conforming server escapes text, and the escaped form
+    // parses; this pins the fail-closed side so it is a decision, not a
+    // surprise.
+    expect(() =>
+      parseMultiStatus(
+        '<multistatus xmlns="DAV:"><response><href>/x</href><propstat><prop>' +
+          '<displayname><![CDATA[<!DOCTYPE html>]]></displayname></prop>' +
+          '<status>HTTP/1.1 200 OK</status></propstat></response></multistatus>',
+        'a probe'
+      )
+    ).toThrow(/DOCTYPE or ENTITY/);
+    const escaped = parseMultiStatus(
+      '<multistatus xmlns="DAV:"><response><href>/x</href><propstat><prop>' +
+        '<displayname>&lt;!DOCTYPE html&gt;</displayname></prop>' +
+        '<status>HTTP/1.1 200 OK</status></propstat></response></multistatus>',
+      'a probe'
+    );
+    // Raw here — entities are decoded by `textOf` at the reader — so the
+    // literal `<!` never exists in the document the lock scans.
+    expect(escaped[0]?.props.displayname).toBe('&lt;!DOCTYPE html&gt;');
+  });
+
+  it('leaves Object.prototype alone after a hostile document', () => {
+    // fast-xml-parser refuses `__proto__`, `constructor` and `prototype` as
+    // tag names, and `Object.assign` of the parsed props relies on that. The
+    // dependency's guarantee, pinned here so a parser swap has to keep it.
+    const hostile =
+      '<multistatus xmlns="DAV:"><response><href>/x</href><propstat><prop>' +
+      '<__proto__><polluted>yes</polluted></__proto__>' +
+      '<constructor><prototype><polluted>yes</polluted></prototype></constructor>' +
+      '</prop><status>HTTP/1.1 200 OK</status></propstat></response></multistatus>';
+    try {
+      parseMultiStatus(hostile, 'a probe');
+    } catch {
+      // Refusing the document is one acceptable answer.
+    }
+    expect(
+      (Object.getPrototypeOf({}) as Record<string, unknown>).polluted
+    ).toBeUndefined();
+    expect(({} as Record<string, unknown>).polluted).toBeUndefined();
+  });
+
   it('reads several hrefs out of one property', () => {
     const document = `<?xml version="1.0"?>
 <multistatus xmlns="DAV:" xmlns:C="urn:ietf:params:xml:ns:caldav">
@@ -275,6 +320,26 @@ describe('reading a DAV error document', () => {
   it('answers nothing for a body that is not one', () => {
     expect(parseDavError('just words')).toBeUndefined();
     expect(parseDavError('<html><body>oops</body></html>')).toBeUndefined();
+  });
+
+  it('holds the DOCTYPE lock on an error body too', () => {
+    // The body a hostile server controls most completely is the one it sends
+    // with a 4xx, and this used to be the one parse without the lock.
+    expect(
+      parseDavError(
+        '<?xml version="1.0"?><!DOCTYPE error [<!ENTITY a "b">]>' +
+          '<D:error xmlns:D="DAV:"><D:need-privileges/></D:error>'
+      )
+    ).toBeUndefined();
+  });
+
+  it('does not parse an error body larger than a real one could be', () => {
+    const padding = '<x/>'.repeat(20_000);
+    expect(
+      parseDavError(
+        `<D:error xmlns:D="DAV:"><D:need-privileges/>${padding}</D:error>`
+      )
+    ).toBeUndefined();
   });
 });
 

@@ -52,6 +52,14 @@ export interface FakeOptions {
    * that was asked, the way a hostile or broken server can.
    */
   forgeHrefs?: (path: string, name: string) => string;
+  /**
+   * Report every calendar twice at the same href, the second copy read-only.
+   *
+   * Servers do this — a collection reachable through two hrefs, or a shared
+   * one listed by both its own path and the sharee's. Which copy wins must not
+   * be decided by document order.
+   */
+  duplicateReadOnly?: boolean;
 }
 
 export class FakeCalDav {
@@ -243,6 +251,14 @@ export class FakeCalDav {
       ];
       for (const [calendarPath, store] of this.calendars) {
         parts.push(this.calendarResponse(calendarPath, store.entry));
+        if (this.options.duplicateReadOnly === true) {
+          parts.push(
+            this.calendarResponse(calendarPath, {
+              ...store.entry,
+              readOnly: true,
+            })
+          );
+        }
       }
       return this.reply(207, this.envelope(parts.join('')));
     }

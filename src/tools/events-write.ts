@@ -6,7 +6,7 @@ import {
   type ConfirmationStore,
 } from 'mcp-approval';
 
-import { escapeInvisible } from '../analyze.js';
+import { escapeInvisible, quoted } from '../analyze.js';
 import { resourceUrl, type CalendarRegistry } from '../calendars.js';
 import type { ToolContext } from '../entries.js';
 import { buildSeriesId, parseEntityId, type EntityId } from '../entity-id.js';
@@ -15,7 +15,6 @@ import {
   ICAL,
   componentsOf,
   parseCalendar,
-  readText,
   serialize,
   splitSeries,
   writeTime,
@@ -27,7 +26,12 @@ import {
   run,
   untrustedResult,
 } from '../result.js';
-import { expandSeries, parseRecurrenceId } from '../recurrence.js';
+import {
+  expandSeries,
+  instantOfProperty,
+  instantsOfProperty,
+  parseRecurrenceId,
+} from '../recurrence.js';
 import {
   alarmsParam,
   calendarRefParam,
@@ -36,16 +40,18 @@ import {
   entityIdParam,
   instantParam,
   scopeParam,
+  summaryParam,
   textParam,
   timezoneParam,
 } from '../schema.js';
-import { parseInstant } from '../time.js';
+import { formatDateInZone, parseInstant } from '../time.js';
 import {
   applyAlarms,
   applyCommonFields,
   commit,
   createEntry,
   loadForWrite,
+  type LoadedEntry,
   type Scope,
 } from '../write.js';
 import { CREATE, DELETE, MOVE, REPLACE, SET_STATE } from './annotations.js';
@@ -66,10 +72,13 @@ import { loadEntry } from './common.js';
  *   axes; only one of them has an annotation, which is exactly why the dialog
  *   exists as well as the hints.
  * - **`update_event` asks only for `scope: entire_series` on a recurring
- *   entry.** Gating every edit is how an operator ends up switching
- *   `ELICITATION` off altogether, and then nothing asks at all. The ETag is what
- *   guards the ordinary edit; the dialog is for the one edit that reaches beyond
- *   the instance the caller was looking at.
+ *   entry** — whichever id was passed. Gating every edit is how an operator
+ *   ends up switching `ELICITATION` off altogether, and then nothing asks at
+ *   all. The ETag is what guards the ordinary edit; the dialog is for the one
+ *   edit that reaches beyond a single instance. Whether the entry recurs is
+ *   read from the stored resource, not inferred from the shape of the id: a
+ *   listing hands out the series id next to every occurrence id, and a change
+ *   made through it touches every occurrence just the same.
  */
 export function registerEventWriteTools(
   server: McpServer,
@@ -88,7 +97,7 @@ export function registerEventWriteTools(
         'CALDAV_TIMEZONE.',
       inputSchema: z.object({
         calendar_id: calendarRefParam,
-        summary: z.string().trim().min(1).max(1000).describe('The title.'),
+        summary: summaryParam,
         start: instantParam.describe(
           'When it starts. A bare date makes it an all-day event.'
         ),
@@ -129,7 +138,6 @@ export function registerEventWriteTools(
         uid: z.string(),
         calendar: z.string(),
         etag: z.string().optional(),
-        alarms_preserved: z.number().int().optional(),
       }),
     },
     async (args) =>
@@ -209,7 +217,7 @@ export function registerEventWriteTools(
       inputSchema: z.object({
         id: entityIdParam,
         scope: scopeParam,
-        summary: z.string().trim().min(1).max(1000).optional(),
+        summary: summaryParam.optional(),
         start: instantParam.optional(),
         end: instantParam.optional(),
         timezone: timezoneParam,
@@ -245,9 +253,15 @@ export function registerEventWriteTools(
           );
         }
 
-        // Only the edit that reaches past the instance the caller was looking
-        // at asks. See the note at the top of this file.
-        if (scope === 'entire_series' && entity.recurrenceId !== undefined) {
+        // Read before asking: whether this edit reaches every occurrence is a
+        // fact about the stored entry, not about the id. The GET is not the
+        // destructive act, and the ETag it returns guards the write below
+        // against anything that changes while the person is deciding.
+        const loaded = await loadForWrite(context, entity, scope);
+
+        // Only the edit that reaches past a single instance asks. See the
+        // note at the top of this file.
+        if (scope === 'entire_series' && recurs(loaded)) {
           const outcome = await approval.requestApproval(
             server,
             mcp,
@@ -258,9 +272,15 @@ export function registerEventWriteTools(
                 'The change applies to the whole series, not only the ' +
                 'occurrence that was listed. A CalDAV server keeps no history, ' +
                 'so the previous text cannot be recovered.',
+              // The change itself is part of the key. An approval is a person
+              // saying yes to *this* edit of *this* series; without the fields
+              // in the key, one yes would cover any other edit of the same
+              // series for as long as the approval lives. A retry with the
+              // same arguments — after a 412, say — still matches.
               resourceKey: setResourceKey('update_event:series', [
                 entity.calendarPath,
                 entity.resourceName,
+                changeDigest(args),
               ]),
               token: args.confirm_token,
               toolName: 'update_event',
@@ -284,7 +304,6 @@ export function registerEventWriteTools(
           if (outcome.decision === 'pending') return outcome.result;
         }
 
-        const loaded = await loadForWrite(context, entity, scope);
         const target = loaded.target;
 
         if (args.start !== undefined || args.end !== undefined) {
@@ -309,9 +328,7 @@ export function registerEventWriteTools(
           context.config.timezone
         );
 
-        const result = await commit(context, loaded, (component) => ({
-          summary: readText(component, 'summary') ?? '(no title)',
-        }));
+        const result = await commit(context, loaded);
 
         const fresh = await loadEntry(context, entity, registry);
         return untrustedResult({
@@ -359,7 +376,12 @@ export function registerEventWriteTools(
         // single lunch is worse than saying nothing, because it reads as a
         // description and is not one. The counts are server-side facts, which
         // is the only kind of detail that belongs in this text.
-        const shape = await describeTarget(context, entity, registry);
+        const shape = await describeTarget(
+          context,
+          entity,
+          registry,
+          Date.now() + 5_000
+        );
 
         const outcome = await approval.requestApproval(
           server,
@@ -459,6 +481,25 @@ export function registerEventWriteTools(
             'caldav-mcp: a single occurrence cannot be moved to another ' +
               'calendar on its own — it is part of one stored entry. Pass the ' +
               'series id to move the whole event.'
+          );
+        }
+
+        // The checks `createEntry` makes for a new entry, made here for the
+        // copy — and made *before* the dialog, which is the whole point of
+        // making them at all. A destination the account cannot write to, or
+        // one that takes no events, is answered with a sentence instead of
+        // asking somebody to approve a move that was never going to happen
+        // and then spending their approval on the server's 403.
+        if (destination.readOnly) {
+          throw new ToolInputError(
+            `caldav-mcp: the account can read ${destination.path} but not ` +
+              'write to it, so the event cannot be moved there.'
+          );
+        }
+        if (!registry.accepts(destination, 'VEVENT')) {
+          throw new ToolInputError(
+            `caldav-mcp: ${destination.path} does not accept VEVENT entries. ` +
+              `It takes: ${destination.components.join(', ')}.`
           );
         }
 
@@ -629,14 +670,7 @@ export function registerEventWriteTools(
 
         // As an attendee, not as the organiser: the SEQUENCE stays where the
         // organiser put it. See `touch` in src/ical.ts.
-        await commit(
-          context,
-          loaded,
-          (component) => ({
-            summary: readText(component, 'summary') ?? '(no title)',
-          }),
-          { bumpSequence: false }
-        );
+        await commit(context, loaded, { bumpSequence: false });
 
         return ownWordsResult({
           responded: true,
@@ -653,54 +687,90 @@ export function registerEventWriteTools(
 interface TargetShape {
   recurring: boolean;
   occurrences: number | undefined;
+  /** True when the entry could not be read, so nothing above is known. */
+  unreadable: boolean;
 }
 
 /**
  * Looks at the entry a deletion would remove.
  *
- * Deliberately tolerant: if the read fails the dialog still happens, with the
- * cautious wording. Refusing to ask because the description could not be
- * gathered would be the wrong trade in both directions.
+ * Deliberately tolerant: if the read fails the dialog still happens. But it
+ * happens with wording that *says* the entry could not be read, not with the
+ * wording for a single event — a 500-occurrence series behind a broken read
+ * must not be described as "an event" to the person deciding. The read uses
+ * the write-path ceiling, since the deletion is a write and an entry too large
+ * to read under the smaller ceiling would otherwise always take this path.
  */
 async function describeTarget(
   context: ToolContext,
   entity: EntityId,
-  registry: CalendarRegistry
+  registry: CalendarRegistry,
+  deadline: number
 ): Promise<TargetShape> {
+  const unknown: TargetShape = {
+    recurring: false,
+    occurrences: undefined,
+    unreadable: true,
+  };
   try {
     const calendar = registry.byPath(entity.calendarPath);
-    if (calendar === undefined)
-      return { recurring: false, occurrences: undefined };
+    if (calendar === undefined) return unknown;
     const resource = await context.api.get(
-      resourceUrl(calendar, entity.resourceName)
+      resourceUrl(calendar, entity.resourceName),
+      true
     );
     const root = parseCalendar(resource.ics, 'the entry');
     const components = componentsOf(root, entity.kind);
-    const { master } = splitSeries(components);
+    const { master, overrides } = splitSeries(components);
+    // Two shapes hold more than one occurrence, and the dialog has to name
+    // both. The obvious one is a master carrying a rule. The other is a
+    // resource made *only* of detached occurrences, which is what a client
+    // writes after a "this and following" split and what `expandSeries`
+    // already handles in its standalone branch — there is no master at all,
+    // so reading the rule off `master` reported "an event" and then deleted a
+    // file holding N of them. Same contradiction as the series/occurrence
+    // one, one shape further out.
     const recurring =
-      master !== null &&
-      master !== undefined &&
-      master.getFirstProperty('rrule') !== null;
-    if (!recurring) return { recurring: false, occurrences: undefined };
+      master === undefined
+        ? overrides.length > 1
+        : master.getFirstProperty('rrule') !== null ||
+          master.getFirstProperty('rdate') !== null;
+    if (!recurring) {
+      return { recurring: false, occurrences: undefined, unreadable: false };
+    }
     const expansion = expandSeries(components, {
       from: new Date(-8_640_000_000_000),
       to: new Date(8_640_000_000_000),
       cap: 500,
       fallbackZone: context.config.timezone,
+      // Shared with the rest of the call rather than minted here. Without it
+      // this expansion starts its own full wall-clock budget, so describing
+      // the target for the dialog could cost as much time again as the work
+      // it describes — twice over on the two-call fallback path, on an entry
+      // somebody else wrote. A count for a dialog is worth a second, not a
+      // second budget.
+      deadline,
     });
     return {
       recurring: true,
       occurrences: expansion.truncated
         ? undefined
         : expansion.occurrences.length,
+      unreadable: false,
     };
   } catch {
-    return { recurring: false, occurrences: undefined };
+    return unknown;
   }
 }
 
 /** The sentence the dialog leads with, describing what is really there. */
 function deletionSentence(scope: Scope, shape: TargetShape): string {
+  if (shape.unreadable) {
+    return (
+      'delete an entry this server could not read to describe — it may be ' +
+      'a single event or a whole recurring series'
+    );
+  }
   if (!shape.recurring) return 'delete an event';
   if (scope === 'this_occurrence') {
     return 'delete one occurrence of a recurring event, leaving the rest of the series';
@@ -710,12 +780,68 @@ function deletionSentence(scope: Scope, shape: TargetShape): string {
     : `delete a recurring event and all ${shape.occurrences} of its occurrences`;
 }
 
-/** Which part of a recurring entry a write applies to. */
+/**
+ * Which part of a recurring entry a write applies to.
+ *
+ * A series id names the stored entry as a whole; only an occurrence id can
+ * name one instance. `this_occurrence` on a series id is therefore refused
+ * rather than passed through — it used to be, and `delete_event` then showed
+ * a dialog reading "delete one occurrence, leaving the rest of the series"
+ * and removed the entire resource. The two arguments contradict each other,
+ * and the answer to a contradiction is a refusal, not a guess.
+ */
 function resolveScope(entity: EntityId, requested: Scope | undefined): Scope {
-  if (requested !== undefined) return requested;
-  return entity.recurrenceId === undefined
-    ? 'entire_series'
-    : 'this_occurrence';
+  if (entity.recurrenceId === undefined) {
+    if (requested === 'this_occurrence') {
+      throw new ToolInputError(
+        'caldav-mcp: scope "this_occurrence" needs the id of one occurrence, ' +
+          'and this id names the whole series. list_events returns an id ' +
+          'for each occurrence next to the series id.'
+      );
+    }
+    return 'entire_series';
+  }
+  return requested ?? 'this_occurrence';
+}
+
+/** Whether the stored entry recurs, read from the master component. */
+function recurs(loaded: LoadedEntry): boolean {
+  const series = loaded.master ?? loaded.target;
+  return (
+    series.getFirstProperty('rrule') !== null ||
+    series.getFirstProperty('rdate') !== null
+  );
+}
+
+/** The change an `update_event` call asks for, as a stable string. */
+function changeDigest(args: Record<string, unknown>): string {
+  const fields = [
+    'scope',
+    'summary',
+    'start',
+    'end',
+    'timezone',
+    'description',
+    'location',
+    'categories',
+    'status',
+    'transparent',
+    'alarms',
+  ];
+  // `absent` and `null` are opposite instructions, so they must not digest to
+  // the same thing. The schema says it outright — "pass null to remove it,
+  // leave it out to keep it" — and mapping a missing field onto `null` made
+  // "change the summary" and "change the summary AND clear the description,
+  // the location and every category" produce one key. An approval for the
+  // first then executed the second: a yes to a small edit spending itself on
+  // a strictly larger one, against a server that keeps no history.
+  return JSON.stringify(
+    fields.map((field) =>
+      args[field] === undefined
+        ? [field, 'absent']
+        : [field, 'set', args[field]]
+    )
+  );
 }
 
 function nothingToDo(args: Record<string, unknown>): boolean {
@@ -804,8 +930,9 @@ function setRecurrence(component: ICAL.Component, rule: string): void {
     recur = ICAL.Recur.fromString(text);
   } catch {
     throw new ToolInputError(
-      `caldav-mcp: "${rule}" is not a recurrence rule this server can read. ` +
-        'Expected an RFC 5545 RRULE value, e.g. "FREQ=WEEKLY;BYDAY=MO;COUNT=10".'
+      `caldav-mcp: "${quoted(rule)}" is not a recurrence rule this server can ` +
+        'read. Expected an RFC 5545 RRULE value, e.g. ' +
+        '"FREQ=WEEKLY;BYDAY=MO;COUNT=10".'
     );
   }
   if (
@@ -814,7 +941,7 @@ function setRecurrence(component: ICAL.Component, rule: string): void {
     String(recur.freq).length === 0
   ) {
     throw new ToolInputError(
-      `caldav-mcp: "${rule}" names no frequency, so it is not a recurrence ` +
+      `caldav-mcp: "${quoted(rule)}" names no frequency, so it is not a recurrence ` +
         'rule. Expected an RFC 5545 RRULE value beginning with FREQ=, ' +
         'e.g. "FREQ=WEEKLY;BYDAY=MO;COUNT=10".'
     );
@@ -831,6 +958,17 @@ function setRecurrence(component: ICAL.Component, rule: string): void {
  * master. The list is de-duplicated because Radicale will happily store the
  * same exception twice, and a second delete of the same occurrence should be a
  * no-op rather than a growing file.
+ *
+ * Every comparison in here is on the **instant**, through the same resolver
+ * the expansion uses, and never on `toJSDate()` or on a serialised spelling.
+ * Both of those were tried and both were wrong in a way that reported success:
+ * `toJSDate()` applies the host's zone to a TZID-only RECURRENCE-ID, so on a
+ * container in UTC the override was never matched, left behind, and re-emitted
+ * by the next listing as the occurrence that had just been "deleted"; and a
+ * string comparison of EXDATE values missed an existing exception written in
+ * another zone. The all-day EXDATE is likewise written from the calendar date
+ * the occurrence id names, in the configured zone — reading UTC fields off a
+ * midnight-in-Berlin instant put the exception on the previous day.
  */
 async function excludeOccurrence(
   context: ToolContext,
@@ -859,39 +997,50 @@ async function excludeOccurrence(
       'caldav-mcp: this entry has no series to exclude an occurrence from.'
     );
   }
-  const at = parseRecurrenceId(
-    entity.recurrenceId ?? '',
-    context.config.timezone
-  );
+  const zone = context.config.timezone;
+  const at = parseRecurrenceId(entity.recurrenceId ?? '', zone);
+  const wanted = at.instant.getTime();
 
   // An override for this instance is removed as well, or the exception would
   // leave a component behind that still claims the occurrence exists.
+  let removedOverride = false;
   for (const override of overrides) {
     const property = override.getFirstProperty('recurrence-id');
     if (property === null) continue;
-    const value = property.getFirstValue() as ICAL.Time;
-    if (Math.abs(value.toJSDate().getTime() - at.instant.getTime()) < 1000) {
+    const instant = instantOfProperty(property, zone).instant.getTime();
+    if (Math.abs(instant - wanted) < 1000) {
       root.removeSubcomponent(override);
+      removedOverride = true;
     }
   }
 
-  const existing = master
+  const alreadyExcluded = master
     .getAllProperties('exdate')
-    .flatMap((property) => property.getValues())
-    .map((value) => (value as ICAL.Time).toString());
+    .flatMap((property) => instantsOfProperty(property, zone))
+    .some((time) => Math.abs(time.instant.getTime() - wanted) < 1000);
 
-  const exdate = new ICAL.Property('exdate', master);
-  const value = at.allDay
-    ? ICAL.Time.fromData({
-        year: at.instant.getUTCFullYear(),
-        month: at.instant.getUTCMonth() + 1,
-        day: at.instant.getUTCDate(),
+  if (alreadyExcluded && !removedOverride) {
+    // Nothing to write: the exception is there and no override contradicts it.
+    return;
+  }
+
+  if (!alreadyExcluded) {
+    const exdate = new ICAL.Property('exdate', master);
+    let value: ICAL.Time;
+    if (at.allDay) {
+      const [year, month, day] = formatDateInZone(at.instant, zone).split('-');
+      value = ICAL.Time.fromData({
+        year: Number(year),
+        month: Number(month),
+        day: Number(day),
         isDate: true,
-      })
-    : ICAL.Time.fromJSDate(at.instant, true);
-  if (existing.includes(value.toString())) return;
-  exdate.setValue(value);
-  master.addProperty(exdate);
+      });
+    } else {
+      value = ICAL.Time.fromJSDate(at.instant, true);
+    }
+    exdate.setValue(value);
+    master.addProperty(exdate);
+  }
 
   await context.api.put(url, serialize(root), { ifMatch: resource.etag });
 }

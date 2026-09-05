@@ -1,7 +1,10 @@
 import ICAL from 'ical.js';
 
+import { quoted } from './analyze.js';
 import { ToolInputError } from './errors.js';
-import { cacheZone, wallClockToInstant } from './time.js';
+import { cacheZone, isKnownZone, wallClockToInstant } from './time.js';
+
+export { isKnownZone };
 
 /**
  * The one place ical.js is touched.
@@ -36,7 +39,16 @@ export const COMPONENT_OF: Record<Kind, 'VEVENT' | 'VTODO' | 'VJOURNAL'> = {
   vjournal: 'VJOURNAL',
 };
 
-/** Parses an iCalendar document, refusing anything that is not one. */
+/**
+ * Parses an iCalendar document, refusing anything that is not one.
+ *
+ * The parser's own message is quoted only in part. ical.js repeats the
+ * offending line verbatim, and that line is the one piece of the document
+ * most under the control of whoever wrote it: unbounded, unsanitised, and
+ * about to be delivered in this server's own voice outside any fence. A short,
+ * escaped excerpt is enough to find the line; the document itself is not
+ * something to paste into an error.
+ */
 export function parseCalendar(ics: string, what: string): ICAL.Component {
   let root: ICAL.Component;
   try {
@@ -44,7 +56,9 @@ export function parseCalendar(ics: string, what: string): ICAL.Component {
   } catch (error) {
     const reason = error instanceof Error ? error.message : String(error);
     throw new ToolInputError(
-      `caldav-mcp: ${what} is not a readable iCalendar document (${reason}).`
+      `caldav-mcp: ${what} is not a readable iCalendar document ` +
+        `(${quoted(reason.replace(/\s+/g, ' '), 120)}). This is the stored ` +
+        'entry, not the arguments of this call.'
     );
   }
   if (root.name !== 'vcalendar') {
@@ -103,23 +117,6 @@ export interface RawTime {
   utc: boolean;
 }
 
-const knownZones = new Map<string, boolean>();
-
-/** Whether the platform's zone database knows this id. */
-export function isKnownZone(tzid: string): boolean {
-  const cached = knownZones.get(tzid);
-  if (cached !== undefined) return cached;
-  let known: boolean;
-  try {
-    new Intl.DateTimeFormat('en-US', { timeZone: tzid });
-    known = true;
-  } catch {
-    known = false;
-  }
-  cacheZone(knownZones, tzid, known);
-  return known;
-}
-
 /**
  * Resolves a date-time property to an instant.
  *
@@ -127,6 +124,14 @@ export function isKnownZone(tzid: string): boolean {
  * nor a `TZID`. iCalendar says such a value means "whatever local time is where
  * this is read", which for a server is not a usable answer; the configured zone
  * is the closest thing to the user's intent.
+ *
+ * The `zone` carried forward is **only ever a zone the platform knows**. It is
+ * handed to `Intl` at every later step — rendering, spelling a RECURRENCE-ID,
+ * writing the value back — and `Intl` throws for a name it does not know. A
+ * `TZID` is written by whoever wrote the entry, so an unknown one used to be a
+ * `RangeError` out of the whole listing, planted by one invitation. The private
+ * name still decides the *instant* below, through the document's own VTIMEZONE;
+ * it just does not travel as a name.
  */
 export function resolveTime(
   property: ICAL.Property,
@@ -135,6 +140,7 @@ export function resolveTime(
   const value = property.getFirstValue() as ICAL.Time;
   const tzid = property.getParameter('tzid');
   const named = typeof tzid === 'string' ? tzid : undefined;
+  const known = named !== undefined && isKnownZone(named) ? named : undefined;
   const wall = {
     year: value.year,
     month: value.month,
@@ -146,8 +152,8 @@ export function resolveTime(
 
   if (value.isDate) {
     return {
-      instant: wallClockToInstant(named ?? fallbackZone, wall),
-      zone: named,
+      instant: wallClockToInstant(known ?? fallbackZone, wall),
+      zone: known,
       allDay: true,
       utc: false,
     };
@@ -163,10 +169,10 @@ export function resolveTime(
     };
   }
 
-  if (named !== undefined && isKnownZone(named)) {
+  if (known !== undefined) {
     return {
-      instant: wallClockToInstant(named, wall),
-      zone: named,
+      instant: wallClockToInstant(known, wall),
+      zone: known,
       allDay: false,
       utc: false,
     };
@@ -177,12 +183,13 @@ export function resolveTime(
     // Only the document's own VTIMEZONE can say what it means, so ical.js is
     // asked, and its answer is used even though the definition is untrusted:
     // an entry misreporting its own time is a thing it could do with DTSTART
-    // anyway, and it cannot reach any other entry.
+    // anyway, and it cannot reach any other entry. The name itself is dropped:
+    // it means nothing outside this document.
     const zoned = property.getFirstValue() as ICAL.Time;
     if (zoned.zone !== undefined && zoned.zone.tzid !== 'floating') {
       return {
         instant: zoned.toJSDate(),
-        zone: named,
+        zone: undefined,
         allDay: false,
         utc: false,
       };
@@ -191,7 +198,7 @@ export function resolveTime(
 
   return {
     instant: wallClockToInstant(fallbackZone, wall),
-    zone: named,
+    zone: undefined,
     allDay: false,
     utc: false,
   };
@@ -314,6 +321,19 @@ function formatPart(
   );
 }
 
+/**
+ * Folds every line break in a caller's text to LF, which ical.js escapes.
+ *
+ * ical.js escapes `\`, `;`, `,` and LF in a TEXT value and nothing else, so a
+ * bare CR would go into the resource as a raw CR — and a reader that splits
+ * content lines on it sees a property nobody wrote. The schema refuses every
+ * other control character outright; CR is folded rather than refused because
+ * a description pasted from a Windows client legitimately carries CRLF.
+ */
+export function foldNewlines(value: string): string {
+  return value.replace(/\r\n?/g, '\n');
+}
+
 /** Sets a text property, or removes it when the value is null. */
 export function writeText(
   component: ICAL.Component,
@@ -323,7 +343,7 @@ export function writeText(
   if (value === undefined) return;
   component.removeAllProperties(name);
   if (value === null) return;
-  component.updatePropertyWithValue(name, value);
+  component.updatePropertyWithValue(name, foldNewlines(value));
 }
 
 /** Builds an empty VCALENDAR carrying one component of the given kind. */

@@ -1,13 +1,12 @@
 import {
   ICAL,
-  isKnownZone,
   readTime,
   splitSeries,
   type Kind,
   type RawTime,
 } from './ical.js';
 import { ToolInputError } from './errors.js';
-import { cacheZone, wallClockToInstant } from './time.js';
+import { cacheZone, isKnownZone, wallClockToInstant } from './time.js';
 
 /**
  * Client-side recurrence expansion.
@@ -32,6 +31,22 @@ const MAX_ITERATIONS = 10_000;
 
 /** Bound on the whole expansion pass, across every series in the request. */
 const MAX_ELAPSED_MS = 5_000;
+
+/**
+ * Bound on the edited occurrences read out of one resource.
+ *
+ * The rule walk has always been bounded; the overrides were not, and they are
+ * the more expensive half — every RECURRENCE-ID costs three `Intl` calls to
+ * resolve. A resource under the read ceiling holds some fifteen thousand of
+ * them, and a multistatus holds many such resources, so an unbounded loop here
+ * was a way for one calendar to hold the whole listing. A real series edited
+ * by hand has tens of overrides, not thousands.
+ */
+const MAX_OVERRIDES = 2_000;
+
+const TOO_LONG_NOTE =
+  'Expanding the recurring entries took too long, so the result is ' +
+  'incomplete. Ask for a shorter range or fewer calendars.';
 
 /**
  * How far outside the requested window overrides are still collected.
@@ -92,14 +107,28 @@ export interface ExpandOptions {
  */
 export function spellRecurrenceId(time: RawTime, fallbackZone: string): string {
   const at = time.instant;
+  // A `RawTime` never carries a zone the platform does not know; the check is
+  // repeated here because this function hands the name to `Intl`.
+  const zone =
+    time.zone !== undefined && isKnownZone(time.zone) ? time.zone : undefined;
   if (time.allDay) {
     // The zone a date is rendered in has to be the one it was resolved in, or
     // midnight in Berlin prints as the previous day in UTC and the id addresses
-    // an occurrence that does not exist.
-    return `VALUE=DATE:${stampDate(at, time.zone ?? fallbackZone)}`;
+    // an occurrence that does not exist. And because it does, the zone has to
+    // travel *in the spelling*: rendering in one zone and reading back in
+    // another made this function and `parseRecurrenceId` stop being inverses
+    // for any all-day occurrence carrying a TZID. The write path then failed
+    // to find the override that was already there, cloned a second one off the
+    // master, and left two components claiming the same instance.
+    //
+    // A TZID on a DATE is not conforming — RFC 5545 does not allow it — but
+    // servers store it, and an id has to round-trip what is actually there.
+    return zone === undefined
+      ? `VALUE=DATE:${stampDate(at, fallbackZone)}`
+      : `VALUE=DATE;TZID=${zone}:${stampDate(at, zone)}`;
   }
-  if (time.zone === undefined) return `${stampUtc(at)}Z`;
-  return `TZID=${time.zone}:${stampLocal(at, time.zone)}`;
+  if (zone === undefined) return `${stampUtc(at)}Z`;
+  return `TZID=${zone}:${stampLocal(at, zone)}`;
 }
 
 /** Reads a spelling produced by {@link spellRecurrenceId} back into an instant. */
@@ -107,18 +136,26 @@ export function parseRecurrenceId(
   spelling: string,
   fallbackZone: string
 ): RawTime {
-  const date = /^VALUE=DATE:(\d{4})(\d{2})(\d{2})$/.exec(spelling);
+  const date = /^VALUE=DATE(?:;TZID=([^:]+))?:(\d{4})(\d{2})(\d{2})$/.exec(
+    spelling
+  );
   if (date !== null) {
+    // The zone travels with the date so that this is the exact inverse of
+    // `spellRecurrenceId`; an unknown name falls back rather than reaching
+    // `Intl`, the same rule every other zone here follows.
+    const named = date[1];
+    const zone =
+      named !== undefined && isKnownZone(named) ? named : fallbackZone;
     return {
-      instant: wallClockToInstant(fallbackZone, {
-        year: Number(date[1]),
-        month: Number(date[2]),
-        day: Number(date[3]),
+      instant: wallClockToInstant(zone, {
+        year: Number(date[2]),
+        month: Number(date[3]),
+        day: Number(date[4]),
         hour: 0,
         minute: 0,
         second: 0,
       }),
-      zone: undefined,
+      zone: named !== undefined && isKnownZone(named) ? named : undefined,
       allDay: true,
       utc: false,
     };
@@ -144,9 +181,10 @@ export function parseRecurrenceId(
   const zoned =
     /^TZID=([^:]+):(\d{4})(\d{2})(\d{2})T(\d{2})(\d{2})(\d{2})$/.exec(spelling);
   if (zoned !== null) {
-    const zone = zoned[1] as string;
+    const named = zoned[1] as string;
+    const zone = isKnownZone(named) ? named : undefined;
     return {
-      instant: wallClockToInstant(isKnownZone(zone) ? zone : fallbackZone, {
+      instant: wallClockToInstant(zone ?? fallbackZone, {
         year: Number(zoned[2]),
         month: Number(zoned[3]),
         day: Number(zoned[4]),
@@ -185,10 +223,29 @@ export function expandSeries(
   const notes: string[] = [];
   const deadline = options.deadline ?? Date.now() + MAX_ELAPSED_MS;
   const { master, overrides } = splitSeries([...components]);
+  let bounded = false;
+
+  // Bounded and deadlined like the rule walk below, because it is the same
+  // kind of loop over the same kind of input.
+  const considered = overrides.slice(0, MAX_OVERRIDES);
+  if (overrides.length > MAX_OVERRIDES) {
+    bounded = true;
+    notes.push(
+      `This entry carries more than ${MAX_OVERRIDES} edited occurrences, so ` +
+        'only the first of them were read.'
+    );
+  }
 
   const overrideByKey = new Map<number, ICAL.Component>();
   let thisAndFuture = false;
-  for (const override of overrides) {
+  let step = 0;
+  for (const override of considered) {
+    if (step % 256 === 0 && step > 0 && Date.now() > deadline) {
+      bounded = true;
+      notes.push(TOO_LONG_NOTE);
+      break;
+    }
+    step += 1;
     const property = override.getFirstProperty('recurrence-id');
     if (property === null) continue;
     if (property.getParameter('range') !== undefined) thisAndFuture = true;
@@ -212,7 +269,7 @@ export function expandSeries(
           'is reported on its own.'
       );
     }
-    const standalone = overrides
+    const standalone = considered
       .map((component) => toOccurrence(component, options.fallbackZone, true))
       .filter(
         (occurrence): occurrence is Occurrence => occurrence !== undefined
@@ -221,7 +278,7 @@ export function expandSeries(
     return {
       occurrences: standalone.slice(0, options.cap),
       recurring: overrides.length > 1,
-      bounded: false,
+      bounded,
       truncated: standalone.length > options.cap,
       notes,
     };
@@ -234,7 +291,7 @@ export function expandSeries(
     return {
       occurrences: single === undefined ? [] : [single],
       recurring: false,
-      bounded: false,
+      bounded,
       truncated: false,
       notes,
     };
@@ -251,7 +308,7 @@ export function expandSeries(
     return {
       occurrences: kept,
       recurring: false,
-      bounded: false,
+      bounded,
       truncated: false,
       notes,
     };
@@ -266,7 +323,6 @@ export function expandSeries(
 
   const emitted = new Set<number>();
   const occurrences: Occurrence[] = [];
-  let bounded = false;
   let truncated = false;
 
   const expansion = new ICAL.RecurExpansion({
@@ -286,10 +342,7 @@ export function expandSeries(
     }
     if (steps % 256 === 0 && Date.now() > deadline) {
       bounded = true;
-      notes.push(
-        'Expanding the recurring entries took too long, so the result is ' +
-          'incomplete. Ask for a shorter range or fewer calendars.'
-      );
+      notes.push(TOO_LONG_NOTE);
       break;
     }
 
@@ -326,7 +379,14 @@ export function expandSeries(
   // the walk stopped) and would otherwise be dropped, which is the failure that
   // makes a moved meeting silently disappear.
   if (!truncated) {
+    let visited = 0;
     for (const [key, component] of overrideByKey) {
+      if (visited % 256 === 0 && visited > 0 && Date.now() > deadline) {
+        bounded = true;
+        notes.push(TOO_LONG_NOTE);
+        break;
+      }
+      visited += 1;
       if (emitted.has(key)) continue;
       const occurrence = toOccurrence(component, options.fallbackZone, true);
       if (occurrence === undefined) continue;
@@ -420,7 +480,7 @@ function toOccurrence(
 }
 
 /** Resolves a property whose value is a single date or date-time. */
-function instantOfProperty(
+export function instantOfProperty(
   property: ICAL.Property,
   fallbackZone: string
 ): RawTime {
@@ -434,7 +494,7 @@ function instantOfProperty(
 }
 
 /** Resolves every value of a property that may carry several (EXDATE, RDATE). */
-function instantsOfProperty(
+export function instantsOfProperty(
   property: ICAL.Property,
   fallbackZone: string
 ): RawTime[] {
@@ -465,10 +525,12 @@ function instantOfTime(
     minute: value.minute,
     second: value.second,
   };
+  // As in `resolveTime`: a zone name travels only if the platform knows it.
+  const known = zone !== undefined && isKnownZone(zone) ? zone : undefined;
   if (value.isDate) {
     return {
-      instant: wallClockToInstant(zone ?? fallbackZone, wall),
-      zone,
+      instant: wallClockToInstant(known ?? fallbackZone, wall),
+      zone: known,
       allDay: true,
       utc: false,
     };
@@ -490,11 +552,9 @@ function instantOfTime(
       utc: true,
     };
   }
-  const effective =
-    zone !== undefined && isKnownZone(zone) ? zone : fallbackZone;
   return {
-    instant: wallClockToInstant(effective, wall),
-    zone,
+    instant: wallClockToInstant(known ?? fallbackZone, wall),
+    zone: known,
     allDay: false,
     utc: false,
   };

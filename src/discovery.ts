@@ -380,11 +380,24 @@ function firstHref(prop: unknown): string | undefined {
   return hrefsOf(prop)[0];
 }
 
+/**
+ * One entry per path.
+ *
+ * Where a server reports the same collection twice with different privilege
+ * sets, the *stricter* answer wins: `readOnly` is a guard on this side, and a
+ * guard decided by document order is a guard the server chooses. A write to a
+ * collection that is in fact writable is refused with a sentence; a write to
+ * one that is not would have been refused by the server anyway.
+ */
 function dedupe(entries: readonly CalendarEntry[]): CalendarEntry[] {
-  const seen = new Set<string>();
-  return entries.filter((entry) => {
-    if (seen.has(entry.path)) return false;
-    seen.add(entry.path);
-    return true;
-  });
+  const byPath = new Map<string, CalendarEntry>();
+  for (const entry of entries) {
+    const existing = byPath.get(entry.path);
+    if (existing === undefined) {
+      byPath.set(entry.path, entry);
+    } else if (entry.readOnly && !existing.readOnly) {
+      byPath.set(entry.path, { ...existing, readOnly: true });
+    }
+  }
+  return [...byPath.values()];
 }

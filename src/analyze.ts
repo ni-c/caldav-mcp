@@ -170,6 +170,34 @@ export function escapeInvisible(input: string): string {
 }
 
 /**
+ * A caller's or a server's value, made safe to quote inside an error message.
+ *
+ * Every tool error that repeats what it was given — an id, a calendar name, a
+ * timestamp, an href — reaches the model's context in this server's own voice,
+ * outside any fence. A directional override or an ANSI escape in there would
+ * be reflected verbatim, and an id can be a kilobyte long. So the value is
+ * escaped the way a dialog escapes it, and cut, before it is quoted.
+ */
+export function quoted(input: string, max = 200): string {
+  // Whitespace is collapsed here rather than at each call site.
+  // `escapeInvisible` deliberately leaves tab and newline alone — they are
+  // ordinary characters in a description, which is what it was written for.
+  // A *quoted* value is different: it sits inside a sentence the server says
+  // in its own voice, outside any fence, so a newline in it produces a real
+  // line break and room for a second paragraph that reads like the server
+  // talking. One call site collapsed whitespace by hand before calling this
+  // and the other five did not, which is the shape of a rule living in the
+  // wrong place.
+  //
+  // Collapse before escaping: the other order turns a carriage return into six
+  // visible characters the collapse can no longer see — inert, but noisy to
+  // read. Zero-width and directional characters are not `\s`, so they still
+  // meet the escaper.
+  const escaped = escapeInvisible(input.replace(/\s+/g, ' '));
+  return escaped.length > max ? `${escaped.slice(0, max)}…` : escaped;
+}
+
+/**
  * Breaks the markdown that makes a client fetch a URL without being asked.
  *
  * The EchoLeak channel (CVE-2025-32711): an image reference in text a model

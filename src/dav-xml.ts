@@ -482,6 +482,9 @@ export function freeBusyQueryBody(range: TimeRange): string {
 `;
 }
 
+/** Largest body {@link parseDavError} will look at. */
+export const MAX_ERROR_DOCUMENT_CHARS = 64 * 1024;
+
 /**
  * Reads a DAV error document, which is more useful than a generic error body.
  *
@@ -494,7 +497,19 @@ export function freeBusyQueryBody(range: TimeRange): string {
 export function parseDavError(
   xml: string
 ): { precondition?: string; message?: string } | undefined {
+  // A real DAV error document is a few hundred bytes. Anything larger is not
+  // one, and it is the body a hostile server controls most completely — so
+  // the size is checked before a byte of it is parsed, and the DOCTYPE lock
+  // holds here exactly as it does on a multistatus. Not throwing: the caller
+  // is already building an error, and "no precondition found" is the right
+  // answer to a document that is not a precondition.
+  if (xml.length > MAX_ERROR_DOCUMENT_CHARS) return undefined;
   if (!/<[a-z0-9]*:?error[\s>]/i.test(xml)) return undefined;
+  try {
+    assertNoDoctype(xml, 'the error document');
+  } catch {
+    return undefined;
+  }
   let doc: Record<string, unknown>;
   try {
     doc = parser.parse(xml) as Record<string, unknown>;

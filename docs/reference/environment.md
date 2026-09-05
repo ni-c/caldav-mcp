@@ -12,6 +12,7 @@
 | `CALDAV_ALLOW_TOOLS` | no | — | Tool names, `list_*` prefixes or `essential`; only these register |
 | `CALDAV_DENY_TOOLS` | no | — | Same syntax; subtracted from whatever the allow list left |
 | `CALDAV_INSECURE_TLS` | no | `false` | `true` accepts self-signed certificates |
+| `CALDAV_ALLOW_PLAINTEXT` | no | `false` | `true` allows plain `http://` to a non-loopback host; otherwise such a URL refuses to start |
 | `ELICITATION` | no | `true` | `false` replaces the approval dialog with the two-call token. **Not prefixed** |
 
 ## `ELICITATION`

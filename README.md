@@ -79,26 +79,27 @@ Tested against Radicale and Baikal (sabre/dav) in CI on every pull request.
 
 ## Configuration
 
-| Variable              | Required | Description                                                                                                                                                        |
-| --------------------- | -------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| `CALDAV_URL`          | yes      | Root of the CalDAV server, e.g. `https://dav.example.net`. A calendar collection URL works too and limits the server to that one calendar.                         |
-| `CALDAV_USERNAME`     | yes¹     | Account name.                                                                                                                                                      |
-| `CALDAV_PASSWORD`     | yes¹     | Password or app-specific password. Deleted from the environment once read.                                                                                         |
-| `CALDAV_TOKEN`        | yes¹     | Bearer token instead of username and password. Not both.                                                                                                           |
-| `CALDAV_CALENDARS`    | no       | Comma-separated calendars this server may touch, by path or final path segment. Default: every calendar the account can see.                                       |
-| `CALDAV_TIMEZONE`     | no       | IANA zone for timestamps that carry no offset, e.g. `Europe/Berlin`. Default `UTC`.                                                                                |
-| `CALDAV_USER_EMAIL`   | no       | The address you are invited as, so `respond_to_event` can find your own attendee line.                                                                             |
-| `CALDAV_MAX_EVENTS`   | no       | Entries a listing returns by default, 1–500. Default `100`.                                                                                                        |
-| `CALDAV_READ_ONLY`    | no       | `true` registers only the read tools. Default `false`.                                                                                                             |
-| `CALDAV_INSECURE_TLS` | no       | `true` accepts a self-signed certificate **on the configured host only**. Default `false`.                                                                         |
-| `CALDAV_ALLOW_TOOLS`  | no       | Tool names, a prefix with one trailing `*`, or `essential`.                                                                                                        |
-| `CALDAV_DENY_TOOLS`   | no       | Subtracted from whatever the allow list left.                                                                                                                      |
-| `ELICITATION`         | no       | **Not prefixed** — one export reaches every MCP server in the environment. `false` makes guarded tools use the two-call token instead of a dialog. Default `true`. |
+| Variable                 | Required | Description                                                                                                                                                                           |
+| ------------------------ | -------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `CALDAV_URL`             | yes      | Root of the CalDAV server, e.g. `https://dav.example.net`. A calendar collection URL works too and limits the server to that one calendar.                                            |
+| `CALDAV_USERNAME`        | yes¹     | Account name.                                                                                                                                                                         |
+| `CALDAV_PASSWORD`        | yes¹     | Password or app-specific password. Deleted from the environment once read.                                                                                                            |
+| `CALDAV_TOKEN`           | yes¹     | Bearer token instead of username and password. Not both.                                                                                                                              |
+| `CALDAV_CALENDARS`       | no       | Comma-separated calendars this server may touch, by path or final path segment. Default: every calendar the account can see.                                                          |
+| `CALDAV_TIMEZONE`        | no       | IANA zone for timestamps that carry no offset, e.g. `Europe/Berlin`. Default `UTC`.                                                                                                   |
+| `CALDAV_USER_EMAIL`      | no       | The address you are invited as, so `respond_to_event` can find your own attendee line.                                                                                                |
+| `CALDAV_MAX_EVENTS`      | no       | Entries a listing returns by default, 1–500. Default `100`.                                                                                                                           |
+| `CALDAV_READ_ONLY`       | no       | `true` registers only the read tools. Default `false`.                                                                                                                                |
+| `CALDAV_INSECURE_TLS`    | no       | `true` accepts a self-signed certificate **on the configured host only**. Default `false`.                                                                                            |
+| `CALDAV_ALLOW_PLAINTEXT` | no       | `true` allows a plain `http://` URL to a host that is not loopback, which sends the credentials unencrypted on every request. Otherwise such a URL refuses to start. Default `false`. |
+| `CALDAV_ALLOW_TOOLS`     | no       | Tool names, a prefix with one trailing `*`, or `essential`.                                                                                                                           |
+| `CALDAV_DENY_TOOLS`      | no       | Subtracted from whatever the allow list left.                                                                                                                                         |
+| `ELICITATION`            | no       | **Not prefixed** — one export reaches every MCP server in the environment. `false` makes guarded tools use the two-call token instead of a dialog. Default `true`.                    |
 
 ¹ Either `CALDAV_USERNAME` + `CALDAV_PASSWORD`, or `CALDAV_TOKEN`.
 
 Booleans are compared against the literal string `true` where the switch _lifts_
-a protection (`CALDAV_INSECURE_TLS`), and read tolerantly — `1`, `yes`, `TRUE` —
+a protection (`CALDAV_INSECURE_TLS`, `CALDAV_ALLOW_PLAINTEXT`), and read tolerantly — `1`, `yes`, `TRUE` —
 where it turns one on (`CALDAV_READ_ONLY`). A typo should never quietly remove a
 guard.
 

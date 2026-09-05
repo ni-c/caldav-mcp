@@ -96,7 +96,9 @@ export function missingConfigMessage(missing: string[]): string {
     'respond_to_event can find your own attendee line, CALDAV_MAX_EVENTS, ' +
     'CALDAV_READ_ONLY=true to expose only the read tools, ' +
     'CALDAV_ALLOW_TOOLS / CALDAV_DENY_TOOLS to narrow the tool list, ' +
-    'CALDAV_INSECURE_TLS=true to accept self-signed certificates'
+    'CALDAV_INSECURE_TLS=true to accept self-signed certificates, ' +
+    'CALDAV_ALLOW_PLAINTEXT=true to allow a plain http:// URL to a host that ' +
+    'is not loopback'
   );
 }
 
@@ -314,17 +316,69 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
     );
     process.exit(1);
   }
+  // Plain http to anything but loopback puts the password on the wire in
+  // clear on every request. That used to be a warning on stderr, which in a
+  // stdio deployment is a line nobody reads. It is now a refusal, lifted by a
+  // switch that is read strictly like every other switch that removes a
+  // protection — the same shape as CALDAV_INSECURE_TLS, for the same reason.
   if (parsed.protocol === 'http:' && !isLoopbackHost(parsed.hostname)) {
+    if (env.CALDAV_ALLOW_PLAINTEXT !== 'true') {
+      console.error(
+        'caldav-mcp: CALDAV_URL uses plain http to a non-local host, so the ' +
+          'credentials would be sent unencrypted on every request. Use ' +
+          'https://, or set CALDAV_ALLOW_PLAINTEXT=true if this network is ' +
+          'trusted end to end. Refusing to start.'
+      );
+      process.exit(1);
+    }
     console.error(
       'caldav-mcp: WARNING: CALDAV_URL uses plain http to a non-local host — ' +
-        'the credentials will be sent unencrypted. Use https:// instead.'
+        'the credentials are sent unencrypted (CALDAV_ALLOW_PLAINTEXT=true).'
     );
   }
+
+  // A query or a fragment on the root URL has no meaning to discovery and a
+  // real cost: relative hrefs are resolved against the URL, and `?x=1/`
+  // spliced onto the end of it turns `/dav?x=1/work/` into `/work/` — every
+  // request then lands on the wrong path of the right host.
+  if (parsed.search !== '' || parsed.hash !== '') {
+    console.error(
+      'caldav-mcp: CALDAV_URL must not carry a query string or a fragment. ' +
+        'Give the root of the CalDAV server, e.g. https://dav.example.net or ' +
+        'https://host/dav.php.'
+    );
+    process.exit(1);
+  }
+
+  warnAboutUnencodedPaths(calendars);
 
   // Keep the path, drop only trailing slashes: a CALDAV_URL of
   // https://host/dav.php is a real and common shape (Baikal), and stripping the
   // path would send discovery to a root that answers 404.
   return { url: url.replace(/\/+$/, ''), ...base };
+}
+
+/**
+ * An allowlist entry written as an absolute path is compared against the
+ * collection's *pathname*, which is percent-encoded. `/cal/a b/` therefore
+ * matches nothing, and the only symptom is the "matches no calendar" warning
+ * at discovery, which points at a typo that is not there. Said once, here,
+ * where the entry is read.
+ */
+function warnAboutUnencodedPaths(entries: readonly string[]): void {
+  const suspect = entries.filter(
+    (entry) => entry.startsWith('/') && /[\s"<>`{|}]|[^\x20-\x7e]/.test(entry)
+  );
+  if (suspect.length === 0) return;
+  console.error(
+    `caldav-mcp: CALDAV_CALENDARS entr${suspect.length === 1 ? 'y' : 'ies'} ` +
+      `${suspect.map((entry) => `"${entry}"`).join(', ')} contain${
+        suspect.length === 1 ? 's' : ''
+      } characters that appear percent-encoded in a calendar path, so ` +
+      'the entry will match nothing as written. Write the path the way ' +
+      'list_calendars prints it (e.g. %20 for a space), or use the final ' +
+      'path segment instead.'
+  );
 }
 
 /**

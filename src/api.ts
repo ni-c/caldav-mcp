@@ -4,6 +4,7 @@ import {
   type RequestInit as UndiciRequestInit,
 } from 'undici';
 
+import { quoted } from './analyze.js';
 import {
   missingConfigKeys,
   missingConfigMessage,
@@ -56,7 +57,9 @@ export class CalDavApiError extends Error {
     /** The DAV precondition element name, where the server named one. */
     public readonly precondition?: string
   ) {
-    super(`CalDAV ${method} ${redactPath(url)} failed with HTTP ${status}`);
+    super(
+      `CalDAV ${method} ${quoted(redactPath(url))} failed with HTTP ${status}`
+    );
     this.name = 'CalDavApiError';
   }
 }
@@ -150,14 +153,34 @@ export class CalDavApi {
       resolved = new URL(href, relativeTo);
     } catch {
       throw new Error(
-        `the CalDAV server returned a link this server cannot read: ${redactPath(href)}`
+        `the CalDAV server returned a link this server cannot read: ${quoted(redactPath(href))}`
       );
     }
+    // The origin alone is not the whole check. `URL.origin` leaves out the
+    // userinfo, so `https://x:y@host/` on the right host passed here and its
+    // credential-shaped string went on to `list_calendars` and into every
+    // request URL. And `blob:https://host/…` reports the host's origin while
+    // being nothing this server can fetch or address. Only a plain http(s)
+    // URL with nothing in front of the host is a link this server follows.
     if (resolved.origin !== this.origin) {
       throw new Error(
-        `the CalDAV server pointed at ${resolved.origin}, which is not the ` +
-          `configured server (${this.origin}). caldav-mcp does not follow a ` +
-          'link to another host, because that would send your credentials there.'
+        `the CalDAV server pointed at ${quoted(resolved.origin)}, which is not ` +
+          `the configured server (${this.origin}). caldav-mcp does not follow ` +
+          'a link to another host, because that would send your credentials ' +
+          'there.'
+      );
+    }
+    if (resolved.protocol !== 'http:' && resolved.protocol !== 'https:') {
+      throw new Error(
+        `the CalDAV server returned a ${quoted(resolved.protocol)} link, ` +
+          'which this server does not follow.'
+      );
+    }
+    if (resolved.username !== '' || resolved.password !== '') {
+      throw new Error(
+        'the CalDAV server returned a link carrying credentials, which this ' +
+          'server does not follow. Every request authenticates with the ' +
+          'configured credentials and nothing else.'
       );
     }
     return resolved.toString();
@@ -177,6 +200,18 @@ export class CalDavApi {
     // started and introspected without them.
     const missing = missingConfigKeys(this.config);
     if (missing.length > 0) throw new Error(missingConfigMessage(missing));
+
+    // The invariant "credentials go to the configured origin and nowhere
+    // else" is asserted at the sink, not left to the callers. Every caller
+    // today passes a `resolveHref` or `resourceUrl` result, which already
+    // satisfies it — but a property that lives in eight call sites is a
+    // review conclusion, and a property that lives here is enforced.
+    if (!this.isConfiguredOrigin(url)) {
+      throw new Error(
+        `caldav-mcp refused to send a request to ${quoted(redactPath(url))}: ` +
+          `only the configured server (${this.origin}) receives its credentials.`
+      );
+    }
 
     const headers: Record<string, string> = {
       'User-Agent': 'caldav-mcp',
@@ -388,9 +423,25 @@ export class CalDavApi {
     return undefined;
   }
 
+  /**
+   * The last gate before the credentials go on the wire.
+   *
+   * Deliberately the *same* three conditions as {@link resolveHref} rather
+   * than the origin alone. A sink that is weaker than the check upstream of it
+   * is not a sink: `URL.origin` omits the userinfo, so
+   * `https://x:y@dav.example.net/` satisfied "same origin" and would have been
+   * sent — the exact gap `resolveHref` was tightened to close, left open one
+   * layer further down where it matters most.
+   */
   private isConfiguredOrigin(url: string): boolean {
     try {
-      return new URL(url).origin === this.origin;
+      const target = new URL(url);
+      return (
+        target.origin === this.origin &&
+        (target.protocol === 'http:' || target.protocol === 'https:') &&
+        target.username === '' &&
+        target.password === ''
+      );
     } catch {
       return false;
     }
@@ -484,7 +535,7 @@ async function readBoundedBody(
 ): Promise<Buffer> {
   const tooLarge = (): Error =>
     new Error(
-      `the CalDAV server's answer for ${redactPath(url)} was larger than ` +
+      `the CalDAV server's answer for ${quoted(redactPath(url))} was larger than ` +
         `${maxBytes} bytes and was refused. Narrow the request — a shorter time ` +
         'range, or fewer calendars.'
     );

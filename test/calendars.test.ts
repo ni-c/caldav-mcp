@@ -227,4 +227,36 @@ describe('building a resource URL', () => {
     expect(() => resourceUrl(work, '')).toThrow(ToolInputError);
     expect(() => resourceUrl(work, '%2E%2E/work/')).toThrow(ToolInputError);
   });
+
+  it('refuses a name the URL layer would not carry faithfully', () => {
+    // None of these leave the collection, and the parent check let every one
+    // of them through. They change what the request addresses without the id
+    // saying so: `a?x=1` reaches `a` with a query string, `a#frag` reaches `a`,
+    // and the parser drops a tab or a line break silently. An id is supposed
+    // to be one-to-one with the resource it names, so the resolved path has
+    // to be the collection plus the name exactly as given.
+    for (const name of [
+      'a?x=1',
+      'a#frag',
+      'a\tb.ics',
+      'a\r\nb.ics',
+      'a b.ics',
+      '\u{e4}.ics',
+      'a\u{202e}b.ics',
+    ]) {
+      expect(() => resourceUrl(work, name), JSON.stringify(name)).toThrow(
+        ToolInputError
+      );
+    }
+  });
+
+  it('still accepts a name in its canonical encoded form', () => {
+    // Which is the only form `resourceNameOf` ever hands out, and which the
+    // parser leaves exactly alone.
+    for (const name of ['x%2Fy.ics', 'a%20b.ics', '%C3%A4.ics', 'a..b']) {
+      expect(resourceUrl(work, name), name).toBe(
+        `https://dav.example.net/tester/work/${name}`
+      );
+    }
+  });
 });

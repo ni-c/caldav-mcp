@@ -503,6 +503,234 @@ describe('writing', () => {
     expect(fake.names('work')).toContain('series.ics');
   });
 
+  it('refuses this_occurrence on a series id rather than deleting the series', async () => {
+    // The two arguments contradict each other. The old answer was a dialog
+    // reading "delete one occurrence, leaving the rest of the series" followed
+    // by a DELETE of the whole resource.
+    const listing = await data('list_events', WINDOW);
+    const weekly = (
+      listing.events as { id: string; series_id?: string; summary?: string }[]
+    ).find((entry) => entry.summary === 'Weekly');
+    const before = session.prompts.length;
+    const result = await call('delete_event', {
+      id: weekly?.series_id,
+      scope: 'this_occurrence',
+    });
+    expect((result as { isError?: boolean }).isError).toBe(true);
+    expect(textOf(result)).toMatch(/names the whole series/);
+    expect(fake.names('work')).toContain('series.ics');
+    // Refused before anyone was asked, not after.
+    expect(session.prompts.length).toBe(before);
+
+    const update = await call('update_event', {
+      id: weekly?.series_id,
+      scope: 'this_occurrence',
+      summary: 'Renamed',
+    });
+    expect((update as { isError?: boolean }).isError).toBe(true);
+    expect(fake.stored('work', 'series.ics')).toContain('SUMMARY:Weekly');
+  });
+
+  it('asks before a change reaches every occurrence, whichever id was passed', async () => {
+    // A listing hands out the series id next to every occurrence id, and a
+    // change through it touches every occurrence just the same. Whether the
+    // entry recurs is read from the stored resource, not from the id.
+    const listing = await data('list_events', WINDOW);
+    const events = listing.events as {
+      id: string;
+      series_id?: string;
+      summary?: string;
+    }[];
+    const weekly = events.find((entry) => entry.summary === 'Weekly');
+    const standup = events.find((entry) => entry.summary === 'Standup');
+
+    let before = session.prompts.length;
+    await data('update_event', { id: weekly?.series_id, summary: 'Renamed' });
+    expect(session.prompts.length).toBe(before + 1);
+    expect(session.prompts.at(-1)).toMatch(/every occurrence/);
+
+    before = session.prompts.length;
+    await data('update_event', {
+      id: weekly?.id,
+      scope: 'entire_series',
+      location: 'Room 2',
+    });
+    expect(session.prompts.length).toBe(before + 1);
+
+    // A single event has no series to reach, so it does not ask.
+    before = session.prompts.length;
+    await data('update_event', { id: standup?.series_id, summary: 'Renamed' });
+    expect(session.prompts.length).toBe(before);
+  });
+
+  it('excludes an all-day occurrence on the day the id names', async () => {
+    // Midnight in Berlin is 22:00 UTC the day before. Reading UTC fields off
+    // that instant put the exception on the previous day: the requested
+    // occurrence survived and its neighbour disappeared, reported as success.
+    fake.seed(
+      'work',
+      'allday.ics',
+      [
+        'BEGIN:VCALENDAR',
+        'VERSION:2.0',
+        'PRODID:-//t//EN',
+        'BEGIN:VEVENT',
+        'UID:allday@example.net',
+        'DTSTAMP:20260901T120000Z',
+        'DTSTART;VALUE=DATE:20260907',
+        'DTEND;VALUE=DATE:20260908',
+        'RRULE:FREQ=DAILY;COUNT=3',
+        'SUMMARY:Retreat',
+        'END:VEVENT',
+        'END:VCALENDAR',
+        '',
+      ].join('\r\n')
+    );
+    const days = async (): Promise<string[]> => {
+      const listing = await data('list_events', WINDOW);
+      return (
+        listing.events as { summary?: string; start: { value: string } }[]
+      )
+        .filter((entry) => entry.summary === 'Retreat')
+        .map((entry) => entry.start.value);
+    };
+    expect(await days()).toEqual(['2026-09-07', '2026-09-08', '2026-09-09']);
+
+    const listing = await data('list_events', WINDOW);
+    const middle = (
+      listing.events as {
+        id: string;
+        summary?: string;
+        start: { value: string };
+      }[]
+    ).find(
+      (entry) =>
+        entry.summary === 'Retreat' && entry.start.value === '2026-09-08'
+    );
+    await data('delete_event', { id: middle?.id });
+
+    expect(fake.stored('work', 'allday.ics')).toMatch(
+      /^EXDATE;VALUE=DATE:20260908\r?$/m
+    );
+    expect(await days()).toEqual(['2026-09-07', '2026-09-09']);
+  });
+
+  it('deletes the same occurrence twice without a second exception', async () => {
+    const listing = await data('list_events', WINDOW);
+    const weekly = (
+      listing.events as { id: string; summary?: string }[]
+    ).filter((entry) => entry.summary === 'Weekly');
+    await data('delete_event', { id: weekly[1]?.id });
+    await data('delete_event', { id: weekly[1]?.id });
+    const stored = fake.stored('work', 'series.ics') ?? '';
+    expect(stored.match(/^EXDATE/gm)).toHaveLength(1);
+    const after = await data('list_events', WINDOW);
+    expect(
+      (after.events as { summary?: string }[]).filter(
+        (entry) => entry.summary === 'Weekly'
+      )
+    ).toHaveLength(2);
+  });
+
+  it('removes the override of a deleted occurrence, whatever zone wrote it', async () => {
+    // A TZID-only RECURRENCE-ID with no VTIMEZONE is floating to ical.js, and
+    // `toJSDate()` on it applies the host's zone. On a container in UTC the
+    // override was never matched, left behind, and re-emitted by the next
+    // listing as the occurrence that had just been "deleted".
+    fake.seed(
+      'work',
+      'moved.ics',
+      [
+        'BEGIN:VCALENDAR',
+        'VERSION:2.0',
+        'PRODID:-//t//EN',
+        'BEGIN:VEVENT',
+        'UID:moved@example.net',
+        'DTSTAMP:20260901T120000Z',
+        'DTSTART;TZID=Europe/Berlin:20260907T090000',
+        'DTEND;TZID=Europe/Berlin:20260907T100000',
+        'RRULE:FREQ=WEEKLY;COUNT=3',
+        'SUMMARY:Sync',
+        'END:VEVENT',
+        'BEGIN:VEVENT',
+        'UID:moved@example.net',
+        'DTSTAMP:20260901T120000Z',
+        'RECURRENCE-ID;TZID=Europe/Berlin:20260914T090000',
+        'DTSTART;TZID=Europe/Berlin:20260915T090000',
+        'DTEND;TZID=Europe/Berlin:20260915T100000',
+        'SUMMARY:Sync (moved)',
+        'END:VEVENT',
+        'END:VCALENDAR',
+        '',
+      ].join('\r\n')
+    );
+    const listing = await data('list_events', WINDOW);
+    const moved = (listing.events as { id: string; summary?: string }[]).find(
+      (entry) => entry.summary === 'Sync (moved)'
+    );
+    expect(moved).toBeDefined();
+    await data('delete_event', { id: moved?.id });
+
+    const stored = fake.stored('work', 'moved.ics') ?? '';
+    expect(stored).not.toContain('RECURRENCE-ID');
+    expect(stored).toMatch(/^EXDATE/m);
+    const after = await data('list_events', WINDOW);
+    const summaries = (after.events as { summary?: string }[])
+      .map((entry) => entry.summary)
+      .filter((summary) => summary?.startsWith('Sync'));
+    expect(summaries).toEqual(['Sync', 'Sync']);
+  });
+
+  it('refuses to move into a calendar that cannot take the event', async () => {
+    await session.close();
+    fake = new FakeCalDav({
+      calendars: [
+        { name: 'work' },
+        { name: 'locked', readOnly: true },
+        { name: 'todo', components: ['VTODO'] },
+      ],
+    });
+    fake.install();
+    fake.seed('work', 'simple.ics', SIMPLE);
+    session = await connect({}, 'accept');
+    const listing = await data('list_events', WINDOW);
+    const standup = (listing.events as { id: string }[])[0];
+
+    const locked = await call('move_event', {
+      id: standup?.id,
+      destination_calendar_id: '/tester/locked/',
+    });
+    expect((locked as { isError?: boolean }).isError).toBe(true);
+    expect(textOf(locked)).toMatch(/not write to it/);
+
+    const todo = await call('move_event', {
+      id: standup?.id,
+      destination_calendar_id: '/tester/todo/',
+    });
+    expect((todo as { isError?: boolean }).isError).toBe(true);
+    expect(textOf(todo)).toMatch(/does not accept VEVENT/);
+    expect(fake.names('work')).toContain('simple.ics');
+  });
+
+  it('refuses a timezone it does not know at the schema', async () => {
+    let refused = false;
+    try {
+      const result = (await call('create_event', {
+        calendar_id: WORK,
+        summary: 'x',
+        start: '2026-09-20T10:00:00',
+        timezone: 'Mars/Olympus',
+      })) as { isError?: boolean };
+      refused = result.isError === true;
+    } catch {
+      refused = true;
+    }
+    expect(refused).toBe(true);
+    expect(fake.requests.filter((request) => request.method === 'PUT')).toEqual(
+      []
+    );
+  });
+
   it('answers an invitation on our own attendee line only', async () => {
     const listing = await data('list_events', WINDOW);
     const weekly = (listing.events as { id: string; summary?: string }[]).find(
@@ -619,6 +847,103 @@ describe('asking a person', () => {
     );
   });
 
+  it('counts a resource made only of detached occurrences', async () => {
+    // The other shape that holds more than one occurrence: no master at all,
+    // just components each carrying a RECURRENCE-ID — what a client writes
+    // after a "this and following" split. Reading the rule off the master
+    // reported "an event" and then deleted a file holding several of them,
+    // which is the same contradiction as a series id with
+    // `scope: this_occurrence`, one shape further out.
+    fake.seed(
+      'work',
+      'detached.ics',
+      [
+        'BEGIN:VCALENDAR',
+        'VERSION:2.0',
+        'PRODID:-//test//EN',
+        ...['20260908T090000', '20260915T090000', '20260922T090000'].flatMap(
+          (stamp) => [
+            'BEGIN:VEVENT',
+            'UID:detached@example.net',
+            'DTSTAMP:20260901T120000Z',
+            `RECURRENCE-ID;TZID=Europe/Berlin:${stamp}`,
+            `DTSTART;TZID=Europe/Berlin:${stamp}`,
+            `DTEND;TZID=Europe/Berlin:${stamp.replace('T09', 'T10')}`,
+            'SUMMARY:Detached',
+            'END:VEVENT',
+          ]
+        ),
+        'END:VCALENDAR',
+        '',
+      ].join('\r\n')
+    );
+    const listing = await data('list_events', WINDOW);
+    const detached = (
+      listing.events as { id: string; series_id: string; summary?: string }[]
+    ).find((entry) => entry.summary === 'Detached');
+
+    await data('delete_event', {
+      id: detached?.series_id,
+      scope: 'entire_series',
+    });
+    expect(session.prompts.at(-1)).toMatch(
+      /delete a recurring event and all 3 of its occurrences/
+    );
+  });
+
+  it('edits the override that is already there, whatever spelling wrote it', async () => {
+    // The lookup used to re-serialise the stored RECURRENCE-ID and compare
+    // strings. Two spellings of one occurrence agree only while both sides
+    // build them identically — and they stop agreeing on a non-conforming
+    // `VALUE=DATE` carrying a TZID, where the listing side resolves the zone
+    // and the writing side dropped it. The lookup then found nothing, cloned a
+    // *second* override off the master, and left the resource with two
+    // components claiming the same instance.
+    fake.seed(
+      'work',
+      'allday.ics',
+      [
+        'BEGIN:VCALENDAR',
+        'VERSION:2.0',
+        'PRODID:-//test//EN',
+        'BEGIN:VEVENT',
+        'UID:allday@example.net',
+        'DTSTAMP:20260901T120000Z',
+        'DTSTART;VALUE=DATE:20260907',
+        'DTEND;VALUE=DATE:20260908',
+        'RRULE:FREQ=WEEKLY;COUNT=3',
+        'SUMMARY:All day series',
+        'END:VEVENT',
+        'BEGIN:VEVENT',
+        'UID:allday@example.net',
+        'DTSTAMP:20260901T120000Z',
+        'RECURRENCE-ID;VALUE=DATE;TZID=America/Los_Angeles:20260921',
+        'DTSTART;VALUE=DATE:20260921',
+        'DTEND;VALUE=DATE:20260922',
+        'SUMMARY:Already detached',
+        'END:VEVENT',
+        'END:VCALENDAR',
+        '',
+      ].join('\r\n')
+    );
+    const listing = await data('list_events', WINDOW);
+    const occurrence = (
+      listing.events as { id: string; summary?: string }[]
+    ).find((entry) => entry.summary === 'Already detached');
+    expect(occurrence).toBeDefined();
+
+    await data('update_event', {
+      id: occurrence?.id,
+      summary: 'Edited in place',
+    });
+
+    const stored = fake.stored('work', 'allday.ics') ?? '';
+    // Two components, not three: the master and the one override.
+    expect(stored.match(/BEGIN:VEVENT/g)).toHaveLength(2);
+    expect(stored).toContain('SUMMARY:Edited in place');
+    expect(stored).not.toContain('SUMMARY:Already detached');
+  });
+
   it('does not offer a token to a client that can be asked', async () => {
     // The control test: if the wiring is undone, the dialog silently becomes a
     // token and every other approval test still passes.
@@ -657,6 +982,93 @@ describe('asking a person', () => {
       confirm_token: token,
     });
     expect(done.deleted).toBe(true);
+  });
+
+  it('binds a series approval to the change that was asked for', async () => {
+    // An approval is a person saying yes to *this* edit of *this* series.
+    // Keyed on the target alone, one yes covered any other edit of the same
+    // series for as long as the approval lived.
+    await session.close();
+    session = await connect({ userEmail: 'me@example.net' });
+    const listing = await data('list_events', WINDOW);
+    const weekly = (listing.events as { id: string; summary?: string }[]).find(
+      (entry) => entry.summary === 'Weekly'
+    );
+
+    const prompt = await call('update_event', {
+      id: weekly?.id,
+      scope: 'entire_series',
+      summary: 'Approved title',
+    });
+    expect((prompt as { isError?: boolean }).isError).toBe(true);
+    const token = /confirm_token="?([\w-]+)"?/.exec(textOf(prompt))?.[1];
+    expect(token).toBeDefined();
+
+    // Same series, same scope, a different change: the token does not fit.
+    const other = await call('update_event', {
+      id: weekly?.id,
+      scope: 'entire_series',
+      summary: 'Something else',
+      confirm_token: token,
+    });
+    expect((other as { isError?: boolean }).isError).toBe(true);
+    expect(fake.stored('work', 'series.ics')).toContain('SUMMARY:Weekly');
+
+    // The change that was approved still goes through.
+    const done = await data('update_event', {
+      id: weekly?.id,
+      scope: 'entire_series',
+      summary: 'Approved title',
+      confirm_token: token,
+    });
+    expect(done.written).toBe(true);
+    expect(fake.stored('work', 'series.ics')).toContain(
+      'SUMMARY:Approved title'
+    );
+  });
+
+  it('does not let a token widen the change by clearing more fields', async () => {
+    // The sharper half of the rule above, and the one that got through: a
+    // field left out means "keep it", a field passed as null means "clear it",
+    // and the digest used to map both onto null. So a yes to "change the
+    // summary" also authorised "change the summary AND wipe the description,
+    // the location and every category" — of every occurrence, against a server
+    // that keeps no history and with no second dialog.
+    await session.close();
+    session = await connect({ userEmail: 'me@example.net' });
+    fake.seed(
+      'work',
+      'series.ics',
+      SERIES.replace(
+        'SUMMARY:Weekly',
+        'SUMMARY:Weekly\r\nDESCRIPTION:Worth keeping\r\nLOCATION:Room 1'
+      )
+    );
+    const listing = await data('list_events', WINDOW);
+    const weekly = (listing.events as { id: string; summary?: string }[]).find(
+      (entry) => entry.summary === 'Weekly'
+    );
+
+    const prompt = await call('update_event', {
+      id: weekly?.id,
+      scope: 'entire_series',
+      summary: 'Approved title',
+    });
+    const token = /confirm_token="?([\w-]+)"?/.exec(textOf(prompt))?.[1];
+    expect(token).toBeDefined();
+
+    const widened = await call('update_event', {
+      id: weekly?.id,
+      scope: 'entire_series',
+      summary: 'Approved title',
+      description: null,
+      location: null,
+      confirm_token: token,
+    });
+    expect((widened as { isError?: boolean }).isError).toBe(true);
+    const stored = fake.stored('work', 'series.ics') ?? '';
+    expect(stored).toContain('DESCRIPTION:Worth keeping');
+    expect(stored).toContain('LOCATION:Room 1');
   });
 
   it('refuses a token issued for a different target', async () => {

@@ -11,7 +11,7 @@ import { resourceUrl } from '../calendars.js';
 import { listEntries, type ToolContext } from '../entries.js';
 import { buildSeriesId, parseEntityId } from '../entity-id.js';
 import { ToolInputError } from '../errors.js';
-import { ICAL, readText, writeTime } from '../ical.js';
+import { ICAL, writeTime } from '../ical.js';
 import {
   notes,
   shapedTask,
@@ -35,6 +35,7 @@ import {
   entityIdParam,
   instantParam,
   limitParam,
+  summaryParam,
   textParam,
   timezoneParam,
 } from '../schema.js';
@@ -182,7 +183,7 @@ export function registerTaskWriteTools(
         'server’s refusal back.',
       inputSchema: z.object({
         calendar_id: calendarRefParam,
-        summary: z.string().trim().min(1).max(1000),
+        summary: summaryParam,
         due: instantParam.optional().describe('When it is due.'),
         start: instantParam.optional().describe('When work on it can begin.'),
         timezone: timezoneParam,
@@ -274,7 +275,7 @@ export function registerTaskWriteTools(
         'done use complete_task, which records the completion time as well.',
       inputSchema: z.object({
         id: entityIdParam,
-        summary: z.string().trim().min(1).max(1000).optional(),
+        summary: summaryParam.optional(),
         due: instantParam.optional(),
         start: instantParam.optional(),
         timezone: timezoneParam,
@@ -348,9 +349,7 @@ export function registerTaskWriteTools(
           context.config.timezone
         );
 
-        const result = await commit(context, loaded, (component) => ({
-          summary: readText(component, 'summary') ?? '(no title)',
-        }));
+        const result = await commit(context, loaded);
         const fresh = await loadEntry(context, entity, registry);
         return untrustedResult({
           written: true,
@@ -410,9 +409,7 @@ export function registerTaskWriteTools(
           target.updatePropertyWithValue('percent-complete', 0);
         }
 
-        await commit(context, loaded, (component) => ({
-          summary: readText(component, 'summary') ?? '(no title)',
-        }));
+        await commit(context, loaded);
         const fresh = await loadEntry(context, entity, registry);
         return untrustedResult({
           id: args.id,

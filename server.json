@@ -81,6 +81,12 @@
           "format": "boolean"
         },
         {
+          "name": "CALDAV_ALLOW_PLAINTEXT",
+          "description": "Set to true to allow a plain http:// URL to a host that is not loopback, which sends the credentials unencrypted (default: false)",
+          "isRequired": false,
+          "format": "boolean"
+        },
+        {
           "name": "CALDAV_ALLOW_TOOLS",
           "description": "Comma-separated tool names or list_* prefixes to register; 'essential' selects a curated preset (default: all tools)",
           "isRequired": false,
@@ -166,6 +172,12 @@
         {
           "name": "CALDAV_INSECURE_TLS",
           "description": "Set to true to accept a self-signed certificate on the configured host only (default: false)",
+          "isRequired": false,
+          "format": "boolean"
+        },
+        {
+          "name": "CALDAV_ALLOW_PLAINTEXT",
+          "description": "Set to true to allow a plain http:// URL to a host that is not loopback, which sends the credentials unencrypted (default: false)",
           "isRequired": false,
           "format": "boolean"
         },

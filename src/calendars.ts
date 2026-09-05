@@ -1,3 +1,4 @@
+import { quoted } from './analyze.js';
 import { CalendarNotAllowedError, ToolInputError } from './errors.js';
 import type { CalendarLookup } from './entity-id.js';
 
@@ -96,21 +97,48 @@ function finalSegment(path: string): string {
  * So the assertion is on the resolved path rather than on the input: whatever
  * encoding trick comes next, the result still has to sit directly inside this
  * collection.
+ *
+ * And it is an assertion of *equality*, not only of containment. The parent
+ * check alone let a name like `a?x=1` through — inside the collection, so no
+ * traversal, but the request it built went to `a` with a query string the id
+ * never showed, and `a<CR><LF>b` reached `ab` because the parser drops those
+ * characters silently. An id is supposed to be one-to-one with the resource it
+ * names, and that property was being established for the base64 layer and lost
+ * at the URL layer. Requiring the resolved pathname to be the collection plus
+ * the name exactly as given means the name has to already be in its canonical
+ * percent-encoded form — which is precisely the form `resourceNameOf` hands
+ * out — and a query, a fragment, a control character or raw non-ASCII all
+ * fail to round-trip and are refused.
  */
 export function resourceUrl(
   calendar: Pick<CalendarEntry, 'url' | 'path'>,
   resourceName: string
 ): string {
-  const url = new URL(`${calendar.url}${resourceName}`);
+  let url: URL;
+  try {
+    url = new URL(`${calendar.url}${resourceName}`);
+  } catch {
+    throw notInside();
+  }
   const parent = url.pathname.replace(/[^/]*$/, '');
-  if (parent !== calendar.path || url.pathname === calendar.path) {
-    throw new ToolInputError(
-      'caldav-mcp: that id does not name an entry inside the calendar it ' +
-        'claims to be in. Ids come from the listing tools and are not meant ' +
-        'to be composed by hand.'
-    );
+  if (
+    parent !== calendar.path ||
+    url.pathname === calendar.path ||
+    url.pathname !== `${calendar.path}${resourceName}` ||
+    url.search !== '' ||
+    url.hash !== ''
+  ) {
+    throw notInside();
   }
   return url.toString();
+}
+
+function notInside(): ToolInputError {
+  return new ToolInputError(
+    'caldav-mcp: that id does not name an entry inside the calendar it ' +
+      'claims to be in. Ids come from the listing tools and are not meant ' +
+      'to be composed by hand.'
+  );
 }
 
 export class CalendarRegistry implements CalendarLookup {
@@ -207,21 +235,21 @@ export class CalendarRegistry implements CalendarLookup {
     if (permitted.length === 1) return permitted[0] as CalendarEntry;
     if (permitted.length > 1) {
       throw new ToolInputError(
-        `caldav-mcp: "${reference}" matches ${permitted.length} calendars ` +
+        `caldav-mcp: "${quoted(reference)}" matches ${permitted.length} calendars ` +
           `(${permitted.map((calendar) => calendar.path).join(', ')}). ` +
           'Name it by its full path, which list_calendars prints.'
       );
     }
     if (this.all.some((calendar) => matches(wanted, calendar))) {
       throw new CalendarNotAllowedError(
-        `caldav-mcp: "${reference}" is a calendar this server was not given ` +
-          'access to. CALDAV_CALENDARS names the calendars it may touch; ' +
+        `caldav-mcp: "${quoted(reference)}" is a calendar this server was not ` +
+          'given access to. CALDAV_CALENDARS names the calendars it may touch; ' +
           'list_calendars shows which those are.'
       );
     }
     throw new ToolInputError(
-      `caldav-mcp: no calendar called "${reference}". Call list_calendars to ` +
-        'see what is available.'
+      `caldav-mcp: no calendar called "${quoted(reference)}". Call ` +
+        'list_calendars to see what is available.'
     );
   }
 

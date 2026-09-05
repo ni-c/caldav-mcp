@@ -1,9 +1,11 @@
+import { quoted } from './analyze.js';
 import type { CalDavApi } from './api.js';
 import type { CalendarEntry } from './calendars.js';
 import type { Config } from './config.js';
 import {
   calendarQueryBody,
   textMatchBody,
+  textOf,
   type SearchField,
   type TimeRange,
 } from './dav-xml.js';
@@ -68,16 +70,27 @@ export function resourceNameOf(
   api: Pick<CalDavApi, 'resolveHref'>,
   calendar: Pick<CalendarEntry, 'url' | 'path'>
 ): string {
-  let path: string;
+  let resolved: URL;
   try {
-    path = new URL(api.resolveHref(href, calendar.url)).pathname;
+    resolved = new URL(api.resolveHref(href, calendar.url));
   } catch {
     return '';
   }
+  // A query or a fragment ends the path, so `/cal/work/a?b.ics` has the
+  // pathname `/cal/work/a` — it sits in the right collection and would have
+  // been filed as the resource `a`, an id addressing something the href never
+  // named. `resourceUrl` refuses these on the writing end; this is the same
+  // refusal on the reading end, where the id is minted.
+  if (resolved.search !== '' || resolved.hash !== '') return '';
+  const path = resolved.pathname;
+  // The same two conditions `resourceUrl` asserts, because the two functions
+  // answer the same question from opposite ends: the name sits directly inside
+  // the collection, and it is not the collection itself. An href equal to the
+  // collection used to pass the first check and file the collection's own
+  // name as a resource.
   const parent = path.replace(/[^/]*$/, '');
-  if (parent !== calendar.path) return '';
-  const parts = path.split('/').filter((part) => part.length > 0);
-  return parts[parts.length - 1] ?? '';
+  if (parent !== calendar.path || path === calendar.path) return '';
+  return path.slice(parent.length);
 }
 
 /** Runs a `calendar-query` against one calendar and returns its resources. */
@@ -97,10 +110,12 @@ async function queryCalendar(
       calendar,
       resourceName: name,
       ics: data,
-      etag:
-        typeof response.props.getetag === 'string'
-          ? response.props.getetag
-          : undefined,
+      // Through `textOf` like every other property, so it is entity-decoded
+      // and never carries what an attribute-shaped value could smuggle. Nothing
+      // reads it for `If-Match` today — the write path takes its validator
+      // from the response header — but the day something does, it has to be a
+      // value and not raw markup.
+      etag: textOf(response.props.getetag),
     });
   }
   return documents;
@@ -165,8 +180,10 @@ export async function listEntries(
         document,
         options,
         deadline,
-        context.config.timezone
+        context.config.timezone,
+        notes
       );
+      if (result === undefined) continue;
       notes.push(...result.notes);
       if (result.bounded) {
         const uid = uidOf(document);
@@ -304,8 +321,10 @@ export async function searchEntries(
       document,
       options,
       deadline,
-      context.config.timezone
+      context.config.timezone,
+      notes
     );
+    if (result === undefined) continue;
     notes.push(...result.notes);
     for (const occurrence of result.occurrences) {
       collected.push({ occurrence, document });
@@ -347,25 +366,54 @@ export async function searchEntries(
   };
 }
 
+/**
+ * Parses and expands one resource, or skips it with a note.
+ *
+ * One resource is isolated from the rest of the listing on purpose. Every
+ * entry in a calendar was written by somebody — on a scheduling server, by
+ * anybody who knows the address — and a document that does not parse, or a
+ * rule that ical.js cannot walk, used to throw out of here and fail the whole
+ * call for every calendar in it. Worse, the message read as if the *caller*
+ * had got something wrong. Now the entry is left out, the answer says which
+ * one and why, and the other entries are still reported: a listing that says
+ * "one entry could not be read" is honest, one that says nothing at all is not.
+ */
 function expandOne(
   document: ResourceDocument,
   options: { kind: Kind; from: Date; to: Date; limit: number },
   deadline: number,
-  fallbackZone: string
+  fallbackZone: string,
+  notes: string[]
 ) {
-  const root = parseCalendar(
-    document.ics,
-    `the entry ${document.resourceName}`
-  );
-  return expandSeries(componentsOf(root, options.kind), {
-    from: options.from,
-    to: options.to,
-    // One entry may not exceed the whole answer, so the per-series cap is the
-    // request cap. It cannot spend more than that anyway.
-    cap: options.limit,
-    fallbackZone,
-    deadline,
-  });
+  try {
+    const root = parseCalendar(
+      document.ics,
+      `the entry ${document.resourceName}`
+    );
+    return expandSeries(componentsOf(root, options.kind), {
+      from: options.from,
+      to: options.to,
+      // One entry may not exceed the whole answer, so the per-series cap is the
+      // request cap. It cannot spend more than that anyway.
+      cap: options.limit,
+      fallbackZone,
+      deadline,
+    });
+  } catch (error) {
+    // The name is a path segment the server chose, so it is escaped like any
+    // other quoted value; the parser's message is already cut and escaped.
+    const reason =
+      error instanceof ToolInputError
+        ? error.message.replace(/^caldav-mcp: /, '')
+        : 'it could not be expanded';
+    notes.push(
+      `Skipped ${quoted(document.resourceName)} in ` +
+        `${quoted(document.calendar.path)}: ` +
+        `${reason} This is a problem with that stored entry, not with the ` +
+        'arguments of this call; the other entries are reported as usual.'
+    );
+    return undefined;
+  }
 }
 
 function accepts(calendar: CalendarEntry, component: string): boolean {

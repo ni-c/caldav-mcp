@@ -165,6 +165,40 @@ describe('a forged or edited id', () => {
     );
   });
 
+  it('refuses a name with a character the URL layer would not carry', () => {
+    // `?` and `#` end the path, and a control character is stripped or
+    // encoded by the parser: none of these traverse, all of them make the
+    // request address something the id does not say. `resourceUrl` refuses
+    // them too; this is the check that names the id in its error.
+    for (const name of ['a?x=1', 'a#f', 'a\tb', 'a\r\nb', 'a\u{7f}b']) {
+      const id = `e1.${b64('/tester/work/')}.${b64(name)}`;
+      expect(() => parseEntityId(id, 'vevent', registry), name).toThrow(
+        /not an id this server issued/
+      );
+    }
+  });
+
+  it('quotes a bad id with its invisible characters escaped', () => {
+    // The error repeats the id in this server's own voice, outside any
+    // fence, so a directional override in it would be reflected verbatim.
+    const id = `zz.\u{202e}.x`;
+    expect(() => parseEntityId(id, 'vevent', registry)).toThrow(/\\u202e/);
+    try {
+      parseEntityId(id, 'vevent', registry);
+    } catch (error) {
+      expect((error as Error).message).not.toContain('\u{202e}');
+    }
+  });
+
+  it('cuts a long bad id before quoting it', () => {
+    const id = `zz.${'a'.repeat(1000)}.x`;
+    try {
+      parseEntityId(id, 'vevent', registry);
+    } catch (error) {
+      expect((error as Error).message.length).toBeLessThan(500);
+    }
+  });
+
   it('refuses a NUL inside a decoded part', () => {
     const id = `e1.${b64('/tester/work/\0/etc/')}.${b64('x.ics')}`;
     expect(() => parseEntityId(id, 'vevent', registry)).toThrow(ToolInputError);

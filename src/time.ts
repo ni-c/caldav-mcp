@@ -1,3 +1,4 @@
+import { quoted } from './analyze.js';
 import { ToolInputError } from './errors.js';
 
 /**
@@ -81,6 +82,31 @@ export function cacheZone<T>(
   value: T
 ): void {
   if (cache.size < ZONE_CACHE_LIMIT) cache.set(key, value);
+}
+
+const knownZones = new Map<string, boolean>();
+
+/**
+ * Whether the platform's zone database knows this id.
+ *
+ * The one question every zone name out of a calendar document has to answer
+ * before it is handed to `Intl`, which throws a `RangeError` for a name it
+ * does not know. A `TZID` is written by whoever wrote the entry — Exchange
+ * emits "Customized Time Zone" as a matter of course — so an unchecked name
+ * reaching a formatter is a listing that dies on one invitation.
+ */
+export function isKnownZone(tzid: string): boolean {
+  const cached = knownZones.get(tzid);
+  if (cached !== undefined) return cached;
+  let known: boolean;
+  try {
+    new Intl.DateTimeFormat('en-US', { timeZone: tzid });
+    known = true;
+  } catch {
+    known = false;
+  }
+  cacheZone(knownZones, tzid, known);
+  return known;
 }
 
 const formatters = new Map<string, Intl.DateTimeFormat>();
@@ -251,7 +277,7 @@ export function parseInstant(
     const parsed = new Date(raw.replace(' ', 'T'));
     if (Number.isNaN(parsed.getTime())) {
       throw new ToolInputError(
-        `caldav-mcp: ${field} is not a valid timestamp: "${value}".`
+        `caldav-mcp: ${field} is not a valid timestamp: "${quoted(value)}".`
       );
     }
     const isUtc = /[Zz]$/.test(raw);
@@ -275,7 +301,7 @@ export function parseInstant(
     assertCalendarDate(wall, raw, field);
     if (wall.hour > 23 || wall.minute > 59 || wall.second > 59) {
       throw new ToolInputError(
-        `caldav-mcp: ${field} is not a valid time of day: "${value}".`
+        `caldav-mcp: ${field} is not a valid time of day: "${quoted(value)}".`
       );
     }
     return { instant: wallClockToInstant(zone, wall), allDay: false, zone };
@@ -285,7 +311,7 @@ export function parseInstant(
     `caldav-mcp: ${field} must be an ISO 8601 date or timestamp — ` +
       '"2026-09-07", "2026-09-07T09:00:00" (interpreted in the timezone ' +
       'parameter or CALDAV_TIMEZONE), or "2026-09-07T09:00:00+02:00". ' +
-      `Got "${value}".`
+      `Got "${quoted(value)}".`
   );
 }
 
@@ -304,7 +330,7 @@ function assertCalendarDate(wall: WallClock, raw: string, field: string): void {
     probe.getUTCDate() !== wall.day
   ) {
     throw new ToolInputError(
-      `caldav-mcp: ${field} is not a real date: "${raw}".`
+      `caldav-mcp: ${field} is not a real date: "${quoted(raw)}".`
     );
   }
 }
@@ -333,17 +359,25 @@ export function renderTime(
   instant: Date,
   options: { zone?: string | undefined; allDay: boolean; fallbackZone: string }
 ): RenderedTime {
-  const zone = options.zone ?? options.fallbackZone;
+  // `resolveTime` never carries an unknown zone forward, so this guard should
+  // never fire. It is here because this is the sink: the one call that hands a
+  // zone name to `Intl`, where an unknown one is a RangeError out of a listing
+  // rather than a wrong offset in one entry.
+  const named =
+    options.zone !== undefined && isKnownZone(options.zone)
+      ? options.zone
+      : undefined;
+  const zone = named ?? options.fallbackZone;
   if (options.allDay) {
     return {
       value: formatDateInZone(instant, zone),
-      ...(options.zone === undefined ? {} : { tzid: options.zone }),
+      ...(named === undefined ? {} : { tzid: named }),
       allDay: true,
     };
   }
   return {
     value: formatInZone(instant, zone),
-    ...(options.zone === undefined ? {} : { tzid: options.zone }),
+    ...(named === undefined ? {} : { tzid: named }),
     allDay: false,
   };
 }

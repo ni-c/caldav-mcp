@@ -125,14 +125,83 @@ describe('the URL', () => {
     expect(errors.join(' ')).toMatch(/http:\/\/ or https:\/\//);
   });
 
-  it('warns about plain http to a remote host but not to loopback', () => {
+  it('refuses plain http to a remote host, and allows it to loopback', () => {
+    // A warning on stderr is a line nobody reads in a stdio deployment, and
+    // this is the one configuration that puts the password on the wire in
+    // clear on every request. So it is a refusal, like a bad timezone is.
+    const { errors } = catchExit();
+    expect(() => loadConfig(env({ CALDAV_URL: 'http://example.net' }))).toThrow(
+      'exited'
+    );
+    expect(errors.join(' ')).toMatch(/unencrypted/);
+    expect(errors.join(' ')).toMatch(/CALDAV_ALLOW_PLAINTEXT/);
+
+    errors.length = 0;
+    loadConfig(env({ CALDAV_URL: 'http://[::ffff:127.0.0.1]:5232' }));
+    expect(errors.join(' ')).not.toMatch(/unencrypted/);
+  });
+
+  it('lifts the plaintext refusal only for the literal string "true"', () => {
+    // A switch that removes a protection is read strictly, like
+    // CALDAV_INSECURE_TLS: a typo leaves the protection in place.
     const warn = vi.spyOn(console, 'error').mockImplementation(() => undefined);
-    loadConfig(env({ CALDAV_URL: 'http://example.net' }));
+    expect(
+      loadConfig(
+        env({
+          CALDAV_URL: 'http://example.net',
+          CALDAV_ALLOW_PLAINTEXT: 'true',
+        })
+      ).url
+    ).toBe('http://example.net');
+    // Still says so, because the operator should see it once.
     expect(warn.mock.calls.flat().join(' ')).toMatch(/unencrypted/);
 
+    for (const value of ['TRUE', '1', 'yes', ' true ']) {
+      const { errors } = catchExit();
+      expect(
+        () =>
+          loadConfig(
+            env({
+              CALDAV_URL: 'http://example.net',
+              CALDAV_ALLOW_PLAINTEXT: value,
+            })
+          ),
+        value
+      ).toThrow('exited');
+      expect(errors.join(' ')).toMatch(/unencrypted/);
+      vi.restoreAllMocks();
+    }
+  });
+
+  it('refuses a query string or a fragment on the root URL', () => {
+    // Relative hrefs are resolved against the URL, and `?x=1/` spliced onto
+    // the end of it turns `/dav?x=1/work/` into `/work/`: every request then
+    // lands on the wrong path of the right host.
+    for (const url of [
+      'https://example.net/dav?x=1',
+      'https://example.net/dav#frag',
+    ]) {
+      const { errors } = catchExit();
+      expect(() => loadConfig(env({ CALDAV_URL: url })), url).toThrow('exited');
+      expect(errors.join(' ')).toMatch(/query string or a fragment/);
+      vi.restoreAllMocks();
+    }
+  });
+
+  it('warns about an allowlist path that would need percent-encoding', () => {
+    // `/cal/a b/` is compared against a percent-encoded pathname and matches
+    // nothing; the only other symptom is a "matches no calendar" warning at
+    // discovery, which points at a typo that is not there.
+    const warn = vi.spyOn(console, 'error').mockImplementation(() => undefined);
+    loadConfig(env({ CALDAV_CALENDARS: '/tester/a b/,work' }));
+    const said = warn.mock.calls.flat().join(' ');
+    expect(said).toMatch(/percent-encoded/);
+    expect(said).toContain('/tester/a b/');
+    expect(said).not.toContain('"work"');
+
     warn.mockClear();
-    loadConfig(env({ CALDAV_URL: 'http://[::ffff:127.0.0.1]:5232' }));
-    expect(warn.mock.calls.flat().join(' ')).not.toMatch(/unencrypted/);
+    loadConfig(env({ CALDAV_CALENDARS: '/tester/a%20b/,work' }));
+    expect(warn.mock.calls.flat().join(' ')).not.toMatch(/percent-encoded/);
   });
 });
 

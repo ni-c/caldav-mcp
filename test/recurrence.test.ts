@@ -572,6 +572,52 @@ describe('recurrence id spelling', () => {
     expect(parsed.allDay).toBe(true);
   });
 
+  it('round-trips an all-day value that carries a zone', () => {
+    // A TZID on a DATE is not conforming, and servers store it anyway. The
+    // spelling used to render the date in that zone and record only the date,
+    // so reading it back in the *fallback* zone produced a different instant —
+    // spell and parse were not inverses. Downstream that meant the write path
+    // could not find the override that was already there, cloned a second one
+    // off the master, and left two components claiming one instance.
+    const { spelling, parsed } = roundTrip(
+      calendar(
+        event([
+          'DTSTART;VALUE=DATE;TZID=America/Los_Angeles:20260921',
+          'DTEND;VALUE=DATE:20260922',
+        ])
+      )
+    );
+    expect(spelling).toBe('VALUE=DATE;TZID=America/Los_Angeles:20260921');
+    expect(parsed.allDay).toBe(true);
+    expect(parsed.zone).toBe('America/Los_Angeles');
+    // The property that matters: the instant survives the trip unchanged.
+    const direct = readTime(
+      componentsOf(
+        parseCalendar(
+          calendar(
+            event([
+              'DTSTART;VALUE=DATE;TZID=America/Los_Angeles:20260921',
+              'DTEND;VALUE=DATE:20260922',
+            ])
+          ),
+          'fixture'
+        ),
+        'vevent'
+      )[0] as never,
+      'dtstart',
+      BERLIN
+    );
+    expect(parsed.instant.getTime()).toBe(
+      (direct as { instant: Date }).instant.getTime()
+    );
+  });
+
+  it('still reads a zone-less all-day spelling in the fallback zone', () => {
+    expect(
+      parseRecurrenceId('VALUE=DATE:20260907', BERLIN).instant.toISOString()
+    ).toBe('2026-09-06T22:00:00.000Z');
+  });
+
   it('refuses a spelling it did not produce', () => {
     expect(() => parseRecurrenceId('next tuesday', BERLIN)).toThrow(
       /does not name an occurrence/
@@ -622,5 +668,134 @@ describe('tasks and journals', () => {
     );
     expect(result.occurrences).toHaveLength(1);
     expect(result.occurrences[0]?.end).toBeUndefined();
+  });
+});
+
+describe('a zone name the platform does not know', () => {
+  const exchange = [
+    'BEGIN:VTIMEZONE',
+    'TZID:Customized Time Zone',
+    'BEGIN:STANDARD',
+    'DTSTART:16010101T030000',
+    'TZOFFSETFROM:+0200',
+    'TZOFFSETTO:+0100',
+    'RRULE:FREQ=YEARLY;BYDAY=-1SU;BYMONTH=10',
+    'END:STANDARD',
+    'BEGIN:DAYLIGHT',
+    'DTSTART:16010101T020000',
+    'TZOFFSETFROM:+0100',
+    'TZOFFSETTO:+0200',
+    'RRULE:FREQ=YEARLY;BYDAY=-1SU;BYMONTH=3',
+    'END:DAYLIGHT',
+    'END:VTIMEZONE',
+  ];
+
+  it('never travels as a zone, so nothing downstream hands it to Intl', () => {
+    // The shape Exchange emits. The document's own VTIMEZONE decides the
+    // instant; the *name* used to be carried along and reached
+    // `Intl.DateTimeFormat` when the entry was rendered — a RangeError out of
+    // the whole listing, planted by one invitation.
+    const result = expand(
+      calendar(
+        event([
+          'DTSTART;TZID=Customized Time Zone:20260907T090000',
+          'DTEND;TZID=Customized Time Zone:20260907T100000',
+          'RRULE:FREQ=DAILY;COUNT=2',
+          'SUMMARY:From Exchange',
+        ]),
+        exchange
+      ),
+      { from: '2026-09-01T00:00:00Z', to: '2026-10-01T00:00:00Z' }
+    );
+    expect(result.occurrences).toHaveLength(2);
+    for (const occurrence of result.occurrences) {
+      expect(occurrence.start.zone).toBeUndefined();
+      expect(() => spellRecurrenceId(occurrence.start, BERLIN)).not.toThrow();
+    }
+    // The VTIMEZONE above is Central European time, so 09:00 is 07:00Z.
+    expect(startsOf(result)[0]).toBe('2026-09-07T07:00:00.000Z');
+  });
+
+  it('is dropped from a RECURRENCE-ID spelling as well', () => {
+    const time = parseRecurrenceId(
+      'TZID=Nowhere/Nothing:20260907T090000',
+      BERLIN
+    );
+    expect(time.zone).toBeUndefined();
+    expect(spellRecurrenceId(time, BERLIN)).toBe('20260907T070000Z');
+  });
+});
+
+describe('a resource with thousands of edited occurrences', () => {
+  function overrides(count: number): string[] {
+    const lines: string[] = [];
+    for (let index = 0; index < count; index += 1) {
+      const day = String(1 + (index % 28)).padStart(2, '0');
+      const month = String(1 + (Math.floor(index / 28) % 12)).padStart(2, '0');
+      const year = 2000 + Math.floor(index / 336);
+      lines.push(
+        'BEGIN:VEVENT',
+        'UID:series@example.net',
+        'DTSTAMP:20260901T120000Z',
+        `RECURRENCE-ID;TZID=Europe/Berlin:${year}${month}${day}T090000`,
+        `DTSTART;TZID=Europe/Berlin:${year}${month}${day}T100000`,
+        `DTEND;TZID=Europe/Berlin:${year}${month}${day}T110000`,
+        'SUMMARY:Moved',
+        'END:VEVENT'
+      );
+    }
+    return lines;
+  }
+
+  it('reads a bounded number of them and says so', () => {
+    const root = parseCalendar(
+      calendar([
+        ...event([
+          'DTSTART;TZID=Europe/Berlin:20000101T090000',
+          'DTEND;TZID=Europe/Berlin:20000101T100000',
+          'RRULE:FREQ=DAILY',
+          'SUMMARY:Daily',
+        ]),
+        ...overrides(2_500),
+      ]),
+      'fixture'
+    );
+    const result = expandSeries(componentsOf(root, 'vevent'), {
+      from: new Date('2026-09-01T00:00:00Z'),
+      to: new Date('2026-09-08T00:00:00Z'),
+      cap: 100,
+      fallbackZone: BERLIN,
+    });
+    expect(result.bounded).toBe(true);
+    expect(result.notes.join(' ')).toMatch(/more than 2000 edited occurrences/);
+  });
+
+  it('stops on an expired deadline before resolving them all', () => {
+    // The rule walk honoured the deadline; the override loops did not, and
+    // they are the expensive half. Measured before the fix: over a second for
+    // twenty thousand overrides with a deadline already in the past.
+    const root = parseCalendar(
+      calendar([
+        ...event([
+          'DTSTART;TZID=Europe/Berlin:20000101T090000',
+          'DTEND;TZID=Europe/Berlin:20000101T100000',
+          'RRULE:FREQ=DAILY',
+          'SUMMARY:Daily',
+        ]),
+        ...overrides(2_000),
+      ]),
+      'fixture'
+    );
+    const started = Date.now();
+    const result = expandSeries(componentsOf(root, 'vevent'), {
+      from: new Date('2026-09-01T00:00:00Z'),
+      to: new Date('2026-09-08T00:00:00Z'),
+      cap: 100,
+      fallbackZone: BERLIN,
+      deadline: Date.now() - 1,
+    });
+    expect(Date.now() - started).toBeLessThan(500);
+    expect(result.bounded).toBe(true);
+    expect(result.notes.join(' ')).toMatch(/took too long/);
   });
 });

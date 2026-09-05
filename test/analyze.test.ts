@@ -7,6 +7,7 @@ import {
   detectSuspicious,
   escapeInvisible,
   PATTERN_NAMES,
+  quoted,
   sanitizeText,
   stripInvisible,
   wrapUntrusted,
@@ -42,6 +43,27 @@ describe('invisible characters', () => {
     // For a confirmation dialog: stripping alone says "this is not what it
     // looked like" and then shows something that looks ordinary.
     expect(escapeInvisible('Work\u202e')).toBe('Work\\u202e');
+  });
+});
+
+describe('a value quoted back inside an error', () => {
+  it('collapses the whitespace that would break the sentence', () => {
+    // `escapeInvisible` deliberately leaves tab and newline alone — they are
+    // ordinary characters in a description, which is what it was written for.
+    // A *quoted* value is different: it sits inside a sentence the server says
+    // in its own voice, outside any fence, so a newline in it produces a real
+    // line break and room for a second paragraph that reads like the server
+    // talking. One call site collapsed whitespace by hand; the other five did
+    // not, which is a rule living in the wrong place.
+    expect(quoted('one\ntwo')).toBe('one two');
+    expect(quoted('a\r\n\r\nb')).toBe('a b');
+    expect(quoted('tab\there')).toBe('tab here');
+    expect(quoted('lead  and   trail ')).toBe('lead and trail ');
+  });
+
+  it('still escapes the invisible characters and still cuts', () => {
+    expect(quoted('a\u{202e}b')).toContain('\\u202e');
+    expect(quoted('x'.repeat(400))).toHaveLength(201);
   });
 });
 

@@ -1,6 +1,7 @@
 import { z } from 'zod';
 
 import { MAX_MAX_ENTRIES } from './config.js';
+import { isKnownZone } from './time.js';
 
 /**
  * The input fragments more than one tool takes.
@@ -10,6 +11,41 @@ import { MAX_MAX_ENTRIES } from './config.js';
  * promises to return. They also fail differently — a bad input is a message to
  * the caller, a bad output is a failed tool call.
  */
+
+/**
+ * C0 and C1 control characters, except TAB, LF and CR.
+ *
+ * Refused at the schema boundary for every free-text field a write tool takes,
+ * and the reason is structural rather than cosmetic. ical.js escapes `\`, `;`,
+ * `,` and LF when it serialises a TEXT value — and nothing else. A bare CR
+ * inside a summary therefore goes into the PUT body as a raw CR, and a lenient
+ * reader that splits lines on it sees a property line nobody wrote. The read
+ * path already refuses these characters (`dav-xml.ts`); the write path, where
+ * a line break actually is structure, has to as well. CR and LF themselves are
+ * accepted here and folded to LF before serialisation, because a description
+ * may legitimately span lines and ical.js escapes LF correctly.
+ */
+// eslint-disable-next-line no-control-regex -- matching them is the point
+const CONTROL_CHARS = /[\u0000-\u0008\u000B\u000C\u000E-\u001F\u007F-\u009F]/;
+
+const NO_CONTROL = {
+  message:
+    'contains control characters, which cannot appear in a calendar entry. ' +
+    'Remove them and try again.',
+};
+
+function noControl(value: string): boolean {
+  return !CONTROL_CHARS.test(value);
+}
+
+/** The title of an entry. Required where an entry is created. */
+export const summaryParam = z
+  .string()
+  .trim()
+  .min(1)
+  .max(1000)
+  .refine(noControl, NO_CONTROL)
+  .describe('The title.');
 
 /** An id from a listing. Never composed by hand; `entity-id.ts` validates it. */
 export const entityIdParam = z
@@ -63,6 +99,12 @@ export const timezoneParam = z
   .trim()
   .min(1)
   .max(64)
+  // Checked here rather than left to `Intl` deep inside the write path, where
+  // the failure surfaces as a raw RangeError quoting the input. A zone this
+  // platform does not know is not something to write into a TZID parameter.
+  .refine((zone) => isKnownZone(zone), {
+    message: 'is not an IANA time zone name this server knows.',
+  })
   .optional()
   .describe(
     'IANA zone for timestamps that carry no offset, e.g. "Europe/Berlin". ' +
@@ -127,7 +169,12 @@ export const alarmParam = z.object({
     .describe(
       'Relative to the start ("-PT15M", "-P1D") or an absolute ISO 8601 time.'
     ),
-  description: z.string().trim().max(500).optional(),
+  description: z
+    .string()
+    .trim()
+    .max(500)
+    .refine(noControl, NO_CONTROL)
+    .optional(),
 });
 
 export const alarmsParam = z
@@ -145,12 +192,13 @@ export const textParam = (what: string, max = 8192) =>
   z
     .string()
     .max(max)
+    .refine(noControl, NO_CONTROL)
     .nullish()
     .describe(`${what} Pass null to remove it, leave it out to keep it.`);
 
 /** Categories, replaced as a whole. */
 export const categoriesParam = z
-  .array(z.string().trim().min(1).max(200))
+  .array(z.string().trim().min(1).max(200).refine(noControl, NO_CONTROL))
   .max(50)
   .nullish()
   .describe('Replaces every category. Pass null or an empty array to clear.');

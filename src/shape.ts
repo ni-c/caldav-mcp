@@ -401,9 +401,13 @@ function readAttachments(component: ICAL.Component): Record<string, unknown>[] {
 export function shapeCalendar(
   calendar: CalendarEntry
 ): Record<string, unknown> {
+  // `path` and `url` are derived from an href the server chose, and
+  // `components` from an attribute it wrote — the same "looks structural, is
+  // not" case as a UID. The path is a percent-encoded pathname, so cleaning
+  // it changes nothing on a conforming server and stays feedable as an id.
   return {
-    id: calendar.path,
-    url: calendar.url,
+    id: sanitizeText(calendar.path, 1024),
+    url: sanitizeText(calendar.url, 2048),
     ...(calendar.displayName === undefined
       ? {}
       : { name: sanitizeText(calendar.displayName, 200) }),
@@ -413,7 +417,7 @@ export function shapeCalendar(
     ...(calendar.color === undefined
       ? {}
       : { color: sanitizeText(calendar.color, 50) }),
-    components: [...calendar.components],
+    components: calendar.components.map((name) => sanitizeText(name, 50)),
     read_only: calendar.readOnly,
   };
 }

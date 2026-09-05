@@ -183,7 +183,7 @@ Changes the fields named and leaves everything else exactly as it was — includ
 | --- | --- | --- | --- |
 | `id` | string | yes | An id from a listing tool. Not meant to be built by hand. |
 | `scope` | `"this_occurrence"` \| `"entire_series"` | no | For a recurring entry: change just this occurrence, or the whole series. Defaults to whichever the id names. Changing a whole series asks first. |
-| `summary` | string | no |  |
+| `summary` | string | no | The title. |
 | `start` | string | no | ISO 8601: "2026-09-07" for a whole day, "2026-09-07T09:00:00" in the timezone argument or CALDAV_TIMEZONE, or "2026-09-07T09:00:00+02:00". |
 | `end` | string | no | ISO 8601: "2026-09-07" for a whole day, "2026-09-07T09:00:00" in the timezone argument or CALDAV_TIMEZONE, or "2026-09-07T09:00:00+02:00". |
 | `timezone` | string | no | IANA zone for timestamps that carry no offset, e.g. "Europe/Berlin". Defaults to CALDAV_TIMEZONE. Refused together with a value that already carries an offset. |
@@ -240,7 +240,7 @@ Adds a task to a calendar that accepts them. list_calendars reports which do —
 | Parameter | Type | Required | Description |
 | --- | --- | --- | --- |
 | `calendar_id` | string | yes | A calendar id from list_calendars — its path. A full URL or the final path segment work too. |
-| `summary` | string | yes |  |
+| `summary` | string | yes | The title. |
 | `due` | string | no | When it is due. |
 | `start` | string | no | When work on it can begin. |
 | `timezone` | string | no | IANA zone for timestamps that carry no offset, e.g. "Europe/Berlin". Defaults to CALDAV_TIMEZONE. Refused together with a value that already carries an offset. |
@@ -258,7 +258,7 @@ Changes the fields named and leaves everything else as it was. Pass null to clea
 | Parameter | Type | Required | Description |
 | --- | --- | --- | --- |
 | `id` | string | yes | An id from a listing tool. Not meant to be built by hand. |
-| `summary` | string | no |  |
+| `summary` | string | no | The title. |
 | `due` | string | no | ISO 8601: "2026-09-07" for a whole day, "2026-09-07T09:00:00" in the timezone argument or CALDAV_TIMEZONE, or "2026-09-07T09:00:00+02:00". |
 | `start` | string | no | ISO 8601: "2026-09-07" for a whole day, "2026-09-07T09:00:00" in the timezone argument or CALDAV_TIMEZONE, or "2026-09-07T09:00:00+02:00". |
 | `timezone` | string | no | IANA zone for timestamps that carry no offset, e.g. "Europe/Berlin". Defaults to CALDAV_TIMEZONE. Refused together with a value that already carries an offset. |
@@ -314,7 +314,7 @@ Replaces the fields named. A CalDAV server keeps no version history, so the prev
 | Parameter | Type | Required | Description |
 | --- | --- | --- | --- |
 | `id` | string | yes | An id from a listing tool. Not meant to be built by hand. |
-| `summary` | string | no |  |
+| `summary` | string | no | The title. |
 | `date` | string | no | ISO 8601: "2026-09-07" for a whole day, "2026-09-07T09:00:00" in the timezone argument or CALDAV_TIMEZONE, or "2026-09-07T09:00:00+02:00". |
 | `timezone` | string | no | IANA zone for timestamps that carry no offset, e.g. "Europe/Berlin". Defaults to CALDAV_TIMEZONE. Refused together with a value that already carries an offset. |
 | `description` | unknown | no | The note itself. Pass null to remove it, leave it out to keep it. |

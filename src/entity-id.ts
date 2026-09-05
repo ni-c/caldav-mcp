@@ -1,3 +1,4 @@
+import { quoted } from './analyze.js';
 import { CalendarNotAllowedError, ToolInputError } from './errors.js';
 import type { Kind } from './ical.js';
 
@@ -96,10 +97,25 @@ function decode(part: string, id: string): string {
 
 function badId(id: string): ToolInputError {
   return new ToolInputError(
-    `caldav-mcp: "${id}" is not an id this server issued. Ids come from the ` +
-      'listing tools — list_events, list_tasks, list_journals — and are not ' +
-      'meant to be composed by hand.'
+    `caldav-mcp: "${quoted(id)}" is not an id this server issued. Ids come ` +
+      'from the listing tools — list_events, list_tasks, list_journals — and ' +
+      'are not meant to be composed by hand.'
   );
+}
+
+/**
+ * Whether a resource name contains a character the URL layer would not carry
+ * faithfully: a C0 control or DEL, which the parser strips or encodes, or a
+ * `?` or `#`, which end the path. Written as a code-point walk rather than a
+ * regex so the file carries no control characters, escaped or otherwise.
+ */
+function hasUnaddressableCharacter(name: string): boolean {
+  for (const character of name) {
+    const code = character.codePointAt(0) ?? 0;
+    if (code < 0x20 || code === 0x7f) return true;
+    if (character === '?' || character === '#') return true;
+  }
+  return false;
 }
 
 /** The id of a whole series, or of an entry that does not recur. */
@@ -178,12 +194,19 @@ export function parseEntityId(
   // are refused here, and `resourceUrl` asserts the *resolved* path
   // independently — a string check cannot anticipate the next encoding, and a
   // path check does not have to.
+  //
+  // `?`, `#` and control characters are refused for a different reason: they
+  // do not leave the collection, they change what the request addresses
+  // without the id saying so. `resourceUrl` catches those too, by requiring
+  // the resolved path to equal the name; this check exists so the error names
+  // the id rather than the URL.
   if (
     resourceName.length === 0 ||
     resourceName.includes('/') ||
     resourceName.includes('\\') ||
     resourceName.startsWith('.') ||
-    /%2e/i.test(resourceName)
+    /%2e/i.test(resourceName) ||
+    hasUnaddressableCharacter(resourceName)
   ) {
     throw badId(id);
   }

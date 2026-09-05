@@ -11,7 +11,7 @@ import { resourceUrl } from '../calendars.js';
 import { listEntries, type ToolContext } from '../entries.js';
 import { buildSeriesId, parseEntityId } from '../entity-id.js';
 import { ToolInputError } from '../errors.js';
-import { readText, writeTime } from '../ical.js';
+import { writeTime } from '../ical.js';
 import {
   notes,
   shapedJournal,
@@ -34,6 +34,7 @@ import {
   entityIdParam,
   instantParam,
   limitParam,
+  summaryParam,
   textParam,
   timezoneParam,
 } from '../schema.js';
@@ -160,7 +161,7 @@ export function registerJournalWriteTools(
         'list_calendars reports which do.',
       inputSchema: z.object({
         calendar_id: calendarRefParam,
-        summary: z.string().trim().min(1).max(1000).describe('The heading.'),
+        summary: summaryParam.describe('The heading.'),
         date: instantParam.describe('The date the note belongs to.'),
         timezone: timezoneParam,
         description: textParam('The note itself.', 100_000),
@@ -224,7 +225,7 @@ export function registerJournalWriteTools(
         'silently overwritten.',
       inputSchema: z.object({
         id: entityIdParam,
-        summary: z.string().trim().min(1).max(1000).optional(),
+        summary: summaryParam.optional(),
         date: instantParam.optional(),
         timezone: timezoneParam,
         description: textParam('The note itself.', 100_000),
@@ -274,9 +275,7 @@ export function registerJournalWriteTools(
           categories: args.categories,
         });
 
-        const result = await commit(context, loaded, (component) => ({
-          summary: readText(component, 'summary') ?? '(no heading)',
-        }));
+        const result = await commit(context, loaded);
         const fresh = await loadEntry(context, entity, registry);
         return untrustedResult({
           written: true,

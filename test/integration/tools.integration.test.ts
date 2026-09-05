@@ -45,6 +45,7 @@ const state: {
   taskId?: string;
   journalId?: string;
   movedId?: string;
+  excludedId?: string;
 } = {};
 
 const WORK = '/integration/work/';
@@ -377,6 +378,7 @@ describe('events', () => {
     const last = sync[sync.length - 1];
     expect(last).toBeDefined();
     const victim = last?.id ?? '';
+    state.excludedId = victim;
 
     await asking.call('delete_event', { id: victim });
 
@@ -396,6 +398,83 @@ describe('events', () => {
         event.summary?.startsWith('Team sync')
       )
     ).toHaveLength(sync.length - 1);
+  });
+
+  it('deletes the same occurrence again without a second exception', async () => {
+    // A no-op the second time, and still a success: one EXDATE, not two, and
+    // nothing reported as deleted that was not.
+    await asking.call('delete_event', { id: state.excludedId });
+    const files = await storedFiles('work');
+    const series = files.find((ics) => ics.includes('RRULE')) ?? '';
+    expect(series.match(/^EXDATE/gm)).toHaveLength(1);
+  });
+
+  it('refuses this_occurrence on a series id instead of deleting the series', async () => {
+    // The dialog used to promise "one occurrence, leaving the rest" and the
+    // DELETE removed the whole resource. Refused before the dialog now.
+    await asking.call(
+      'delete_event',
+      { id: state.seriesId, scope: 'this_occurrence' },
+      { expectError: true }
+    );
+    const files = await storedFiles('work');
+    expect(files.some((ics) => ics.includes('RRULE'))).toBe(true);
+  });
+
+  it('excludes an all-day occurrence on the day its id names', async () => {
+    // Read back over plain HTTP: the exception date has to be the calendar
+    // date of the occurrence, not the UTC date of midnight in the configured
+    // zone, which is the day before east of Greenwich.
+    await putRaw(
+      sandbox,
+      'work',
+      'offsite.ics',
+      [
+        'BEGIN:VCALENDAR',
+        'VERSION:2.0',
+        'PRODID:-//integration//EN',
+        'BEGIN:VEVENT',
+        'UID:offsite@example.net',
+        'DTSTAMP:20260901T120000Z',
+        'DTSTART;VALUE=DATE:20260921',
+        'DTEND;VALUE=DATE:20260922',
+        'RRULE:FREQ=DAILY;COUNT=3',
+        'SUMMARY:Offsite',
+        'END:VEVENT',
+        'END:VCALENDAR',
+        '',
+      ].join('\r\n')
+    );
+    const days = async (): Promise<string[]> => {
+      const listing = await data(asking, 'list_events', {
+        from: '2026-09-20T00:00:00Z',
+        to: '2026-09-25T00:00:00Z',
+        calendars: [WORK],
+      });
+      return (listing.events as ShapedEvent[])
+        .filter((event) => event.summary === 'Offsite')
+        .map((event) => event.start.value)
+        .sort();
+    };
+    expect(await days()).toEqual(['2026-09-21', '2026-09-22', '2026-09-23']);
+
+    const listing = await data(asking, 'list_events', {
+      from: '2026-09-20T00:00:00Z',
+      to: '2026-09-25T00:00:00Z',
+      calendars: [WORK],
+    });
+    const middle = (listing.events as ShapedEvent[]).find(
+      (event) =>
+        event.summary === 'Offsite' && event.start.value === '2026-09-22'
+    );
+    await asking.call('delete_event', { id: middle?.id });
+
+    const stored = (await getRaw(sandbox, 'work', 'offsite.ics')).ics.replace(
+      /\r\n[ \t]/g,
+      ''
+    );
+    expect(stored).toMatch(/^EXDATE;VALUE=DATE:20260922\r?$/m);
+    expect(await days()).toEqual(['2026-09-21', '2026-09-23']);
   });
 
   it('deletes a whole series', async () => {

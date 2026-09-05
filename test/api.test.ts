@@ -67,6 +67,74 @@ describe('the origin guard', () => {
       `${ORIGIN}/tester/a%2Fb/`
     );
   });
+
+  it('refuses an href carrying credentials, even on the right host', () => {
+    // `URL.origin` leaves the userinfo out, so this passed the origin check
+    // and the credential-shaped string went on to list_calendars and into
+    // every request URL for that calendar.
+    expect(() =>
+      api().resolveHref(
+        'https://x:y@dav.example.net/tester/work/',
+        `${ORIGIN}/`
+      )
+    ).toThrow(/carrying credentials/);
+  });
+
+  it('refuses a scheme that is not http or https', () => {
+    // A blob: URL reports the host's origin while being nothing this server
+    // can fetch or address as a path.
+    expect(() =>
+      api().resolveHref('blob:https://dav.example.net/uuid', `${ORIGIN}/`)
+    ).toThrow(/does not follow/);
+  });
+
+  it('escapes what it quotes from the server', () => {
+    expect(() =>
+      api().resolveHref('https://evil\u{202e}.example/', `${ORIGIN}/`)
+    ).toThrow(/\\u202e/);
+  });
+});
+
+describe('the sink', () => {
+  it('sends credentials to the configured origin and nowhere else', async () => {
+    // Every caller passes a resolveHref or resourceUrl result, so this cannot
+    // be reached today. The point is that the property lives here rather
+    // than in eight call sites: a future tool handing an unresolved href to
+    // `get` meets this line, not the network.
+    let called = false;
+    vi.stubGlobal('fetch', async () => {
+      called = true;
+      return Promise.resolve(new Response('', { status: 200 }));
+    });
+    await expect(api().get('https://evil.example/x.ics')).rejects.toThrow(
+      /only the configured server/
+    );
+    expect(called).toBe(false);
+  });
+
+  it('is no weaker than the resolver upstream of it', async () => {
+    // A sink that is weaker than the check in front of it is not a sink. It
+    // used to compare `URL.origin` alone, and `URL.origin` omits the
+    // userinfo — so a link carrying credentials on the right host satisfied
+    // "same origin" and would have gone on the wire. That is the exact gap
+    // `resolveHref` was tightened to close, left open one layer further down,
+    // where the credentials actually leave the process.
+    for (const url of [
+      'https://x:y@dav.example.net/tester/work/a.ics',
+      'https://:secret@dav.example.net/tester/work/a.ics',
+      'blob:https://dav.example.net/tester/work/a.ics',
+    ]) {
+      let called = false;
+      vi.stubGlobal('fetch', async () => {
+        called = true;
+        return Promise.resolve(new Response('', { status: 200 }));
+      });
+      await expect(api().get(url), url).rejects.toThrow(
+        /only the configured server/
+      );
+      expect(called, url).toBe(false);
+    }
+  });
 });
 
 describe('refusing an oversized answer', () => {

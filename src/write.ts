@@ -10,6 +10,7 @@ import {
   COMPONENT_OF,
   ICAL,
   componentsOf,
+  foldNewlines,
   newCalendar,
   parseCalendar,
   readText,
@@ -20,7 +21,7 @@ import {
   writeTime,
   type Kind,
 } from './ical.js';
-import { parseRecurrenceId, spellRecurrenceId } from './recurrence.js';
+import { instantOfProperty, parseRecurrenceId } from './recurrence.js';
 import { isSimpleAlarm } from './shape.js';
 import { parseInstant } from './time.js';
 
@@ -113,6 +114,9 @@ export async function loadForWrite(
   const components = componentsOf(root, id.kind);
   const { master, overrides } = splitSeries(components);
 
+  // A series id with `this_occurrence` never gets here — `resolveScope` in the
+  // event tools refuses it — so an id without a recurrence part means the
+  // stored entry as a whole, and the branch below is the only one it takes.
   if (id.recurrenceId === undefined || scope === 'entire_series') {
     const target = master ?? components[0];
     if (target === undefined) {
@@ -142,20 +146,24 @@ export async function loadForWrite(
   // A single occurrence: an existing override, or a new one cloned from the
   // master. Creating it here is what makes "change just this one" work on a
   // series that has never been edited before.
+  // Matched on the **instant**, never on a serialised spelling — the same rule
+  // `excludeOccurrence` states at length, applied at the other end of the same
+  // problem. Two spellings of one occurrence agree only as long as both sides
+  // build them identically, and they stop agreeing on a non-conforming
+  // `RECURRENCE-ID;VALUE=DATE;TZID=…`: the listing side resolves the zone, the
+  // writing side drops it for a DATE value, and the two land a day apart. The
+  // lookup then found nothing, cloned a *second* override from the master, and
+  // left the resource with two components claiming the same instance.
   const wanted = parseRecurrenceId(id.recurrenceId, context.config.timezone);
+  const wantedInstant = wanted.instant.getTime();
   const existing = overrides.find((override) => {
     const property = override.getFirstProperty('recurrence-id');
     if (property === null) return false;
-    const spelling = spellRecurrenceId(
-      {
-        instant: valueInstant(property, context.config.timezone),
-        zone: zoneOf(property),
-        allDay: (property.getFirstValue() as ICAL.Time).isDate,
-        utc: false,
-      },
+    const instant = instantOfProperty(
+      property,
       context.config.timezone
-    );
-    return spelling === id.recurrenceId;
+    ).instant.getTime();
+    return Math.abs(instant - wantedInstant) < 1000;
   });
 
   if (existing !== undefined) {
@@ -199,28 +207,6 @@ function hasThisAndFuture(overrides: readonly ICAL.Component[]): boolean {
     return property !== null && property.getParameter('range') !== undefined;
   });
 }
-
-function zoneOf(property: ICAL.Property): string | undefined {
-  const tzid = property.getParameter('tzid');
-  return typeof tzid === 'string' ? tzid : undefined;
-}
-
-function valueInstant(property: ICAL.Property, fallbackZone: string): Date {
-  const value = property.getFirstValue() as ICAL.Time;
-  const zone = zoneOf(property);
-  const spelled = parseRecurrenceId(
-    value.isDate
-      ? `VALUE=DATE:${pad4(value.year)}${pad2(value.month)}${pad2(value.day)}`
-      : zone === undefined
-        ? `${pad4(value.year)}${pad2(value.month)}${pad2(value.day)}T${pad2(value.hour)}${pad2(value.minute)}${pad2(value.second)}Z`
-        : `TZID=${zone}:${pad4(value.year)}${pad2(value.month)}${pad2(value.day)}T${pad2(value.hour)}${pad2(value.minute)}${pad2(value.second)}`,
-    fallbackZone
-  );
-  return spelled.instant;
-}
-
-const pad2 = (value: number): string => String(value).padStart(2, '0');
-const pad4 = (value: number): string => String(value).padStart(4, '0');
 
 /**
  * Properties that describe the *series* and must not travel into an override.
@@ -339,7 +325,9 @@ export function applyAlarms(
     valarm.updatePropertyWithValue('action', 'DISPLAY');
     valarm.updatePropertyWithValue(
       'description',
-      alarm.description ?? 'Reminder'
+      alarm.description === undefined
+        ? 'Reminder'
+        : foldNewlines(alarm.description)
     );
     const trigger = new ICAL.Property('trigger', valarm);
     if (/^[+-]?P/i.test(alarm.trigger.trim())) {
@@ -378,7 +366,7 @@ export function applyCommonFields(
     component.removeAllProperties('categories');
     if (fields.categories !== null && fields.categories.length > 0) {
       const property = new ICAL.Property('categories', component);
-      property.setValues([...fields.categories]);
+      property.setValues(fields.categories.map(foldNewlines));
       component.addProperty(property);
     }
   }
@@ -387,11 +375,17 @@ export function applyCommonFields(
 /**
  * Writes an edited document back, guarded by the ETag read in the same call.
  *
- * On 412 the resource is re-read **once** and the current state is reported.
- * There is deliberately no retry: a blind second attempt is precisely the lost
+ * On 412 nothing is retried: a blind second attempt is precisely the lost
  * update the ETag just prevented. What the caller gets instead is a sentence
- * they can act on — what the entry is now, that nothing was written, and that
- * the same call will work on top of the current version.
+ * they can act on — that nothing was written, and that the same call will work
+ * on top of the current version.
+ *
+ * The entry's new content is deliberately **not** quoted in that sentence. It
+ * used to be: the resource was re-read and its summary pasted into the error.
+ * But that summary is whatever the *other* writer just stored, and an error
+ * message is this server's own voice — no fence, no `untrusted` marker, no
+ * sanitising. The `get_*` tool for the entry reports the same thing with all
+ * of that in place, and the message says so.
  *
  * `bumpSequence: false` is for a write made *as an attendee* rather than as the
  * organiser — see {@link touch}, which explains why answering an invitation
@@ -400,7 +394,6 @@ export function applyCommonFields(
 export async function commit(
   context: ToolContext,
   loaded: LoadedEntry,
-  describe: (component: ICAL.Component) => Record<string, unknown>,
   options: { bumpSequence?: boolean } = {}
 ): Promise<{ etag: string | undefined }> {
   if (loaded.createdOverride) {
@@ -413,26 +406,12 @@ export async function commit(
     return await context.api.put(loaded.url, ics, { ifMatch: loaded.etag });
   } catch (error) {
     if (!(error instanceof CalDavApiError) || error.status !== 412) throw error;
-    let current: Record<string, unknown> | undefined;
-    try {
-      const fresh = await context.api.get(loaded.url);
-      const root = parseCalendar(fresh.ics, 'the entry');
-      const components = componentsOf(root, loaded.target.name as Kind);
-      const { master } = splitSeries(components);
-      if (master !== undefined) current = describe(master);
-    } catch {
-      // The re-read is a courtesy. If it fails too, the message below is still
-      // the right one.
-    }
     throw new PreconditionFailedError(
       'caldav-mcp: this entry changed on the server between reading it and ' +
-        'writing it, so **nothing was written**. ' +
-        (current === undefined
-          ? ''
-          : `It is now: ${JSON.stringify(current)}. `) +
-        'If your change still applies, make the same call again — it will be ' +
-        'applied on top of the current version.',
-      current
+        'writing it, so **nothing was written**. Read it again with the ' +
+        'get_* tool for this kind of entry to see what it is now. If your ' +
+        'change still applies, make the same call again — it will be applied ' +
+        'on top of the current version.'
     );
   }
 }
