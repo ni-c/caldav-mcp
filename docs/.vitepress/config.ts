@@ -8,11 +8,11 @@ const { version } = JSON.parse(
   readFileSync(fileURLToPath(new URL('../../package.json', import.meta.url)), 'utf8')
 ) as { version: string };
 
-const site = 'https://{{REPO}}.ni-c.de';
-const description = '{{DESCRIPTION}}';
+const site = 'https://caldav-mcp.ni-c.de';
+const description = 'MCP server for CalDAV calendars: events, tasks and journal entries';
 
 export default defineConfig({
-  title: '{{REPO}}',
+  title: 'caldav-mcp',
   description,
   lang: 'en-US',
   cleanUrls: true,
@@ -25,8 +25,8 @@ export default defineConfig({
     ['link', { rel: 'icon', type: 'image/svg+xml', href: '/favicon.svg' }],
     ['meta', { name: 'theme-color', content: '#4f46e5' }],
     ['meta', { property: 'og:type', content: 'website' }],
-    ['meta', { property: 'og:site_name', content: '{{REPO}}' }],
-    ['meta', { property: 'og:title', content: '{{REPO}}' }],
+    ['meta', { property: 'og:site_name', content: 'caldav-mcp' }],
+    ['meta', { property: 'og:title', content: 'caldav-mcp' }],
     ['meta', { property: 'og:description', content: description }],
     ['meta', { property: 'og:url', content: site }],
     ['meta', { property: 'og:image', content: `${site}/og.png` }],
@@ -35,7 +35,7 @@ export default defineConfig({
   ],
 
   themeConfig: {
-    siteTitle: '{{REPO}}',
+    siteTitle: 'caldav-mcp',
 
     nav: [
       { text: 'Guide', link: '/guide/', activeMatch: '/guide/' },
@@ -44,8 +44,8 @@ export default defineConfig({
         text: `v${version}`,
         items: [
           { text: 'Changelog', link: '/reference/changelog' },
-          { text: 'Releases', link: 'https://github.com/ni-c/{{REPO}}/releases' },
-          { text: 'npm package', link: 'https://www.npmjs.com/package/{{PACKAGE_NAME}}' },
+          { text: 'Releases', link: 'https://github.com/ni-c/caldav-mcp/releases' },
+          { text: 'npm package', link: 'https://www.npmjs.com/package/@ni-c/caldav-mcp' },
         ],
       },
     ],
@@ -55,7 +55,7 @@ export default defineConfig({
         {
           text: 'Introduction',
           items: [
-            { text: 'What is {{REPO}}?', link: '/guide/' },
+            { text: 'What is caldav-mcp?', link: '/guide/' },
             { text: 'Getting started', link: '/guide/getting-started' },
             { text: 'Connecting clients', link: '/guide/clients' },
           ],
@@ -83,12 +83,12 @@ export default defineConfig({
       ],
     },
 
-    socialLinks: [{ icon: 'github', link: 'https://github.com/ni-c/{{REPO}}' }],
+    socialLinks: [{ icon: 'github', link: 'https://github.com/ni-c/caldav-mcp' }],
 
     search: { provider: 'local' },
 
     editLink: {
-      pattern: 'https://github.com/ni-c/{{REPO}}/edit/main/docs/:path',
+      pattern: 'https://github.com/ni-c/caldav-mcp/edit/main/docs/:path',
       text: 'Edit this page on GitHub',
     },
 

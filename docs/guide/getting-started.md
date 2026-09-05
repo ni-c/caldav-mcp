@@ -3,13 +3,13 @@
 ## Requirements
 
 - Node.js ≥ 22
-- A running {{SERVICE}} instance
+- A running CalDAV instance
 - An API token with the scopes listed under [Configuration](/guide/configuration)
 
 ## Run it
 
 ```sh
-{{ENV_PREFIX}}_URL=https://service.example.com {{ENV_PREFIX}}_TOKEN=… npx -y {{PACKAGE_NAME}}
+CALDAV_URL=https://service.example.com CALDAV_TOKEN=… npx -y @ni-c/caldav-mcp
 ```
 
 Without credentials the server still starts and lists its tools; every call then

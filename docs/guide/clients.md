@@ -3,7 +3,7 @@
 ## Claude Code
 
 ```sh
-claude mcp add {{REPO}} -- npx -y {{PACKAGE_NAME}}
+claude mcp add caldav-mcp -- npx -y @ni-c/caldav-mcp
 ```
 
 ## Claude Desktop
@@ -27,7 +27,7 @@ claude mcp add {{REPO}} -- npx -y {{PACKAGE_NAME}}
 ## Through mcp-hub
 
 [mcp-hub](https://mcp-hub.ni-c.de) serves many stdio MCP servers from one container
-behind a single HTTPS endpoint, so {{REPO}} can be reached from clients that cannot
+behind a single HTTPS endpoint, so caldav-mcp can be reached from clients that cannot
 spawn a local process — ChatGPT connectors, Claude on the web, Cursor — without a
 container, a hostname and an OAuth stack of its own.
 
@@ -37,15 +37,15 @@ already have:
 ```json
 {
   "mcpServers": {
-    "{{REPO}}": {
+    "caldav-mcp": {
       "command": "npx",
-      "args": ["-y", "{{PACKAGE_NAME}}"],
+      "args": ["-y", "@ni-c/caldav-mcp"],
       "env": {
-        "{{ENV_PREFIX}}_URL": "https://service.example.com",
-        "{{ENV_PREFIX}}_TOKEN": "…",
-        "{{ENV_PREFIX}}_ALLOW_TOOLS": "essential"
+        "CALDAV_URL": "https://service.example.com",
+        "CALDAV_TOKEN": "…",
+        "CALDAV_ALLOW_TOOLS": "essential"
       },
-      "denyTools": ["{{DENY_EXAMPLE}}"]
+      "denyTools": ["delete_event"]
     }
   }
 }
@@ -54,14 +54,14 @@ already have:
 `allowTools` and `denyTools` are the hub's **own** per-server filter and take exact
 tool names or `list_*` prefixes — the same syntax as the two environment variables,
 so a list moves between them verbatim. What does **not** move is `essential`: that
-preset is a {{REPO}} feature and belongs in `env` as shown.
+preset is a caldav-mcp feature and belongs in `env` as shown.
 `"allowTools": ["essential"]` would be a name the hub cannot resolve.
 
 The two compose, and it is worth knowing which does what: the server registers what
 its environment variables allow, and the hub exposes what its arrays allow.
 Filtering in the server is the tighter of the two — the tool is never built.
 
-Register `https://your-host/{{REPO}}/mcp` as a connector and you get this server
+Register `https://your-host/caldav-mcp/mcp` as a connector and you get this server
 alone. Register the hub's `/hub` endpoint instead and you reach _every_ server
 behind it through six meta-tools, which is the answer worth having once you run
 several of these at once.

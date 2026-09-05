@@ -1,4 +1,4 @@
-import type { CalDavApi } from './api.js';
+import { CalDavApiError, type CalDavApi } from './api.js';
 import {
   CalendarRegistry,
   normalisePath,
@@ -125,6 +125,34 @@ export class Discovery {
     return this.inFlight;
   }
 
+  /**
+   * A PROPFIND that is allowed to come back with nothing.
+   *
+   * Each numbered step below is a *guess* about where the DAV endpoint is, and
+   * a guess that turns out to be wrong must not end the walk. Pointing
+   * CALDAV_URL at `https://example.net` when Baikal serves DAV from
+   * `/dav.php/` is the case: the origin answers a PROPFIND with its ordinary
+   * HTML page, the DOCTYPE guard refuses it — correctly, that is not a DAV
+   * document — and the exception used to escape before the well-known route,
+   * which is *precisely* the route RFC 6764 defines for this situation, had
+   * been tried. The result was a server that could not find an endpoint it was
+   * one redirect away from, and an error message about XML.
+   *
+   * Only the parse and the status are softened. A network failure, a refused
+   * connection or a 401 still throws, because those are not "the endpoint is
+   * somewhere else" — they are the answer.
+   */
+  private async probe(
+    url: string
+  ): Promise<Awaited<ReturnType<CalDavApi['propfind']>>> {
+    try {
+      return await this.api.propfind(url, 0, HOME_PROPS);
+    } catch (error) {
+      if (error instanceof CalDavApiError) throw error;
+      return [];
+    }
+  }
+
   private async discoverPrincipal(): Promise<Principal> {
     const notes: string[] = [];
     const root = `${this.api.url}/`;
@@ -132,7 +160,7 @@ export class Discovery {
     // 1. Ask the configured URL about itself. This answers the collection case
     //    outright and, on most servers, hands over the principal in the same
     //    round trip.
-    const first = await this.api.propfind(root, 0, HOME_PROPS);
+    const first = await this.probe(root);
     const self = first[0];
     if (
       self !== undefined &&
@@ -157,7 +185,7 @@ export class Discovery {
     if (principalHref === undefined) {
       const context = await this.api.probeWellKnown();
       if (context !== undefined) {
-        const viaWellKnown = await this.api.propfind(context, 0, HOME_PROPS);
+        const viaWellKnown = await this.probe(context);
         principalHref = firstHref(
           viaWellKnown[0]?.props['current-user-principal']
         );
@@ -168,7 +196,7 @@ export class Discovery {
     if (principalHref === undefined) {
       const originRoot = `${this.api.origin}/`;
       if (originRoot !== root) {
-        const viaOrigin = await this.api.propfind(originRoot, 0, HOME_PROPS);
+        const viaOrigin = await this.probe(originRoot);
         principalHref = firstHref(
           viaOrigin[0]?.props['current-user-principal']
         );

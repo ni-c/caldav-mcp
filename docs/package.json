@@ -1,8 +1,8 @@
 {
-  "name": "{{REPO}}-docs",
+  "name": "caldav-mcp-docs",
   "version": "0.0.0",
   "private": true,
-  "description": "Documentation site for {{REPO}} (https://{{REPO}}.ni-c.de)",
+  "description": "Documentation site for caldav-mcp (https://caldav-mcp.ni-c.de)",
   "type": "module",
   "scripts": {
     "dev": "vitepress dev",

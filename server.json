@@ -1,94 +1,191 @@
 {
-  "_comment": "Template. Placeholders: {{REPO}}, {{TITLE}}, {{DESCRIPTION_MAX_100_CHARS}}, {{PACKAGE_NAME}}, {{VERSION}}, {{ENV_*}}. Delete this _comment key and the oci package block if the project ships no image. The description limit of 100 characters is enforced by the registry. Note the oci entry has NO version field on purpose — its version lives in the identifier tag. EVERY environment variable must appear in BOTH blocks: osm-mcp shipped with 2 of its 9 declared because one block was updated and the other was not.",
   "$schema": "https://static.modelcontextprotocol.io/schemas/2025-12-11/server.schema.json",
-  "name": "io.github.ni-c/{{REPO}}",
-  "title": "{{TITLE}}",
-  "description": "{{DESCRIPTION_MAX_100_CHARS}}",
-  "websiteUrl": "https://{{REPO}}.ni-c.de",
+  "name": "io.github.ni-c/caldav-mcp",
+  "title": "CalDAV calendars",
+  "description": "Read and write CalDAV calendars: events, tasks and journal entries over the open standard",
+  "websiteUrl": "https://caldav-mcp.ni-c.de",
   "repository": {
-    "url": "https://github.com/ni-c/{{REPO}}",
+    "url": "https://github.com/ni-c/caldav-mcp",
     "source": "github"
   },
-  "version": "{{VERSION}}",
+  "version": "0.1.0",
   "packages": [
     {
       "registryType": "npm",
-      "identifier": "{{PACKAGE_NAME}}",
-      "version": "{{VERSION}}",
+      "identifier": "@ni-c/caldav-mcp",
+      "version": "0.1.0",
       "transport": {
         "type": "stdio"
       },
       "environmentVariables": [
         {
-          "name": "{{ENV_URL}}",
-          "description": "Base URL of the target instance, e.g. https://service.example.com",
+          "name": "CALDAV_URL",
+          "description": "Root of the CalDAV server, e.g. https://dav.example.net. A calendar collection URL also works.",
           "isRequired": true,
           "format": "string"
         },
         {
-          "name": "{{ENV_TOKEN}}",
-          "description": "API token with the scopes listed in the README",
-          "isRequired": true,
+          "name": "CALDAV_USERNAME",
+          "description": "Account name. Most hosted services want an app-specific password with it.",
+          "isRequired": false,
+          "format": "string"
+        },
+        {
+          "name": "CALDAV_PASSWORD",
+          "description": "Password or app-specific password. Deleted from the environment once read.",
+          "isRequired": false,
           "isSecret": true,
           "format": "string"
         },
         {
-          "name": "{{ENV_READ_ONLY}}",
+          "name": "CALDAV_TOKEN",
+          "description": "Bearer token, as an alternative to username and password. Not both.",
+          "isRequired": false,
+          "isSecret": true,
+          "format": "string"
+        },
+        {
+          "name": "CALDAV_CALENDARS",
+          "description": "Comma-separated calendars this server may touch, by path or final path segment. Default: all of them.",
+          "isRequired": false,
+          "format": "string"
+        },
+        {
+          "name": "CALDAV_TIMEZONE",
+          "description": "IANA zone for timestamps that carry no offset, e.g. Europe/Berlin (default: UTC)",
+          "isRequired": false,
+          "format": "string"
+        },
+        {
+          "name": "CALDAV_USER_EMAIL",
+          "description": "The address you are invited as, so respond_to_event can find your own attendee line",
+          "isRequired": false,
+          "format": "string"
+        },
+        {
+          "name": "CALDAV_MAX_EVENTS",
+          "description": "Entries a listing returns by default, 1 to 500 (default: 100)",
+          "isRequired": false,
+          "format": "number"
+        },
+        {
+          "name": "CALDAV_READ_ONLY",
           "description": "Set to true to register only the read tools (default: false)",
           "isRequired": false,
           "format": "boolean"
         },
         {
-          "name": "{{ENV_ALLOW_TOOLS}}",
+          "name": "CALDAV_INSECURE_TLS",
+          "description": "Set to true to accept a self-signed certificate on the configured host only (default: false)",
+          "isRequired": false,
+          "format": "boolean"
+        },
+        {
+          "name": "CALDAV_ALLOW_TOOLS",
           "description": "Comma-separated tool names or list_* prefixes to register; 'essential' selects a curated preset (default: all tools)",
           "isRequired": false,
           "format": "string"
         },
         {
-          "name": "{{ENV_DENY_TOOLS}}",
+          "name": "CALDAV_DENY_TOOLS",
           "description": "Comma-separated tool names or list_* prefixes to remove from whatever the allow list left",
           "isRequired": false,
           "format": "string"
+        },
+        {
+          "name": "ELICITATION",
+          "description": "Deliberately unprefixed, and reaches every MCP server in the environment. Set to false to make guarded tools use the two-call token instead of a dialog (default: true)",
+          "isRequired": false,
+          "format": "boolean"
         }
       ]
     },
     {
       "registryType": "oci",
-      "identifier": "ghcr.io/ni-c/{{REPO}}:{{VERSION}}",
+      "identifier": "ghcr.io/ni-c/caldav-mcp:0.1.0",
       "transport": {
         "type": "stdio"
       },
       "environmentVariables": [
         {
-          "name": "{{ENV_URL}}",
-          "description": "Base URL of the target instance, e.g. https://service.example.com",
+          "name": "CALDAV_URL",
+          "description": "Root of the CalDAV server, e.g. https://dav.example.net. A calendar collection URL also works.",
           "isRequired": true,
           "format": "string"
         },
         {
-          "name": "{{ENV_TOKEN}}",
-          "description": "API token with the scopes listed in the README",
-          "isRequired": true,
+          "name": "CALDAV_USERNAME",
+          "description": "Account name. Most hosted services want an app-specific password with it.",
+          "isRequired": false,
+          "format": "string"
+        },
+        {
+          "name": "CALDAV_PASSWORD",
+          "description": "Password or app-specific password. Deleted from the environment once read.",
+          "isRequired": false,
           "isSecret": true,
           "format": "string"
         },
         {
-          "name": "{{ENV_READ_ONLY}}",
+          "name": "CALDAV_TOKEN",
+          "description": "Bearer token, as an alternative to username and password. Not both.",
+          "isRequired": false,
+          "isSecret": true,
+          "format": "string"
+        },
+        {
+          "name": "CALDAV_CALENDARS",
+          "description": "Comma-separated calendars this server may touch, by path or final path segment. Default: all of them.",
+          "isRequired": false,
+          "format": "string"
+        },
+        {
+          "name": "CALDAV_TIMEZONE",
+          "description": "IANA zone for timestamps that carry no offset, e.g. Europe/Berlin (default: UTC)",
+          "isRequired": false,
+          "format": "string"
+        },
+        {
+          "name": "CALDAV_USER_EMAIL",
+          "description": "The address you are invited as, so respond_to_event can find your own attendee line",
+          "isRequired": false,
+          "format": "string"
+        },
+        {
+          "name": "CALDAV_MAX_EVENTS",
+          "description": "Entries a listing returns by default, 1 to 500 (default: 100)",
+          "isRequired": false,
+          "format": "number"
+        },
+        {
+          "name": "CALDAV_READ_ONLY",
           "description": "Set to true to register only the read tools (default: false)",
           "isRequired": false,
           "format": "boolean"
         },
         {
-          "name": "{{ENV_ALLOW_TOOLS}}",
+          "name": "CALDAV_INSECURE_TLS",
+          "description": "Set to true to accept a self-signed certificate on the configured host only (default: false)",
+          "isRequired": false,
+          "format": "boolean"
+        },
+        {
+          "name": "CALDAV_ALLOW_TOOLS",
           "description": "Comma-separated tool names or list_* prefixes to register; 'essential' selects a curated preset (default: all tools)",
           "isRequired": false,
           "format": "string"
         },
         {
-          "name": "{{ENV_DENY_TOOLS}}",
+          "name": "CALDAV_DENY_TOOLS",
           "description": "Comma-separated tool names or list_* prefixes to remove from whatever the allow list left",
           "isRequired": false,
           "format": "string"
+        },
+        {
+          "name": "ELICITATION",
+          "description": "Deliberately unprefixed, and reaches every MCP server in the environment. Set to false to make guarded tools use the two-call token instead of a dialog (default: true)",
+          "isRequired": false,
+          "format": "boolean"
         }
       ]
     }

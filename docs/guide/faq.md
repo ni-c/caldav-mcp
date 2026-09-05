@@ -7,10 +7,10 @@
 
 Something narrowed the list. In order of likelihood:
 
-- `{{ENV_PREFIX}}_READ_ONLY` is set, and it is a write tool.
-- `{{ENV_PREFIX}}_ALLOW_TOOLS` is set and does not name it — it is an allow list, so
+- `CALDAV_READ_ONLY` is set, and it is a write tool.
+- `CALDAV_ALLOW_TOOLS` is set and does not name it — it is an allow list, so
   anything not named is out.
-- `{{ENV_PREFIX}}_DENY_TOOLS` names it, possibly through a prefix such as `delete_*`.
+- `CALDAV_DENY_TOOLS` names it, possibly through a prefix such as `delete_*`.
 
 A filtered tool is not registered at all, so it is missing from `tools/list` and
 answers `tools/call` with "tool not found" — the same as a write tool under

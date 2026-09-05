@@ -6,12 +6,12 @@
 
 | Variable | Required | Default | Description |
 | --- | --- | --- | --- |
-| `{{ENV_PREFIX}}_URL` | yes | — | Base URL of the {{SERVICE}} instance |
-| `{{ENV_PREFIX}}_TOKEN` | yes | — | API token |
-| `{{ENV_PREFIX}}_READ_ONLY` | no | `false` | `true` registers only the read tools |
-| `{{ENV_PREFIX}}_ALLOW_TOOLS` | no | — | Tool names, `list_*` prefixes or `essential`; only these register |
-| `{{ENV_PREFIX}}_DENY_TOOLS` | no | — | Same syntax; subtracted from whatever the allow list left |
-| `{{ENV_PREFIX}}_INSECURE_TLS` | no | `false` | `true` accepts self-signed certificates |
+| `CALDAV_URL` | yes | — | Base URL of the CalDAV instance |
+| `CALDAV_TOKEN` | yes | — | API token |
+| `CALDAV_READ_ONLY` | no | `false` | `true` registers only the read tools |
+| `CALDAV_ALLOW_TOOLS` | no | — | Tool names, `list_*` prefixes or `essential`; only these register |
+| `CALDAV_DENY_TOOLS` | no | — | Same syntax; subtracted from whatever the allow list left |
+| `CALDAV_INSECURE_TLS` | no | `false` | `true` accepts self-signed certificates |
 | `ELICITATION` | no | `true` | `false` replaces the approval dialog with the two-call token. **Not prefixed** |
 
 ## `ELICITATION`
@@ -28,29 +28,29 @@ Two ways it differs from every other variable here:
 - **No prefix.** One `export ELICITATION=false` reaches every MCP server in the same
   environment, not just this one. That is the point of it and also its risk; see
   [Asking a person](/guide/approval).
-- **Fatal on anything else.** Where the `{{ENV_PREFIX}}_*` booleans fail *off* on a
+- **Fatal on anything else.** Where the `CALDAV_*` booleans fail *off* on a
   typo, this one stops the server with exit code 1. It is the only variable here
   that defaults to *on*, and a typo that fell back would leave the dialog running
   while you believed it was off.
 
 Values are trimmed and matched case-insensitively. It is read *after*
-`{{ENV_PREFIX}}_TOKEN` is deleted from `process.env`, so the fatal path cannot leave
+`CALDAV_TOKEN` is deleted from `process.env`, so the fatal path cannot leave
 the token sitting there for a crash reporter.
 
 ## Narrowing the tool list
 
-`{{ENV_PREFIX}}_ALLOW_TOOLS` and `{{ENV_PREFIX}}_DENY_TOOLS` are comma-separated.
+`CALDAV_ALLOW_TOOLS` and `CALDAV_DENY_TOOLS` are comma-separated.
 Each entry is either an exact tool name or a prefix with a single trailing `*`:
 
 | Value | Registers |
 | --- | --- |
 | `essential` | the curated preset, marked in the [tool reference](/reference/tools) |
-| `{{ALLOW_EXAMPLE}}` | exactly those |
+| `list_events,get_event,create_event` | exactly those |
 | `list_*` | every tool whose name starts with `list_` |
 | `*` | everything — the same as leaving it unset |
 
 Entries are trimmed and matched case-insensitively; empty entries are ignored, and a
-value that is empty or only whitespace counts as unset — `{{ENV_PREFIX}}_ALLOW_TOOLS=`
+value that is empty or only whitespace counts as unset — `CALDAV_ALLOW_TOOLS=`
 in a compose file does not mean "allow nothing". `essential` is recognised only in the
 allow list.
 
@@ -60,7 +60,7 @@ alternative — ignoring the entry — leaves a tool missing from `tools/list` w
 nothing pointing at the cause. If both lists together remove everything, the server
 refuses to start rather than offering an empty tool list.
 
-Under `{{ENV_PREFIX}}_READ_ONLY`, an exact write-tool name in the allow list is an
+Under `CALDAV_READ_ONLY`, an exact write-tool name in the allow list is an
 error naming the read-only setting rather than "unknown tool"; a pattern covering
 write tools is accepted and merely contributes nothing, with a warning on stderr.
 Deny entries are exempt: denying an already-suppressed tool is how a defensive list is

@@ -23,7 +23,7 @@ The guarded tools ask a person through MCP elicitation before they act.
 `ELICITATION=false` takes them to the two-call token instead. It does not remove
 the guard; there is no setting in which a guarded call goes unannounced.
 
-The variable deliberately carries no `{{ENV_PREFIX}}_` prefix, which means it
+The variable deliberately carries no `CALDAV_` prefix, which means it
 reaches every MCP server in the same environment, and — unlike the booleans
 above — a value it does not recognise **stops the server** rather than failing
 off. See [Asking a person](/guide/approval).
@@ -31,12 +31,12 @@ off. See [Asking a person](/guide/approval).
 ## Choosing the tools that load
 
 Read-only mode is one cut, along a line this server drew for you.
-`{{ENV_PREFIX}}_ALLOW_TOOLS` and `{{ENV_PREFIX}}_DENY_TOOLS` let you draw your own:
+`CALDAV_ALLOW_TOOLS` and `CALDAV_DENY_TOOLS` let you draw your own:
 
 ```sh
-{{ENV_PREFIX}}_ALLOW_TOOLS=essential
-{{ENV_PREFIX}}_ALLOW_TOOLS={{ALLOW_EXAMPLE}}
-{{ENV_PREFIX}}_DENY_TOOLS={{DENY_EXAMPLE}}
+CALDAV_ALLOW_TOOLS=essential
+CALDAV_ALLOW_TOOLS=list_events,get_event,create_event
+CALDAV_DENY_TOOLS=delete_event
 ```
 
 Why bother, when all of them work: a model chooses the right tool far more reliably
@@ -50,13 +50,13 @@ prefix with a trailing `*` — `list_*` matches every tool whose name starts wit
 empty value counts as unset. Nothing else is a pattern: `*_thing` and `list_*_x` are
 rejected rather than silently matching nothing.
 
-**`essential`** is a curated preset: {{ESSENTIAL_LIST}}. It is marked per tool in the
+**`essential`** is a curated preset: `list_calendars`, `list_events`, `get_event`, `search_events`, `get_free_busy`, `create_event` and `update_event` — enough to see what is on, find a gap and put something in, with nothing irreversible in reach. It is marked per tool in the
 [tool reference](/reference/tools), generated from the same constant the filter
 reads, so the two cannot drift. It composes — naming a tool alongside it puts that
-one back, and `{{ENV_PREFIX}}_DENY_TOOLS` takes one away.
+one back, and `CALDAV_DENY_TOOLS` takes one away.
 
-**Both together.** `{{ENV_PREFIX}}_ALLOW_TOOLS` decides what is in;
-`{{ENV_PREFIX}}_DENY_TOOLS` is then subtracted from the result. With only a deny
+**Both together.** `CALDAV_ALLOW_TOOLS` decides what is in;
+`CALDAV_DENY_TOOLS` is then subtracted from the result. With only a deny
 list, everything else stays.
 
 **A name that matches nothing stops the server**, with the offending entry and the
@@ -65,14 +65,14 @@ from `tools/list`, and nobody traces an absence back to an environment variable.
 same applies to a pattern that matches no tool.
 
 **With read-only mode**, the write tools are not registered at all, so naming one
-explicitly in `{{ENV_PREFIX}}_ALLOW_TOOLS` is an error that says so — rather than
+explicitly in `CALDAV_ALLOW_TOOLS` is an error that says so — rather than
 calling a tool unknown when it plainly exists. A _pattern_ that covers write tools is
 fine and simply contributes nothing, which is what makes `get_*,create_*` a usable
-template for both kinds of deployment; and `{{ENV_PREFIX}}_ALLOW_TOOLS=essential`
+template for both kinds of deployment; and `CALDAV_ALLOW_TOOLS=essential`
 narrows to the read half of the preset.
 
 ::: tip It is the same cut, not a second one
 A filtered tool is never registered, so it is absent from `tools/list` and unknown to
-`tools/call` alike — exactly what `{{ENV_PREFIX}}_READ_ONLY` does to a write tool.
+`tools/call` alike — exactly what `CALDAV_READ_ONLY` does to a write tool.
 There is no "hidden but callable" state to reason about.
 :::

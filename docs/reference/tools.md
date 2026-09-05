@@ -3,8 +3,8 @@
 One section per tool: what it does, its parameters, and — for the guarded ones —
 what a person is asked.
 
-All of them are registered unless you say otherwise. `{{ENV_PREFIX}}_ALLOW_TOOLS` and
-`{{ENV_PREFIX}}_DENY_TOOLS` narrow the list to the ones you want, and `essential`
+All of them are registered unless you say otherwise. `CALDAV_ALLOW_TOOLS` and
+`CALDAV_DENY_TOOLS` narrow the list to the ones you want, and `essential`
 selects the ones marked **essential** below — see
 [choosing the tools that load](/guide/configuration#choosing-the-tools-that-load).
 

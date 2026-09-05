@@ -1,6 +1,6 @@
 # Security
 
-This page is the prose version of [SECURITY.md](https://github.com/ni-c/{{REPO}}/blob/main/SECURITY.md).
+This page is the prose version of [SECURITY.md](https://github.com/ni-c/caldav-mcp/blob/main/SECURITY.md).
 
 ## Trust model
 
@@ -20,4 +20,4 @@ This page is the prose version of [SECURITY.md](https://github.com/ni-c/{{REPO}}
 
 ## Reporting a vulnerability
 
-Use [private vulnerability reporting](https://github.com/ni-c/{{REPO}}/security/advisories/new).
+Use [private vulnerability reporting](https://github.com/ni-c/caldav-mcp/security/advisories/new).
