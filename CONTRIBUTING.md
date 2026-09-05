@@ -27,33 +27,50 @@ The unit tests replace `fetch`, so what they check is that this server speaks
 CalDAV the way its author understood it — against a stub written to that same
 understanding. Only a real server can disagree, and CalDAV servers disagree a
 lot: namespace prefixes, href forms, which preconditions come back on an error,
-whether `free-busy-query` expands recurrence for you. The integration suite
-spawns the built server over stdio against a real one in Docker and calls
-**every tool in the catalogue**, reading the resources back as raw `.ics` over
-the wire rather than trusting the reply — an assertion that goes through this
-server's own shaping only proves the server agrees with itself.
+whether `free-busy-query` expands recurrence for you.
 
 ```sh
-npm run build     # the suite runs dist/index.js, not src/
-docker compose -f test/integration/compose.yml up -d --wait radicale
+npm run build     # the suites run dist/index.js, not src/
+docker compose -f test/integration/compose.yml up -d --wait
 npm run test:integration
 docker compose -f test/integration/compose.yml down -v
 ```
 
-The bootstrap creates its calendars with `MKCALENDAR` over the wire, which is
-something this server deliberately cannot do — the suite must not lean on a
-capability that is documented as absent. It then empties each collection before
-seeding it, so a run against a stack somebody left up means the same as a run
-against a fresh one. That was a real failure: a weekly series expanded into
-eleven occurrences instead of four and six assertions went red at once, which
-reads like broken code and is actually stale state.
+There are two suites against two servers, and they answer different questions.
 
-The container is a throwaway and the compose file binds `127.0.0.1` only. Point
+**Radicale is the coverage pass.** One story in order — the event it creates is
+the one the next test changes and the one after that deletes — with **every tool
+in the catalogue** called once and the `skipped` list empty. Where an assertion
+matters it reads the stored `.ics` back over plain HTTP rather than through this
+server, because a test that only calls `get_event` proves the server agrees with
+itself, which is not the question.
+
+**Baikal is the portability pass**, and it is deliberately not a second copy:
+running the same story twice would double the wall clock to re-prove the same
+thing. It asserts only where two correct CalDAV servers legitimately differ,
+which is where a server that has only ever met one of them is wrong without
+knowing it — a `/dav.php` path prefix, lowercase `d:`/`cal:` prefixes, entity
+decoding in `calendar-data`, ETag semantics across a different serialiser, the
+`text-match` collation retry, and the `start/duration` shape of a free/busy
+period. It found a real discovery bug on its first run, which is the argument
+for having it. There is no `expectEveryToolExercised` there, on purpose.
+
+Both bootstraps create their calendars with `MKCALENDAR` over the wire, which is
+something this server deliberately cannot do — a suite must not lean on a
+capability documented as absent. Baikal's _account_, by contrast, is seeded
+straight into its SQLite database rather than installed through the web wizard:
+that wizard is three CSRF-carrying form posts and a login, four chances to break
+on a cosmetic change to an admin page nothing here tests.
+
+Both then empty each collection before seeding it, so a run against a stack
+somebody left up means the same as a run against a fresh one. That was a real
+failure: a weekly series expanded into eleven occurrences instead of four and
+six assertions went red at once, which reads like broken code and is actually
+stale state. Run it twice before believing it.
+
+The containers are throwaways and the compose file binds `127.0.0.1` only. Point
 this at nothing whose data matters — the suite calls every delete the server
 has, and the harness refuses any backend URL that is not on this machine.
-
-Every tool in the catalogue is exercised; the `skipped` list is empty and should
-stay that way.
 
 For poking at one tool by hand, the inspector against the same stack:
 
