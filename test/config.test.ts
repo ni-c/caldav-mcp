@@ -38,13 +38,17 @@ afterEach(() => {
 });
 
 describe('credentials', () => {
-  it('deletes the password and the token from the environment', () => {
+  it('deletes the whole credential from the environment', () => {
     const source = env({ CALDAV_TOKEN: undefined });
     loadConfig(source);
     // Before any branch that can exit or return: an exit above this line would
     // leave the credential there for whatever runs next.
     expect(source.CALDAV_PASSWORD).toBeUndefined();
     expect(source.CALDAV_TOKEN).toBeUndefined();
+    // The username goes too. It is half of a credential rather than a secret
+    // on its own, and leaving one of the pair behind reads as a judgement that
+    // it was harmless when it was really an omission.
+    expect(source.CALDAV_USERNAME).toBeUndefined();
   });
 
   it('deletes them even when the URL is missing entirely', () => {
@@ -52,6 +56,7 @@ describe('credentials', () => {
     const source = env({ CALDAV_URL: undefined });
     loadConfig(source);
     expect(source.CALDAV_PASSWORD).toBeUndefined();
+    expect(source.CALDAV_USERNAME).toBeUndefined();
   });
 
   it('accepts a bearer token instead of a password', () => {

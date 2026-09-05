@@ -61,6 +61,28 @@ export function zoneOffsetMinutes(zone: string, instant: Date): number {
   return Math.round((asUtc - instant.getTime()) / 60_000);
 }
 
+/**
+ * How many zone ids any of the caches below will remember.
+ *
+ * Every one of them is keyed by a `TZID` out of a calendar document, which is
+ * a string somebody else wrote — and the caches live as long as the process.
+ * The real IANA database has well under a thousand names, so a calendar full
+ * of invented ones is not a workload to optimise for; it is a way to make a
+ * long-running server grow without bound. Past the cap the cache simply stops
+ * taking new entries: it is an optimisation, and a cold lookup is a correct
+ * lookup.
+ */
+export const ZONE_CACHE_LIMIT = 1000;
+
+/** `map.set` unless the cache is full, in which case it is a no-op. */
+export function cacheZone<T>(
+  cache: Map<string, T>,
+  key: string,
+  value: T
+): void {
+  if (cache.size < ZONE_CACHE_LIMIT) cache.set(key, value);
+}
+
 const formatters = new Map<string, Intl.DateTimeFormat>();
 
 function zoneFormatter(zone: string): Intl.DateTimeFormat {
@@ -77,7 +99,7 @@ function zoneFormatter(zone: string): Intl.DateTimeFormat {
       second: '2-digit',
       era: 'short',
     });
-    formatters.set(zone, formatter);
+    cacheZone(formatters, zone, formatter);
   }
   return formatter;
 }

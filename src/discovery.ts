@@ -125,11 +125,6 @@ export class Discovery {
     return this.inFlight;
   }
 
-  /** Drops the cached calendar list, so the next call refetches. */
-  invalidate(): void {
-    this.calendars = undefined;
-  }
-
   private async discoverPrincipal(): Promise<Principal> {
     const notes: string[] = [];
     const root = `${this.api.url}/`;

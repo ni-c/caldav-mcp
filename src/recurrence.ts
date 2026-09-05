@@ -7,7 +7,7 @@ import {
   type RawTime,
 } from './ical.js';
 import { ToolInputError } from './errors.js';
-import { wallClockToInstant } from './time.js';
+import { cacheZone, wallClockToInstant } from './time.js';
 
 /**
  * Client-side recurrence expansion.
@@ -535,7 +535,7 @@ function zoneParts(
       minute: '2-digit',
       second: '2-digit',
     });
-    zoneFormatters.set(zone, formatter);
+    cacheZone(zoneFormatters, zone, formatter);
   }
   const parts = formatter.formatToParts(at);
   const read = (type: string): string =>

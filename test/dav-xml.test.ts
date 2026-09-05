@@ -7,7 +7,6 @@ import {
   escapeXmlText,
   freeBusyQueryBody,
   hrefsOf,
-  multigetBody,
   parseDavError,
   parseMultiStatus,
   privileges,
@@ -323,12 +322,6 @@ describe('the request bodies', () => {
       collation: 'i;ascii-casemap',
     });
     expect(body).toContain('collation="i;ascii-casemap"');
-  });
-
-  it('escapes an href in a multiget', () => {
-    // An href is a URL and a URL may legally contain `&`.
-    const body = multigetBody(['/work/a&b.ics']);
-    expect(body).toContain('<D:href>/work/a&amp;b.ics</D:href>');
   });
 
   it('builds a free-busy query', () => {

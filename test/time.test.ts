@@ -1,7 +1,9 @@
 import { describe, expect, it } from 'vitest';
 
 import { ToolInputError } from '../src/errors.js';
+import { isKnownZone } from '../src/ical.js';
 import {
+  cacheZone,
   formatDateInZone,
   formatInZone,
   parseInstant,
@@ -9,6 +11,7 @@ import {
   toUtcStamp,
   wallClockToInstant,
   zoneOffsetMinutes,
+  ZONE_CACHE_LIMIT,
 } from '../src/time.js';
 
 const BERLIN = 'Europe/Berlin';
@@ -257,5 +260,40 @@ describe('renderTime', () => {
         fallbackZone: 'UTC',
       }).value
     ).toBe('2026-09-07');
+  });
+});
+
+describe('the zone caches', () => {
+  it('stops growing once it has seen more zones than exist', () => {
+    // Every zone cache in this server is keyed by a TZID out of a calendar
+    // document — a string somebody else wrote — and lives as long as the
+    // process. A calendar carrying a hundred thousand invented zone names
+    // would otherwise make a long-running server grow without bound. Past the
+    // cap the cache simply stops taking entries; a cold lookup is still a
+    // correct lookup, which is what this checks.
+    const cache = new Map<string, number>();
+    for (let index = 0; index < ZONE_CACHE_LIMIT + 500; index += 1) {
+      cacheZone(cache, `Invented/Zone${index}`, index);
+    }
+    expect(cache.size).toBe(ZONE_CACHE_LIMIT);
+  });
+
+  it('still answers correctly for a zone it did not keep', () => {
+    // The cap is an optimisation, so exhausting it must not change an answer.
+    for (let index = 0; index < ZONE_CACHE_LIMIT + 10; index += 1) {
+      isKnownZone(`Invented/Zone${index}`);
+    }
+    expect(isKnownZone('Europe/Berlin')).toBe(true);
+    expect(isKnownZone('Nowhere/Nothing')).toBe(false);
+    expect(
+      wallClockToInstant('Europe/Berlin', {
+        year: 2026,
+        month: 9,
+        day: 7,
+        hour: 9,
+        minute: 0,
+        second: 0,
+      }).toISOString()
+    ).toBe('2026-09-07T07:00:00.000Z');
   });
 });

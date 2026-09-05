@@ -473,28 +473,6 @@ export function textMatchBody(
 `;
 }
 
-/**
- * A `calendar-multiget` REPORT for a batch of resource hrefs.
- *
- * The hrefs are escaped even though they came from the server: an href is a URL
- * and a URL may legally contain `&`, which would otherwise close nothing and
- * open an entity reference in the body we send back.
- */
-export function multigetBody(hrefs: readonly string[]): string {
-  const elements = hrefs
-    .map((href) => `  <D:href>${escapeXmlText(href)}</D:href>`)
-    .join('\n');
-  return `${DECL}
-<C:calendar-multiget ${NS}>
-  <D:prop>
-    <D:getetag/>
-    <C:calendar-data/>
-  </D:prop>
-${elements}
-</C:calendar-multiget>
-`;
-}
-
 /** A `free-busy-query` REPORT. Answers 200 `text/calendar`, not 207. */
 export function freeBusyQueryBody(range: TimeRange): string {
   return `${DECL}

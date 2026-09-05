@@ -1,7 +1,7 @@
 import ICAL from 'ical.js';
 
 import { ToolInputError } from './errors.js';
-import { wallClockToInstant } from './time.js';
+import { cacheZone, wallClockToInstant } from './time.js';
 
 /**
  * The one place ical.js is touched.
@@ -116,7 +116,7 @@ export function isKnownZone(tzid: string): boolean {
   } catch {
     known = false;
   }
-  knownZones.set(tzid, known);
+  cacheZone(knownZones, tzid, known);
   return known;
 }
 
@@ -307,7 +307,7 @@ function formatPart(
       minute: '2-digit',
       second: '2-digit',
     });
-    partFormatters.set(zone, formatter);
+    cacheZone(partFormatters, zone, formatter);
   }
   return (
     formatter.formatToParts(instant).find((p) => p.type === part)?.value ?? '0'

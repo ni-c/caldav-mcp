@@ -367,7 +367,6 @@ export function applyCommonFields(
     description?: string | null | undefined;
     location?: string | null | undefined;
     status?: string | null | undefined;
-    url?: string | null | undefined;
     categories?: readonly string[] | null | undefined;
   }
 ): void {
@@ -375,7 +374,6 @@ export function applyCommonFields(
   writeText(component, 'description', fields.description);
   writeText(component, 'location', fields.location);
   writeText(component, 'status', fields.status?.toUpperCase());
-  writeText(component, 'url', fields.url);
   if (fields.categories !== undefined) {
     component.removeAllProperties('categories');
     if (fields.categories !== null && fields.categories.length > 0) {

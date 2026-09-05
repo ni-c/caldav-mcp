@@ -179,7 +179,12 @@ export function registerEventWriteTools(
           }
         );
 
-        context.discovery.invalidate();
+        // No cache to drop here, and that is worth stating rather than
+        // leaving as an absence. The discovery cache holds the *list of
+        // calendars*, and writing an entry does not change it — the tool that
+        // reports the list asks for a fresh one anyway. An `invalidate()` call
+        // sat here doing nothing, which is worse than none: it reads as a
+        // freshness guarantee that the other eleven write tools are missing.
         return ownWordsResult({
           created: true,
           id: buildSeriesId('vevent', calendar.path, created.resourceName),

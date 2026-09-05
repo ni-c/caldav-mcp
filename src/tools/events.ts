@@ -25,6 +25,7 @@ import {
   timezoneParam,
 } from '../schema.js';
 import { toUtcStamp } from '../time.js';
+import { ICAL } from '../ical.js';
 import { READ_ONLY } from './annotations.js';
 import { loadEntry, resolveWindow } from './common.js';
 
@@ -341,10 +342,12 @@ export function parseFreeBusy(
     const start = /^DTSTART[^:]*:(\S+)/m.exec(body)?.[1];
     const end = /^DTEND[^:]*:(\S+)/m.exec(body)?.[1];
     const type = /^FBTYPE[^:]*:(\S+)/m.exec(body)?.[1];
-    if (start !== undefined && end !== undefined) {
+    const from = start === undefined ? undefined : isoOfStamp(start);
+    const until = end === undefined ? undefined : isoOfStamp(end);
+    if (from !== undefined && until !== undefined) {
       periods.push({
-        start: isoOfStamp(start),
-        end: isoOfStamp(end),
+        start: from,
+        end: until,
         ...(type === undefined ? {} : { type }),
         calendar: calendarPath,
       });
@@ -356,9 +359,12 @@ export function parseFreeBusy(
       for (const pair of (match[2] ?? '').split(',')) {
         const [rawStart, rawEnd] = pair.trim().split('/');
         if (rawStart === undefined || rawEnd === undefined) continue;
+        const pairStart = isoOfStamp(rawStart);
+        const pairEnd = periodEnd(pairStart, rawEnd);
+        if (pairStart === undefined || pairEnd === undefined) continue;
         periods.push({
-          start: isoOfStamp(rawStart),
-          end: isoOfStamp(rawEnd),
+          start: pairStart,
+          end: pairEnd,
           ...(match[1] === undefined ? {} : { type: match[1] }),
           calendar: calendarPath,
         });
@@ -368,13 +374,47 @@ export function parseFreeBusy(
   return periods;
 }
 
-/** `20260907T070000Z` to an ISO 8601 string; anything else passes through. */
-function isoOfStamp(stamp: string): string {
+/**
+ * `20260907T070000Z` to an ISO 8601 string, or nothing.
+ *
+ * Anything unparseable is **dropped**, not passed through. This is the one
+ * tool with no untrusted marker, and the justification for that is written
+ * into its description: the answer is time periods and nothing else, so there
+ * is no place for text a stranger wrote. A passthrough quietly made that
+ * false — a server answering `DTSTART:<whatever it liked>` put its own string
+ * into a field the model reads as a timestamp, unmarked and unfenced. A
+ * free/busy answer whose stamps are not stamps is not a usable answer anyway.
+ */
+function isoOfStamp(stamp: string): string | undefined {
   const match = /^(\d{4})(\d{2})(\d{2})T(\d{2})(\d{2})(\d{2})Z$/.exec(
     stamp.trim()
   );
-  if (match === null) return stamp.trim();
+  if (match === null) return undefined;
   return `${match[1]}-${match[2]}-${match[3]}T${match[4]}:${match[5]}:${match[6]}Z`;
+}
+
+/**
+ * The end of a `FREEBUSY` period, which RFC 5545 writes in either of two ways.
+ *
+ * `start/end` is the common one and `start/duration` is equally legal — sabre
+ * emits it — so refusing what is not a timestamp has to understand a duration
+ * as well, or a correct answer from a correct server disappears.
+ */
+function periodEnd(start: string | undefined, raw: string): string | undefined {
+  const asStamp = isoOfStamp(raw);
+  if (asStamp !== undefined) return asStamp;
+  if (start === undefined || !/^[+-]?P/i.test(raw.trim())) return undefined;
+  let seconds: number;
+  try {
+    seconds = ICAL.Duration.fromString(raw.trim()).toSeconds();
+  } catch {
+    return undefined;
+  }
+  if (!Number.isFinite(seconds)) return undefined;
+  const end = new Date(Date.parse(start) + seconds * 1000);
+  if (Number.isNaN(end.getTime())) return undefined;
+  // Second precision, so both branches answer in one format.
+  return `${end.toISOString().slice(0, 19)}Z`;
 }
 
 /** A busy period from a shaped event, for the computed fallback. */

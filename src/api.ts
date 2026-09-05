@@ -22,10 +22,11 @@ const REQUEST_TIMEOUT_MS = 30_000;
 /**
  * Ceiling on a multistatus document.
  *
- * A `calendar-multiget` of a full batch is legitimately large — fifty events at
- * twenty kilobytes each is a megabyte before anything unusual happens. The
- * ceiling is not raised to fit a request; requests are sized to fit under it,
- * which is what {@link MULTIGET_BATCH} is for.
+ * A `calendar-query` over a wide window is legitimately large — a busy calendar
+ * answering with several hundred events at twenty kilobytes each reaches
+ * megabytes before anything unusual has happened. The ceiling is not raised to
+ * fit a request; a window that does not fit is narrowed by the caller, which is
+ * what the 366-day limit and the result cap are for.
  */
 const MAX_MULTISTATUS_BYTES = 16 * 1024 * 1024;
 
@@ -45,9 +46,6 @@ const MAX_ROUNDTRIP_BYTES = 8 * 1024 * 1024;
 
 /** Ceiling on a free-busy answer, which is a small VFREEBUSY document. */
 const MAX_FREEBUSY_BYTES = 1 * 1024 * 1024;
-
-/** How many hrefs go into one `calendar-multiget`. Keeps responses under the cap. */
-export const MULTIGET_BATCH = 50;
 
 export class CalDavApiError extends Error {
   constructor(
@@ -247,7 +245,7 @@ export class CalDavApi {
     return this.multiStatus('PROPFIND', url, depth, propfindBody(props));
   }
 
-  /** `REPORT` answering a multistatus: `calendar-query`, `calendar-multiget`. */
+  /** `REPORT` answering a multistatus: `calendar-query` and its siblings. */
   async report(
     url: string,
     depth: 0 | 1,

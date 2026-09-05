@@ -231,12 +231,18 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
     console.error(`caldav-mcp: ${missingConfigMessage(missing)}`);
   }
 
-  // Don't keep the secrets in the environment for the process lifetime — they
-  // are visible to child processes and in /proc/<pid>/environ. Before every
-  // branch that can exit or return, deliberately: an exit above this line would
-  // leave them there for whatever runs next.
+  // Don't keep the credentials in the environment for the process lifetime —
+  // they are visible to child processes and in /proc/<pid>/environ. Before
+  // every branch that can exit or return, deliberately: an exit above this
+  // line would leave them there for whatever runs next.
+  //
+  // The username goes with them. It is half of a credential rather than a
+  // secret in its own right, and leaving it behind is the kind of asymmetry
+  // that reads as "this one was judged harmless" when it was really just
+  // forgotten. Nothing reads it again: it has been copied into the config.
   delete env.CALDAV_PASSWORD;
   delete env.CALDAV_TOKEN;
+  delete env.CALDAV_USERNAME;
 
   const elicitation = parseElicitation(env.ELICITATION);
 
