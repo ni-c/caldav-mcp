@@ -124,6 +124,47 @@ describe('a forged or edited id', () => {
     }
   });
 
+  it('refuses the encodings a literal check does not see', () => {
+    // The hole this closes, found by the pre-release audit and verified against
+    // a real listener. Checking the *name* for a literal `/` and a leading `.`
+    // is not the same as checking the *path*: the WHATWG URL parser normalises
+    // a percent-encoded dot segment and treats a backslash as a separator, so
+    // each of these survived the old check and then walked out of the allowed
+    // collection when the URL was built.
+    //
+    //   'https://h/cal/work/' + '%2E%2E'         -> https://h/cal/
+    //   'https://h/cal/work/' + '%2e%2e\\..\\victim' -> https://h/cal/victim
+    //
+    // A forged id could therefore name an allowed calendar, pass the allowlist,
+    // and address a resource in a different one — delete_event would have
+    // removed another principal's whole collection.
+    for (const name of [
+      '%2E%2E',
+      '%2e%2e',
+      '%2e%2e\\..\\victim',
+      '\\..\\..\\x.ics',
+      'a\\b.ics',
+    ]) {
+      const id = `e1.${b64('/tester/work/')}.${b64(name)}`;
+      expect(() => parseEntityId(id, 'vevent', registry), name).toThrow(
+        ToolInputError
+      );
+    }
+  });
+
+  it('still accepts an encoded slash, which is a name and not a separator', () => {
+    // The counterpart to the case above, and the reason the check is on `%2e`
+    // rather than on percent-encoding generally: the URL parser leaves `%2F`
+    // encoded, so the segment stays one segment and the parent path stays
+    // inside the collection. A server is free to name a resource `x/y.ics`,
+    // and the listing tools hand that name back exactly like this — refusing
+    // it here would make an entry that exists impossible to address.
+    const id = `e1.${b64('/tester/work/')}.${b64('x%2Fy.ics')}`;
+    expect(parseEntityId(id, 'vevent', registry).resourceName).toBe(
+      'x%2Fy.ics'
+    );
+  });
+
   it('refuses a NUL inside a decoded part', () => {
     const id = `e1.${b64('/tester/work/\0/etc/')}.${b64('x.ics')}`;
     expect(() => parseEntityId(id, 'vevent', registry)).toThrow(ToolInputError);

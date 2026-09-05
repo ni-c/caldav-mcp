@@ -7,6 +7,7 @@ import {
 } from 'mcp-approval';
 
 import { escapeInvisible } from '../analyze.js';
+import { resourceUrl } from '../calendars.js';
 import { listEntries, type ToolContext } from '../entries.js';
 import { buildSeriesId, parseEntityId } from '../entity-id.js';
 import { ToolInputError } from '../errors.js';
@@ -345,7 +346,7 @@ export function registerJournalWriteTools(
             'caldav-mcp: that calendar is no longer available.'
           );
         }
-        const url = `${calendar.url}${entity.resourceName}`;
+        const url = resourceUrl(calendar, entity.resourceName);
         const resource = await context.api.get(url);
         if (resource.etag === undefined) {
           throw new ToolInputError(

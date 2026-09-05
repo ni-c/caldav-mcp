@@ -3,6 +3,7 @@ import { describe, expect, it } from 'vitest';
 import {
   CalendarRegistry,
   normalisePath,
+  resourceUrl,
   type CalendarEntry,
 } from '../src/calendars.js';
 import { CalendarNotAllowedError, ToolInputError } from '../src/errors.js';
@@ -183,5 +184,47 @@ describe('component support', () => {
     // refuse writes on every Radicale collection created without one.
     const silent = calendar('silent', { components: [] });
     expect(registry.accepts(silent, 'VTODO')).toBe(true);
+  });
+});
+
+describe('building a resource URL', () => {
+  const work = {
+    url: 'https://dav.example.net/tester/work/',
+    path: '/tester/work/',
+  };
+
+  it('joins a plain name', () => {
+    expect(resourceUrl(work, 'a1b2c3.ics')).toBe(
+      'https://dav.example.net/tester/work/a1b2c3.ics'
+    );
+  });
+
+  it('keeps percent-encoding that is part of the name', () => {
+    expect(resourceUrl(work, 'a%20b.ics')).toBe(
+      'https://dav.example.net/tester/work/a%20b.ics'
+    );
+  });
+
+  it('refuses anything that resolves outside the collection', () => {
+    // The assertion is on the RESOLVED path, not on the input, so it holds
+    // whatever encoding is tried next. Each of these is a real traversal
+    // against the URL parser rather than a hypothetical one.
+    for (const name of [
+      '%2E%2E',
+      '%2e%2e/victim.ics',
+      '%2e%2e\\..\\victim',
+      '\\..\\..\\x.ics',
+      '..\\other.ics',
+      'sub/x.ics',
+      '',
+    ]) {
+      expect(() => resourceUrl(work, name), name).toThrow(ToolInputError);
+    }
+  });
+
+  it('refuses a name that resolves to the collection itself', () => {
+    // Not a resource, and a DELETE on it would remove every entry at once.
+    expect(() => resourceUrl(work, '')).toThrow(ToolInputError);
+    expect(() => resourceUrl(work, '%2E%2E/work/')).toThrow(ToolInputError);
   });
 });

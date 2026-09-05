@@ -1,6 +1,7 @@
 import { randomUUID } from 'node:crypto';
 
 import { CalDavApiError } from './api.js';
+import { resourceUrl } from './calendars.js';
 import type { CalendarEntry } from './calendars.js';
 import type { ToolContext } from './entries.js';
 import type { EntityId } from './entity-id.js';
@@ -84,7 +85,7 @@ export async function loadForWrite(
       'caldav-mcp: that calendar is no longer available. Call list_calendars.'
     );
   }
-  const url = `${calendar.url}${id.resourceName}`;
+  const url = resourceUrl(calendar, id.resourceName);
 
   let resource;
   try {
@@ -470,7 +471,10 @@ export async function createEntry(
   const { root, component } = newCalendar(kind, uid);
   build(component);
   const resourceName = `${uid.split('@')[0] ?? randomUUID()}.ics`;
-  const url = `${calendar.url}${resourceName}`;
+  // Generated from a UUID and therefore incapable of traversal — routed through
+  // the same builder anyway, so the codebase has exactly one join and nobody has
+  // to judge which ones are safe enough to skip.
+  const url = resourceUrl(calendar, resourceName);
   const { etag } = await context.api.put(url, serialize(root), {
     create: true,
   });

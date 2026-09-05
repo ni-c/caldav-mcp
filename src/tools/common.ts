@@ -1,4 +1,5 @@
 import type { CalendarRegistry } from '../calendars.js';
+import { resourceUrl } from '../calendars.js';
 import type { Config } from '../config.js';
 import type { ToolContext } from '../entries.js';
 import type { EntityId } from '../entity-id.js';
@@ -77,7 +78,7 @@ export async function loadEntry(
       'caldav-mcp: that calendar is no longer available. Call list_calendars.'
     );
   }
-  const url = `${calendar.url}${entity.resourceName}`;
+  const url = resourceUrl(calendar, entity.resourceName);
   const resource = await context.api.get(url);
   const root = parseCalendar(resource.ics, `the entry ${entity.resourceName}`);
   const components = componentsOf(root, entity.kind);

@@ -7,6 +7,7 @@ import {
 } from 'mcp-approval';
 
 import { escapeInvisible } from '../analyze.js';
+import { resourceUrl, type CalendarRegistry } from '../calendars.js';
 import type { ToolContext } from '../entries.js';
 import { buildSeriesId, parseEntityId, type EntityId } from '../entity-id.js';
 import { ToolInputError } from '../errors.js';
@@ -26,7 +27,7 @@ import {
   run,
   untrustedResult,
 } from '../result.js';
-import { parseRecurrenceId } from '../recurrence.js';
+import { expandSeries, parseRecurrenceId } from '../recurrence.js';
 import {
   alarmsParam,
   calendarRefParam,
@@ -347,15 +348,20 @@ export function registerEventWriteTools(
         const entity = parseEntityId(args.id, 'vevent', registry);
         const scope = resolveScope(entity, args.scope);
 
+        // Read before asking. A GET is not the destructive act, and the
+        // sentence a person is deciding on has to describe the actual entry:
+        // "a whole recurring event and every one of its occurrences" about a
+        // single lunch is worse than saying nothing, because it reads as a
+        // description and is not one. The counts are server-side facts, which
+        // is the only kind of detail that belongs in this text.
+        const shape = await describeTarget(context, entity, registry);
+
         const outcome = await approval.requestApproval(
           server,
           mcp,
           confirmations,
           {
-            what:
-              scope === 'entire_series'
-                ? 'delete a whole recurring event and every one of its occurrences'
-                : 'delete one occurrence of an event',
+            what: deletionSentence(scope, shape),
             consequence:
               'A CalDAV server keeps no version history. Once it is gone ' +
               'there is nothing to restore it from.',
@@ -391,7 +397,7 @@ export function registerEventWriteTools(
               'caldav-mcp: that calendar is no longer available.'
             );
           }
-          const url = `${calendar.url}${entity.resourceName}`;
+          const url = resourceUrl(calendar, entity.resourceName);
           const resource = await context.api.get(url);
           if (resource.etag === undefined) {
             throw new ToolInputError(
@@ -488,7 +494,7 @@ export function registerEventWriteTools(
             'caldav-mcp: that calendar is no longer available.'
           );
         }
-        const sourceUrl = `${source.url}${entity.resourceName}`;
+        const sourceUrl = resourceUrl(source, entity.resourceName);
         const resource = await context.api.get(sourceUrl, true);
         if (resource.etag === undefined) {
           throw new ToolInputError(
@@ -501,7 +507,7 @@ export function registerEventWriteTools(
         // Write first, delete second. The other order can lose the event
         // entirely if the write then fails; this order can at worst leave a
         // copy behind, which is visible and fixable.
-        const targetUrl = `${destination.url}${entity.resourceName}`;
+        const targetUrl = resourceUrl(destination, entity.resourceName);
         await context.api.put(targetUrl, resource.ics, { create: true });
         await context.api.del(sourceUrl, resource.etag);
 
@@ -629,6 +635,67 @@ export function registerEventWriteTools(
         });
       })
   );
+}
+
+/** What the target actually is, for a sentence a person can act on. */
+interface TargetShape {
+  recurring: boolean;
+  occurrences: number | undefined;
+}
+
+/**
+ * Looks at the entry a deletion would remove.
+ *
+ * Deliberately tolerant: if the read fails the dialog still happens, with the
+ * cautious wording. Refusing to ask because the description could not be
+ * gathered would be the wrong trade in both directions.
+ */
+async function describeTarget(
+  context: ToolContext,
+  entity: EntityId,
+  registry: CalendarRegistry
+): Promise<TargetShape> {
+  try {
+    const calendar = registry.byPath(entity.calendarPath);
+    if (calendar === undefined)
+      return { recurring: false, occurrences: undefined };
+    const resource = await context.api.get(
+      resourceUrl(calendar, entity.resourceName)
+    );
+    const root = parseCalendar(resource.ics, 'the entry');
+    const components = componentsOf(root, entity.kind);
+    const { master } = splitSeries(components);
+    const recurring =
+      master !== null &&
+      master !== undefined &&
+      master.getFirstProperty('rrule') !== null;
+    if (!recurring) return { recurring: false, occurrences: undefined };
+    const expansion = expandSeries(components, {
+      from: new Date(-8_640_000_000_000),
+      to: new Date(8_640_000_000_000),
+      cap: 500,
+      fallbackZone: context.config.timezone,
+    });
+    return {
+      recurring: true,
+      occurrences: expansion.truncated
+        ? undefined
+        : expansion.occurrences.length,
+    };
+  } catch {
+    return { recurring: false, occurrences: undefined };
+  }
+}
+
+/** The sentence the dialog leads with, describing what is really there. */
+function deletionSentence(scope: Scope, shape: TargetShape): string {
+  if (!shape.recurring) return 'delete an event';
+  if (scope === 'this_occurrence') {
+    return 'delete one occurrence of a recurring event, leaving the rest of the series';
+  }
+  return shape.occurrences === undefined
+    ? 'delete a recurring event and every one of its occurrences'
+    : `delete a recurring event and all ${shape.occurrences} of its occurrences`;
 }
 
 /** Which part of a recurring entry a write applies to. */
@@ -764,7 +831,7 @@ async function excludeOccurrence(
       'caldav-mcp: that calendar is no longer available.'
     );
   }
-  const url = `${calendar.url}${entity.resourceName}`;
+  const url = resourceUrl(calendar, entity.resourceName);
   const resource = await context.api.get(url, true);
   if (resource.etag === undefined) {
     throw new ToolInputError(

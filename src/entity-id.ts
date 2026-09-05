@@ -168,12 +168,22 @@ export function parseEntityId(
   }
 
   // Every CalDAV server stores resources directly inside the collection, so a
-  // name is one path segment. Refusing anything else removes the traversal
-  // question rather than defending against it.
+  // name is one path segment.
+  //
+  // A literal `/` and a leading `.` are not enough, and believing they were is
+  // what made this a real hole: the WHATWG URL parser normalises a
+  // percent-encoded dot segment and treats a backslash as a separator, so
+  // `%2E%2E` and `\..\x` both survived this check and then walked out of the
+  // collection at the moment the URL was built. Backslashes and encoded dots
+  // are refused here, and `resourceUrl` asserts the *resolved* path
+  // independently — a string check cannot anticipate the next encoding, and a
+  // path check does not have to.
   if (
     resourceName.length === 0 ||
     resourceName.includes('/') ||
-    resourceName.startsWith('.')
+    resourceName.includes('\\') ||
+    resourceName.startsWith('.') ||
+    /%2e/i.test(resourceName)
   ) {
     throw badId(id);
   }

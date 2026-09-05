@@ -73,6 +73,46 @@ function finalSegment(path: string): string {
   return parts[parts.length - 1] ?? '';
 }
 
+/**
+ * Builds the URL of a resource inside a calendar, and proves it stayed inside.
+ *
+ * The one place a collection URL and a resource name are joined. It exists
+ * because checking the *name* is not the same as checking the *path*, and the
+ * difference was a real hole: `entity-id.ts` rejected a literal `/` and a
+ * leading `.`, and both a percent-encoded dot segment and a backslash walked
+ * straight past it —
+ *
+ * ```
+ * new URL('https://h/cal/work/' + '%2E%2E')      -> https://h/cal/
+ * new URL('https://h/cal/work/' + '\\..\\x.ics')  -> https://h/cal/x.ics
+ * ```
+ *
+ * — because the WHATWG URL parser normalises percent-encoded dot segments and
+ * treats a backslash as a separator, long after any string check has passed. A
+ * forged id could therefore name an allowed calendar, satisfy the allowlist,
+ * and then address a resource in a different one; `delete_event` would have
+ * removed another principal's collection.
+ *
+ * So the assertion is on the resolved path rather than on the input: whatever
+ * encoding trick comes next, the result still has to sit directly inside this
+ * collection.
+ */
+export function resourceUrl(
+  calendar: Pick<CalendarEntry, 'url' | 'path'>,
+  resourceName: string
+): string {
+  const url = new URL(`${calendar.url}${resourceName}`);
+  const parent = url.pathname.replace(/[^/]*$/, '');
+  if (parent !== calendar.path || url.pathname === calendar.path) {
+    throw new ToolInputError(
+      'caldav-mcp: that id does not name an entry inside the calendar it ' +
+        'claims to be in. Ids come from the listing tools and are not meant ' +
+        'to be composed by hand.'
+    );
+  }
+  return url.toString();
+}
+
 /** Raised at startup for an allowlist that cannot be applied as written. */
 export class AllowlistError extends Error {
   constructor(message: string) {

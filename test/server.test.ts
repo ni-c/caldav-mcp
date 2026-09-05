@@ -551,6 +551,26 @@ describe('asking a person', () => {
     expect(session.prompts.length).toBeGreaterThan(before);
   });
 
+  it('describes the actual entry rather than a scope name', async () => {
+    // The dialog is what a person reads to decide, so it has to be true about
+    // this entry. Saying "a whole recurring event and every one of its
+    // occurrences" about a single lunch reads as a description and is not one.
+    const listing = await data('list_events', WINDOW);
+    const events = listing.events as { id: string; summary?: string }[];
+    const single = events.find((entry) => entry.summary === 'Standup');
+    const series = events.find((entry) => entry.summary === 'Weekly');
+
+    await data('delete_event', { id: single?.id });
+    expect(session.prompts.at(-1)).toMatch(/^delete an event/);
+
+    await data('delete_event', { id: series?.id, scope: 'entire_series' });
+    // And it counts them, because a count is a server-side fact and the one
+    // kind of detail that belongs in this text.
+    expect(session.prompts.at(-1)).toMatch(
+      /delete a recurring event and all 3 of its occurrences/
+    );
+  });
+
   it('does not offer a token to a client that can be asked', async () => {
     // The control test: if the wiring is undone, the dialog silently becomes a
     // token and every other approval test still passes.

@@ -60,6 +60,49 @@ function mkcalendarBody(name: string): string {
 }
 
 /**
+ * Removes every resource in a collection, leaving the collection itself.
+ *
+ * This is what makes a second run mean the same as the first. Creating the
+ * collections is idempotent on its own — Radicale says "already there" and the
+ * bootstrap accepts that — but their *contents* are not: the suite seeds a
+ * weekly series and then asserts it expands into four occurrences, so a run
+ * against a container somebody left up saw eleven and failed in six places at
+ * once. The symptom looks like a broken assertion and is actually stale state,
+ * which is the expensive kind of red.
+ *
+ * DELETE per resource rather than dropping and recreating the collection: the
+ * calendar keeps its displayname and component set, so what the tests see is
+ * the collection the bootstrap describes and not a bare one.
+ */
+async function emptyCollection(collection: string): Promise<void> {
+  const response = await dav(collection, 'PROPFIND', {
+    headers: { Depth: '1' },
+    body:
+      '<?xml version="1.0" encoding="utf-8"?>' +
+      '<D:propfind xmlns:D="DAV:"><D:prop><D:getetag/></D:prop></D:propfind>',
+  });
+  if (response.status !== 207) {
+    throw new Error(
+      `PROPFIND ${collection} answered ${response.status} while emptying it`
+    );
+  }
+  const body = await response.text();
+  const hrefs = [...body.matchAll(/<[a-z]*:?href>([^<]+)<\/[a-z]*:?href>/gi)]
+    .map((match) => match[1] ?? '')
+    .filter((href) => href.endsWith('.ics'));
+
+  for (const href of hrefs) {
+    // The href may be a path or an absolute URL depending on the server; both
+    // resolve against the collection, and both stay on the sandbox origin.
+    const target = new URL(href, collection).toString();
+    const deleted = await dav(target, 'DELETE');
+    if (deleted.status >= 400 && deleted.status !== 404) {
+      throw new Error(`DELETE ${target} answered ${deleted.status}`);
+    }
+  }
+}
+
+/**
  * Brings the Radicale sandbox to a usable state.
  *
  * `assertLoopback` throws rather than skipping. A skipped test reads as
@@ -95,6 +138,7 @@ export async function bootstrapRadicale(
         ).slice(0, 500)}`
       );
     }
+    await emptyCollection(collection);
     paths[name] = `/${USER}/${name}/`;
   }
 
