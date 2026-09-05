@@ -150,12 +150,12 @@ export function registerEventWriteTools(
           (component) => {
             writeTime(component, 'dtstart', {
               instant: start.instant,
-              zone: start.allDay ? undefined : start.zone,
+              zone: start.zone,
               allDay: start.allDay,
             });
             writeTime(component, 'dtend', {
               instant: end.instant,
-              zone: end.allDay ? undefined : end.zone,
+              zone: end.zone,
               allDay: end.allDay,
             });
             applyCommonFields(component, {
@@ -699,12 +699,12 @@ function applyTimes(
   const end = resolveEnd(args, start, fallbackZone);
   writeTime(component, 'dtstart', {
     instant: start.instant,
-    zone: start.allDay ? undefined : start.zone,
+    zone: start.zone,
     allDay: start.allDay,
   });
   writeTime(component, 'dtend', {
     instant: end.instant,
-    zone: end.allDay ? undefined : end.zone,
+    zone: end.zone,
     allDay: end.allDay,
   });
 }

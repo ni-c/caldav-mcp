@@ -50,8 +50,37 @@ const state: {
 const WORK = '/integration/work/';
 const PRIVATE = '/integration/private/';
 
-function data(text: string): Record<string, unknown> {
-  return JSON.parse(text) as Record<string, unknown>;
+/**
+ * Reads the machine-readable half of an answer.
+ *
+ * `structuredContent` rather than the text block, and not only because it is
+ * the channel a program is meant to read: the `get_*` tools put the **fence**
+ * in the first text block on purpose, so a test parsing text would be parsing a
+ * paragraph of prose. It also means every assertion here runs against a value
+ * the SDK has already validated against that tool's own output schema — which
+ * is how `recurrence_id` missing its `all_day` field was caught.
+ */
+async function data(
+  harness: LiveHarness,
+  name: string,
+  args?: Record<string, unknown>
+): Promise<Record<string, unknown>> {
+  const result = await harness.raw(name, args);
+  expect(
+    result.structuredContent,
+    `${name} returned no structuredContent`
+  ).toBeDefined();
+  return result.structuredContent as Record<string, unknown>;
+}
+
+interface ShapedEvent {
+  id: string;
+  series_id: string;
+  uid?: string;
+  summary?: string;
+  start: { value: string; all_day: boolean };
+  recurrence_id?: { value: string; all_day: boolean };
+  recurrence_rule?: string;
 }
 
 beforeAll(async () => {
@@ -65,20 +94,29 @@ afterAll(async () => {
   await plain?.close();
 });
 
+/** Every `.ics` in a calendar, as stored, unfolded. */
+async function storedFiles(calendar: string): Promise<string[]> {
+  const names = await listRaw(sandbox, calendar);
+  return Promise.all(
+    names.map(async (name) =>
+      (await getRaw(sandbox, calendar, name)).ics.replace(/\r\n[ \t]/g, '')
+    )
+  );
+}
+
 describe('the connection', () => {
   it('reports what the server can do', async () => {
-    const info = data(await asking.call('get_server_info'));
+    const info = await data(asking, 'get_server_info');
     expect(info.dav).toContain('calendar-access');
     expect((info.features as { text_match: boolean }).text_match).toBe(true);
     // Radicale 3.8 does answer a free-busy query, and expands recurrences
-    // server-side while doing it. If this ever goes false the tool falls back to
-    // computing the periods, which is covered by its own assertion below.
+    // server-side while doing it.
     expect((info.features as { free_busy: boolean }).free_busy).toBe(true);
     expect(info.self_addresses).toContain('integration@example.net');
   });
 
   it('lists only the allowed calendars, and says how many it withheld', async () => {
-    const listing = data(await asking.call('list_calendars'));
+    const listing = await data(asking, 'list_calendars');
     const paths = (listing.calendars as { id: string }[]).map((c) => c.id);
     expect(paths.sort()).toEqual([PRIVATE, WORK]);
     expect(listing.withheld).toBe(1);
@@ -94,49 +132,46 @@ describe('the connection', () => {
 
 describe('events', () => {
   it('creates a simple event', async () => {
-    const created = data(
-      await asking.call('create_event', {
-        calendar_id: WORK,
-        summary: 'Coffee',
-        start: '2026-09-07T15:00:00',
-        end: '2026-09-07T15:30:00',
-      })
-    );
+    const created = await data(asking, 'create_event', {
+      calendar_id: WORK,
+      summary: 'Coffee',
+      start: '2026-09-07T15:00:00',
+      end: '2026-09-07T15:30:00',
+    });
     expect(created.created).toBe(true);
     state.simpleId = created.id as string;
   });
 
-  it('creates an all-day event', async () => {
-    const created = data(
-      await asking.call('create_event', {
-        calendar_id: WORK,
-        summary: 'Company holiday',
-        start: '2026-09-11',
-      })
-    );
+  it('creates an all-day event and reports it as one', async () => {
+    const created = await data(asking, 'create_event', {
+      calendar_id: WORK,
+      summary: 'Company holiday',
+      start: '2026-09-11',
+    });
     state.allDayId = created.id as string;
-    const entry = data(await asking.call('get_event', { id: state.allDayId }));
-    const event = entry.event as { start: { value: string; all_day: boolean } };
+
+    const entry = await data(asking, 'get_event', { id: state.allDayId });
+    const event = entry.event as ShapedEvent;
     expect(event.start.all_day).toBe(true);
+    // A bare date, not midnight — reporting an all-day entry as a timestamp is
+    // how a whole day shows up as a one-minute appointment.
     expect(event.start.value).toBe('2026-09-11');
   });
 
-  it('creates a weekly series with a reminder and an attendee', async () => {
-    const created = data(
-      await asking.call('create_event', {
-        calendar_id: WORK,
-        summary: 'Team sync',
-        start: '2026-09-07T09:00:00',
-        end: '2026-09-07T10:00:00',
-        location: 'Room 1',
-        recurrence: 'FREQ=WEEKLY;COUNT=4',
-        alarms: [{ trigger: '-PT15M', description: 'Team sync soon' }],
-      })
-    );
+  it('creates a weekly series with a reminder', async () => {
+    const created = await data(asking, 'create_event', {
+      calendar_id: WORK,
+      summary: 'Team sync',
+      start: '2026-09-07T09:00:00',
+      end: '2026-09-07T10:00:00',
+      location: 'Room 1',
+      recurrence: 'FREQ=WEEKLY;COUNT=4',
+      alarms: [{ trigger: '-PT15M', description: 'Team sync soon' }],
+    });
     state.seriesId = created.id as string;
 
-    // An attendee is added out of band: this server deliberately cannot write
-    // one, and respond_to_event needs one to exist.
+    // An attendee and an organiser are added out of band: this server
+    // deliberately cannot write either, and respond_to_event needs one to exist.
     const name = `${String(created.uid).split('@')[0]}.ics`;
     const stored = await getRaw(sandbox, 'work', name);
     await putRaw(
@@ -153,44 +188,36 @@ describe('events', () => {
   });
 
   it('expands the series into occurrences with ids of their own', async () => {
-    const listing = data(
-      await asking.call('list_events', {
-        from: '2026-09-01T00:00:00Z',
-        to: '2026-10-15T00:00:00Z',
-        calendars: [WORK],
-      })
-    );
-    const events = listing.events as {
-      id: string;
-      series_id: string;
-      summary?: string;
-      start: { value: string };
-    }[];
+    const listing = await data(asking, 'list_events', {
+      from: '2026-09-01T00:00:00Z',
+      to: '2026-10-15T00:00:00Z',
+      calendars: [WORK],
+    });
+    const events = listing.events as ShapedEvent[];
     const sync = events.filter((event) => event.summary === 'Team sync');
     expect(sync).toHaveLength(4);
-    // Every occurrence has a distinct id and they all share one series id.
     expect(new Set(sync.map((event) => event.id)).size).toBe(4);
     expect(new Set(sync.map((event) => event.series_id)).size).toBe(1);
-    // Sorted by start, across calendars.
+
+    // Merged across entries and sorted by start, not grouped per resource.
     const starts = events.map((event) => event.start.value);
     expect([...starts].sort()).toEqual(starts);
-    state.occurrenceId = sync[1]?.id as string;
+
+    const second = sync[1];
+    expect(second).toBeDefined();
+    state.occurrenceId = second?.id ?? '';
   });
 
   it('answers differently for a series id and an occurrence id', async () => {
-    const series = data(await asking.call('get_event', { id: state.seriesId }));
-    const occurrence = data(
-      await asking.call('get_event', { id: state.occurrenceId })
-    );
-    expect((series.event as { recurrence_rule?: string }).recurrence_rule).toBe(
+    const series = await data(asking, 'get_event', { id: state.seriesId });
+    const occurrence = await data(asking, 'get_event', {
+      id: state.occurrenceId,
+    });
+    expect((series.event as ShapedEvent).recurrence_rule).toBe(
       'FREQ=WEEKLY;COUNT=4'
     );
-    expect(
-      (occurrence.event as { recurrence_id?: unknown }).recurrence_id
-    ).toBeDefined();
-    expect((occurrence.event as { series_id: string }).series_id).toBe(
-      state.seriesId
-    );
+    expect((occurrence.event as ShapedEvent).recurrence_id).toBeDefined();
+    expect((occurrence.event as ShapedEvent).series_id).toBe(state.seriesId);
   });
 
   it('moves one occurrence and leaves the rest of the series alone', async () => {
@@ -201,16 +228,12 @@ describe('events', () => {
       summary: 'Team sync (moved)',
     });
 
-    const listing = data(
-      await asking.call('list_events', {
-        from: '2026-09-01T00:00:00Z',
-        to: '2026-10-15T00:00:00Z',
-        calendars: [WORK],
-      })
-    );
-    const sync = (
-      listing.events as { summary?: string; start: { value: string } }[]
-    )
+    const listing = await data(asking, 'list_events', {
+      from: '2026-09-01T00:00:00Z',
+      to: '2026-10-15T00:00:00Z',
+      calendars: [WORK],
+    });
+    const sync = (listing.events as ShapedEvent[])
       .filter((event) => event.summary?.startsWith('Team sync'))
       .map((event) => event.start.value);
     expect(sync).toHaveLength(4);
@@ -218,34 +241,31 @@ describe('events', () => {
     expect(sync[2]).toContain('T09:00:00');
   });
 
-  it('kept the rule, the reminder and the attendee in the stored file', async () => {
+  it('kept the rule, the reminder, the attendee and the organiser', async () => {
     // Read past this server entirely. This is the assertion that proves a
     // read-modify-write preserved what it does not model — the point of the
     // whole write path.
-    const names = await listRaw(sandbox, 'work');
-    const files = await Promise.all(
-      names.map(async (name) => (await getRaw(sandbox, 'work', name)).ics)
-    );
+    const files = await storedFiles('work');
     const series = files.find((ics) => ics.includes('RRULE'));
     expect(series).toBeDefined();
-    const unfolded = (series ?? '').replace(/\r\n[ \t]/g, '');
-    expect(unfolded).toMatch(/RRULE:FREQ=WEEKLY;COUNT=4/);
-    expect(unfolded).toMatch(/TRIGGER:-PT15M/);
-    expect(unfolded).toMatch(/ATTENDEE[^\r\n]*integration@example\.net/);
-    expect(unfolded).toMatch(/ORGANIZER[^\r\n]*alice@example\.net/);
-    // The override the change created, and the master, both in one resource.
-    expect((unfolded.match(/^BEGIN:VEVENT/gm) ?? []).length).toBe(2);
+    const stored = series ?? '';
+    expect(stored).toMatch(/RRULE:FREQ=WEEKLY;COUNT=4/);
+    expect(stored).toMatch(/TRIGGER:-PT15M/);
+    expect(stored).toMatch(/ATTENDEE[^\r\n]*integration@example\.net/);
+    expect(stored).toMatch(/ORGANIZER[^\r\n]*alice@example\.net/);
+    // The master plus the override the change created, in one resource.
+    expect((stored.match(/^BEGIN:VEVENT/gm) ?? []).length).toBe(2);
   });
 
   it('asks before changing a whole series, and does it when told to', async () => {
     const before = asking.prompts.length;
-    const text = await asking.call('update_event', {
+    const result = await data(asking, 'update_event', {
       id: state.occurrenceId,
       scope: 'entire_series',
       location: 'Room 2',
     });
     expect(asking.prompts.length).toBeGreaterThan(before);
-    expect(data(text).written).toBe(true);
+    expect(result.written).toBe(true);
   });
 
   it('offers the two-call token to a client that cannot be asked', async () => {
@@ -254,18 +274,18 @@ describe('events', () => {
       scope: 'entire_series',
       location: 'Room 3',
     });
-    expect(data(text).written).toBe(true);
+    expect((JSON.parse(text) as { written: boolean }).written).toBe(true);
     // The dialog client never saw a token; the plain one never saw a dialog.
+    // Without this pair, a server that silently stopped asking stays green.
     expect(plain.prompts).toHaveLength(0);
+    expect(asking.prompts.length).toBeGreaterThan(0);
   });
 
-  it('refuses to write when the entry changed underneath', async () => {
-    const entry = data(await asking.call('get_event', { id: state.simpleId }));
-    const name = `${String((entry.event as { uid: string }).uid).split('@')[0]}.ics`;
+  it('sees a change made outside this server', async () => {
+    const entry = await data(asking, 'get_event', { id: state.simpleId });
+    const uid = (entry.event as ShapedEvent).uid ?? '';
+    const name = `${uid.split('@')[0]}.ics`;
     const stored = await getRaw(sandbox, 'work', name);
-
-    // Change it out of band between the read and the write. The server reads
-    // the ETag inside the call, so the race has to be created here.
     await putRaw(
       sandbox,
       'work',
@@ -273,77 +293,65 @@ describe('events', () => {
       stored.ics.replace(/^SUMMARY:.*$/m, 'SUMMARY:Changed elsewhere')
     );
 
-    // The next update reads a fresh ETag, so it succeeds — the 412 path is
-    // exercised in the unit suite where the race is deterministic. What is
-    // asserted here is that the out-of-band change is what the server now sees.
-    const after = data(await asking.call('get_event', { id: state.simpleId }));
-    expect((after.event as { summary: string }).summary).toBe(
-      'Changed elsewhere'
-    );
+    const after = await data(asking, 'get_event', { id: state.simpleId });
+    expect((after.event as ShapedEvent).summary).toBe('Changed elsewhere');
   });
 
   it('searches by text on the server', async () => {
-    const found = data(
-      await asking.call('search_events', {
-        query: 'Coffee',
-        from: '2026-09-01T00:00:00Z',
-        to: '2026-10-01T00:00:00Z',
-      })
-    );
-    expect(found.count).toBe(0);
-
-    const hit = data(
-      await asking.call('search_events', {
-        query: 'Changed elsewhere',
-        from: '2026-09-01T00:00:00Z',
-        to: '2026-10-01T00:00:00Z',
-      })
-    );
+    // Self-contained: a term that is certainly present, and one that certainly
+    // is not. Depending on a rename an earlier test performed would make this
+    // fail for somebody else's reason.
+    const hit = await data(asking, 'search_events', {
+      query: 'Team sync',
+      from: '2026-09-01T00:00:00Z',
+      to: '2026-10-01T00:00:00Z',
+    });
     expect(hit.count).toBeGreaterThan(0);
+
+    const miss = await data(asking, 'search_events', {
+      query: 'zzz-no-such-event-zzz',
+      from: '2026-09-01T00:00:00Z',
+      to: '2026-10-01T00:00:00Z',
+    });
+    expect(miss.count).toBe(0);
   });
 
   it('reports busy periods without any of the titles', async () => {
-    const busy = data(
-      await asking.call('get_free_busy', {
-        from: '2026-09-07T00:00:00Z',
-        to: '2026-09-30T00:00:00Z',
-      })
-    );
+    const busy = await data(asking, 'get_free_busy', {
+      from: '2026-09-07T00:00:00Z',
+      to: '2026-09-30T00:00:00Z',
+    });
     expect(busy.method).toBe('server');
     expect((busy.busy as unknown[]).length).toBeGreaterThan(0);
-    // Nothing anybody wrote comes back — that is the tool's whole argument.
+    // Nothing anybody wrote comes back — that is the tool's whole argument, and
+    // the reason it carries no untrusted marker.
     expect(JSON.stringify(busy)).not.toContain('Team sync');
     expect(busy.untrusted).toBeUndefined();
   });
 
   it('answers an invitation on the attendee line that is ours', async () => {
-    // The dialog client answers 'accept' automatically, so a guarded tool is
-    // one call here. The token path for this tool is covered by `plain` below.
-    const text = await asking.call('respond_to_event', {
+    // The dialog client answers 'accept' automatically, so a guarded tool is one
+    // call here.
+    const result = await data(asking, 'respond_to_event', {
       id: state.seriesId,
       response: 'ACCEPTED',
     });
-    expect(data(text).responded).toBe(true);
+    expect(result.responded).toBe(true);
 
-    const names = await listRaw(sandbox, 'work');
-    const files = await Promise.all(
-      names.map(async (name) => (await getRaw(sandbox, 'work', name)).ics)
-    );
-    const series = (files.find((ics) => ics.includes('RRULE')) ?? '').replace(
-      /\r\n[ \t]/g,
-      ''
-    );
+    const files = await storedFiles('work');
+    const series = files.find((ics) => ics.includes('RRULE')) ?? '';
     expect(series).toMatch(
       /ATTENDEE[^\r\n]*PARTSTAT=ACCEPTED[^\r\n]*integration@example\.net/
     );
+    // The organiser line is untouched: this server changes exactly one attendee.
+    expect(series).toMatch(/ORGANIZER[^\r\n]*alice@example\.net/);
   });
 
   it('moves an event to another calendar and invalidates the old id', async () => {
-    const text = await asking.call('move_event', {
+    const moved = await data(asking, 'move_event', {
       id: state.allDayId,
       destination_calendar_id: PRIVATE,
     });
-    const moved = data(text);
     expect(moved.moved).toBe(true);
     state.movedId = moved.id as string;
     expect(state.movedId).not.toBe(state.allDayId);
@@ -353,47 +361,38 @@ describe('events', () => {
       { id: state.allDayId },
       { expectError: true }
     );
-    const there = data(await asking.call('get_event', { id: state.movedId }));
-    expect((there.event as { summary: string }).summary).toBe(
-      'Company holiday'
-    );
+    const there = await data(asking, 'get_event', { id: state.movedId });
+    expect((there.event as ShapedEvent).summary).toBe('Company holiday');
   });
 
   it('deletes one occurrence by excluding it, keeping the series', async () => {
-    const listing = data(
-      await asking.call('list_events', {
-        from: '2026-09-01T00:00:00Z',
-        to: '2026-10-15T00:00:00Z',
-        calendars: [WORK],
-      })
+    const listing = await data(asking, 'list_events', {
+      from: '2026-09-01T00:00:00Z',
+      to: '2026-10-15T00:00:00Z',
+      calendars: [WORK],
+    });
+    const sync = (listing.events as ShapedEvent[]).filter((event) =>
+      event.summary?.startsWith('Team sync')
     );
-    const sync = (listing.events as { id: string; summary?: string }[]).filter(
-      (event) => event.summary?.startsWith('Team sync')
-    );
-    const victim = sync[sync.length - 1]?.id as string;
+    const last = sync[sync.length - 1];
+    expect(last).toBeDefined();
+    const victim = last?.id ?? '';
 
     await asking.call('delete_event', { id: victim });
 
-    const names = await listRaw(sandbox, 'work');
-    const files = await Promise.all(
-      names.map(async (name) => (await getRaw(sandbox, 'work', name)).ics)
-    );
-    const series = (files.find((ics) => ics.includes('RRULE')) ?? '').replace(
-      /\r\n[ \t]/g,
-      ''
-    );
+    const files = await storedFiles('work');
+    const series = files.find((ics) => ics.includes('RRULE')) ?? '';
+    // Deleting one instance is an exception date on the series, not a DELETE.
     expect(series).toMatch(/^EXDATE/m);
     expect(series).toMatch(/RRULE:FREQ=WEEKLY;COUNT=4/);
 
-    const after = data(
-      await asking.call('list_events', {
-        from: '2026-09-01T00:00:00Z',
-        to: '2026-10-15T00:00:00Z',
-        calendars: [WORK],
-      })
-    );
+    const after = await data(asking, 'list_events', {
+      from: '2026-09-01T00:00:00Z',
+      to: '2026-10-15T00:00:00Z',
+      calendars: [WORK],
+    });
     expect(
-      (after.events as { summary?: string }[]).filter((event) =>
+      (after.events as ShapedEvent[]).filter((event) =>
         event.summary?.startsWith('Team sync')
       )
     ).toHaveLength(sync.length - 1);
@@ -413,30 +412,26 @@ describe('events', () => {
 });
 
 describe('tasks', () => {
-  it('creates, lists, completes and deletes a task', async () => {
-    const created = data(
-      await asking.call('create_task', {
-        calendar_id: WORK,
-        summary: 'Write the report',
-        due: '2026-09-18T17:00:00',
-        priority: 2,
-      })
-    );
+  it('creates, lists, changes, completes and deletes a task', async () => {
+    const created = await data(asking, 'create_task', {
+      calendar_id: WORK,
+      summary: 'Write the report',
+      due: '2026-09-18T17:00:00',
+      priority: 2,
+    });
     state.taskId = created.id as string;
 
-    const listing = data(
-      await asking.call('list_tasks', {
-        from: '2026-09-01T00:00:00Z',
-        to: '2026-10-01T00:00:00Z',
-      })
-    );
+    const listing = await data(asking, 'list_tasks', {
+      from: '2026-09-01T00:00:00Z',
+      to: '2026-10-01T00:00:00Z',
+    });
     expect(
       (listing.tasks as { summary?: string }[]).some(
         (task) => task.summary === 'Write the report'
       )
     ).toBe(true);
 
-    const detail = data(await asking.call('get_task', { id: state.taskId }));
+    const detail = await data(asking, 'get_task', { id: state.taskId });
     expect((detail.task as { priority?: number }).priority).toBe(2);
 
     await asking.call('update_task', {
@@ -444,28 +439,25 @@ describe('tasks', () => {
       percent_complete: 50,
     });
 
-    const done = data(await asking.call('complete_task', { id: state.taskId }));
+    const done = await data(asking, 'complete_task', { id: state.taskId });
     expect(done.status).toBe('COMPLETED');
 
     // Completed tasks are out of the default listing, and back in on request.
-    const hidden = data(
-      await asking.call('list_tasks', {
-        from: '2026-09-01T00:00:00Z',
-        to: '2026-10-01T00:00:00Z',
-      })
-    );
+    const hidden = await data(asking, 'list_tasks', {
+      from: '2026-09-01T00:00:00Z',
+      to: '2026-10-01T00:00:00Z',
+    });
     expect(
       (hidden.tasks as { summary?: string }[]).some(
         (task) => task.summary === 'Write the report'
       )
     ).toBe(false);
-    const shown = data(
-      await asking.call('list_tasks', {
-        from: '2026-09-01T00:00:00Z',
-        to: '2026-10-01T00:00:00Z',
-        include_completed: true,
-      })
-    );
+
+    const shown = await data(asking, 'list_tasks', {
+      from: '2026-09-01T00:00:00Z',
+      to: '2026-10-01T00:00:00Z',
+      include_completed: true,
+    });
     expect(
       (shown.tasks as { summary?: string }[]).some(
         (task) => task.summary === 'Write the report'
@@ -479,27 +471,21 @@ describe('tasks', () => {
 
 describe('journals', () => {
   it('creates, lists, changes and deletes a note', async () => {
-    const created = data(
-      await asking.call('create_journal', {
-        calendar_id: PRIVATE,
-        summary: 'Retro',
-        date: '2026-09-12',
-        description: 'What went well.',
-      })
-    );
+    const created = await data(asking, 'create_journal', {
+      calendar_id: PRIVATE,
+      summary: 'Retro',
+      date: '2026-09-12',
+      description: 'What went well.',
+    });
     state.journalId = created.id as string;
 
-    const listing = data(
-      await asking.call('list_journals', {
-        from: '2026-09-01T00:00:00Z',
-        to: '2026-10-01T00:00:00Z',
-      })
-    );
+    const listing = await data(asking, 'list_journals', {
+      from: '2026-09-01T00:00:00Z',
+      to: '2026-10-01T00:00:00Z',
+    });
     expect(listing.count).toBeGreaterThan(0);
 
-    const detail = data(
-      await asking.call('get_journal', { id: state.journalId })
-    );
+    const detail = await data(asking, 'get_journal', { id: state.journalId });
     expect((detail.journal as { description?: string }).description).toBe(
       'What went well.'
     );
@@ -519,20 +505,32 @@ describe('journals', () => {
 });
 
 describe('the calendar allowlist, against a real server', () => {
+  /** A well-formed id for a calendar the operator fenced off. */
+  const forbiddenId = `e1.${Buffer.from(
+    `/integration/${FORBIDDEN_CALENDAR}/`,
+    'utf8'
+  ).toString('base64url')}.${Buffer.from('anything.ics', 'utf8').toString(
+    'base64url'
+  )}`;
+
   it('refuses an id pointing at a calendar outside CALDAV_CALENDARS', async () => {
-    // A well-formed id for a real resource in a real calendar the operator
-    // fenced off. Built the way an id is built, so nothing but the allowlist
-    // stands between the caller and the entry.
-    const forbidden = `e1.${Buffer.from(`/integration/${FORBIDDEN_CALENDAR}/`, 'utf8').toString('base64url')}.${Buffer.from('anything.ics', 'utf8').toString('base64url')}`;
-    for (const tool of ['get_event', 'update_event', 'delete_event']) {
-      await asking.call(
-        tool,
-        tool === 'update_event'
-          ? { id: forbidden, summary: 'nope' }
-          : { id: forbidden },
-        { expectError: /not given access|cannot see/ }
-      );
-    }
+    // Built the way an id is built, so nothing but the allowlist stands between
+    // the caller and the entry.
+    await asking.call(
+      'get_event',
+      { id: forbiddenId },
+      { expectError: /not given access|cannot see/ }
+    );
+    await asking.call(
+      'update_event',
+      { id: forbiddenId, summary: 'nope' },
+      { expectError: /not given access|cannot see/ }
+    );
+    await asking.call(
+      'delete_event',
+      { id: forbiddenId },
+      { expectError: /not given access|cannot see/ }
+    );
   });
 
   it('refuses a calendar argument outside the allowlist', async () => {
@@ -550,6 +548,53 @@ describe('the calendar allowlist, against a real server', () => {
       },
       { expectError: /not given access/ }
     );
+  });
+
+  it('never lets a search reach a fenced-off calendar', async () => {
+    // The easiest way past a calendar allowlist in this protocol: a
+    // calendar-query issued Depth:1 against the *home set* returns matches from
+    // every collection under it. This server issues one REPORT per allowed
+    // calendar instead, and this is what pins that.
+    await putRaw(
+      sandbox,
+      FORBIDDEN_CALENDAR,
+      'secret.ics',
+      [
+        'BEGIN:VCALENDAR',
+        'VERSION:2.0',
+        'PRODID:-//test//EN',
+        'BEGIN:VEVENT',
+        'UID:secret@example.net',
+        'DTSTAMP:20260901T120000Z',
+        'DTSTART:20260909T090000Z',
+        'DTEND:20260909T100000Z',
+        'SUMMARY:zzz-fenced-off-marker-zzz',
+        'END:VEVENT',
+        'END:VCALENDAR',
+        '',
+      ].join('\r\n')
+    );
+
+    const found = await data(asking, 'search_events', {
+      query: 'zzz-fenced-off-marker-zzz',
+      from: '2026-09-01T00:00:00Z',
+      to: '2026-10-01T00:00:00Z',
+    });
+    expect(found.count).toBe(0);
+
+    const listed = await data(asking, 'list_events', {
+      from: '2026-09-01T00:00:00Z',
+      to: '2026-10-01T00:00:00Z',
+    });
+    expect(JSON.stringify(listed)).not.toContain('zzz-fenced-off-marker-zzz');
+
+    const busy = await data(asking, 'get_free_busy', {
+      from: '2026-09-09T00:00:00Z',
+      to: '2026-09-10T00:00:00Z',
+    });
+    // The fenced-off event is the only thing in that window, so a leak would
+    // show up as a busy period that should not be there.
+    expect(busy.count).toBe(0);
   });
 });
 

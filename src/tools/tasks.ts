@@ -225,7 +225,7 @@ export function registerTaskWriteTools(
               );
               writeTime(component, 'dtstart', {
                 instant: start.instant,
-                zone: start.allDay ? undefined : start.zone,
+                zone: start.zone,
                 allDay: start.allDay,
               });
             }
@@ -238,7 +238,7 @@ export function registerTaskWriteTools(
               );
               writeTime(component, 'due', {
                 instant: due.instant,
-                zone: due.allDay ? undefined : due.zone,
+                zone: due.zone,
                 allDay: due.allDay,
               });
             }
@@ -310,7 +310,7 @@ export function registerTaskWriteTools(
           );
           writeTime(target, 'dtstart', {
             instant: start.instant,
-            zone: start.allDay ? undefined : start.zone,
+            zone: start.zone,
             allDay: start.allDay,
           });
         }
@@ -323,7 +323,7 @@ export function registerTaskWriteTools(
           );
           writeTime(target, 'due', {
             instant: due.instant,
-            zone: due.allDay ? undefined : due.zone,
+            zone: due.zone,
             allDay: due.allDay,
           });
         }

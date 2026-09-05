@@ -1,0 +1,96 @@
+{
+  "_comment": "Template. Placeholders: {{REPO}}, {{TITLE}}, {{DESCRIPTION_MAX_100_CHARS}}, {{PACKAGE_NAME}}, {{VERSION}}, {{ENV_*}}. Delete this _comment key and the oci package block if the project ships no image. The description limit of 100 characters is enforced by the registry. Note the oci entry has NO version field on purpose — its version lives in the identifier tag. EVERY environment variable must appear in BOTH blocks: osm-mcp shipped with 2 of its 9 declared because one block was updated and the other was not.",
+  "$schema": "https://static.modelcontextprotocol.io/schemas/2025-12-11/server.schema.json",
+  "name": "io.github.ni-c/{{REPO}}",
+  "title": "{{TITLE}}",
+  "description": "{{DESCRIPTION_MAX_100_CHARS}}",
+  "websiteUrl": "https://{{REPO}}.ni-c.de",
+  "repository": {
+    "url": "https://github.com/ni-c/{{REPO}}",
+    "source": "github"
+  },
+  "version": "{{VERSION}}",
+  "packages": [
+    {
+      "registryType": "npm",
+      "identifier": "{{PACKAGE_NAME}}",
+      "version": "{{VERSION}}",
+      "transport": {
+        "type": "stdio"
+      },
+      "environmentVariables": [
+        {
+          "name": "{{ENV_URL}}",
+          "description": "Base URL of the target instance, e.g. https://service.example.com",
+          "isRequired": true,
+          "format": "string"
+        },
+        {
+          "name": "{{ENV_TOKEN}}",
+          "description": "API token with the scopes listed in the README",
+          "isRequired": true,
+          "isSecret": true,
+          "format": "string"
+        },
+        {
+          "name": "{{ENV_READ_ONLY}}",
+          "description": "Set to true to register only the read tools (default: false)",
+          "isRequired": false,
+          "format": "boolean"
+        },
+        {
+          "name": "{{ENV_ALLOW_TOOLS}}",
+          "description": "Comma-separated tool names or list_* prefixes to register; 'essential' selects a curated preset (default: all tools)",
+          "isRequired": false,
+          "format": "string"
+        },
+        {
+          "name": "{{ENV_DENY_TOOLS}}",
+          "description": "Comma-separated tool names or list_* prefixes to remove from whatever the allow list left",
+          "isRequired": false,
+          "format": "string"
+        }
+      ]
+    },
+    {
+      "registryType": "oci",
+      "identifier": "ghcr.io/ni-c/{{REPO}}:{{VERSION}}",
+      "transport": {
+        "type": "stdio"
+      },
+      "environmentVariables": [
+        {
+          "name": "{{ENV_URL}}",
+          "description": "Base URL of the target instance, e.g. https://service.example.com",
+          "isRequired": true,
+          "format": "string"
+        },
+        {
+          "name": "{{ENV_TOKEN}}",
+          "description": "API token with the scopes listed in the README",
+          "isRequired": true,
+          "isSecret": true,
+          "format": "string"
+        },
+        {
+          "name": "{{ENV_READ_ONLY}}",
+          "description": "Set to true to register only the read tools (default: false)",
+          "isRequired": false,
+          "format": "boolean"
+        },
+        {
+          "name": "{{ENV_ALLOW_TOOLS}}",
+          "description": "Comma-separated tool names or list_* prefixes to register; 'essential' selects a curated preset (default: all tools)",
+          "isRequired": false,
+          "format": "string"
+        },
+        {
+          "name": "{{ENV_DENY_TOOLS}}",
+          "description": "Comma-separated tool names or list_* prefixes to remove from whatever the allow list left",
+          "isRequired": false,
+          "format": "string"
+        }
+      ]
+    }
+  ]
+}

@@ -80,10 +80,15 @@ export async function bootstrapRadicale(
     const response = await dav(collection, 'MKCALENDAR', {
       body: mkcalendarBody(name),
     });
-    // 405 means it is already there, which is fine on a re-run against a stack
-    // somebody forgot to tear down. Anything else is a real failure and worth
-    // reporting with the body, since Radicale explains itself.
-    if (![201, 405].includes(response.status)) {
+    // Already there is fine on a re-run against a stack somebody forgot to tear
+    // down. Radicale says so with 409 and a `resource-must-be-null`
+    // precondition rather than the 405 one might expect, which is legal and
+    // worth writing down: a bootstrap that only accepted 405 would fail on
+    // every second run and look like a broken suite.
+    const exists =
+      response.status === 409 &&
+      /resource-must-be-null/i.test(await response.clone().text());
+    if (![201, 405].includes(response.status) && !exists) {
       throw new Error(
         `MKCALENDAR ${collection} answered ${response.status}: ${(
           await response.text()

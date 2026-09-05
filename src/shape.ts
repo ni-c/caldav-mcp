@@ -113,11 +113,7 @@ export function shapeEntry(
     ...(occurrence.recurrenceId === undefined
       ? {}
       : {
-          recurrence_id: renderTime(occurrence.start.instant, {
-            zone: occurrence.start.zone,
-            allDay: occurrence.start.allDay,
-            fallbackZone: options.fallbackZone,
-          }),
+          recurrence_id: timeField(occurrence.start, options.fallbackZone),
           is_override: occurrence.isOverride,
         }),
     ...maybe(
@@ -139,12 +135,24 @@ export function shapeEntry(
       entry.transparent = transparency.toUpperCase() === 'TRANSPARENT';
     }
   } else if (options.kind === 'vtodo') {
-    setTime(entry, 'start', occurrence.start, options.fallbackZone);
-    setTime(entry, 'due', occurrence.end, options.fallbackZone);
+    // A task with a deadline and no scheduled start is the ordinary shape, and
+    // the expansion fills `start` from DUE so such a task is visible at all.
+    // Reporting that back as a `start` the entry does not have would be a
+    // fabrication, so the component decides which fields appear.
+    if (component.getFirstProperty('dtstart') !== null) {
+      setTime(entry, 'start', occurrence.start, options.fallbackZone);
+    }
+    if (component.getFirstProperty('due') !== null) {
+      setTime(entry, 'due', occurrence.end, options.fallbackZone);
+    }
+    // COMPLETED is defined as UTC by RFC 5545, so it is reported as an instant
+    // rather than through the zone machinery — and as ISO 8601 rather than as
+    // the raw iCalendar stamp, which is what every other timestamp here does.
     const completed = component.getFirstProperty('completed');
     if (completed !== null) {
+      const value = completed.getFirstValue() as ICAL.Time;
       entry.completed = {
-        value: String(completed.getFirstValue()),
+        value: value.toJSDate().toISOString(),
         all_day: false,
       };
     }
@@ -188,6 +196,31 @@ function maybe(key: string, value: unknown): Record<string, unknown> {
   return value === undefined ? {} : { [key]: value };
 }
 
+/**
+ * The one place a rendered time becomes the shape the schemas declare.
+ *
+ * `renderTime` answers in this server's own vocabulary (`allDay`); the wire
+ * carries `all_day`. Having that rename in two places is how one of them ends
+ * up missing it — which is exactly what happened, and what the integration
+ * suite caught: `recurrence_id` was built straight from `renderTime` and every
+ * occurrence of every recurring entry failed its own output schema.
+ */
+function timeField(
+  time: Occurrence['start'],
+  fallbackZone: string
+): Record<string, unknown> {
+  const rendered: RenderedTime = renderTime(time.instant, {
+    zone: time.zone,
+    allDay: time.allDay,
+    fallbackZone,
+  });
+  return {
+    value: rendered.value,
+    ...(rendered.tzid === undefined ? {} : { tzid: rendered.tzid }),
+    all_day: rendered.allDay,
+  };
+}
+
 function setTime(
   entry: Record<string, unknown>,
   key: string,
@@ -195,16 +228,7 @@ function setTime(
   fallbackZone: string
 ): void {
   if (time === undefined) return;
-  const rendered: RenderedTime = renderTime(time.instant, {
-    zone: time.zone,
-    allDay: time.allDay,
-    fallbackZone,
-  });
-  entry[key] = {
-    value: rendered.value,
-    ...(rendered.tzid === undefined ? {} : { tzid: rendered.tzid }),
-    all_day: rendered.allDay,
-  };
+  entry[key] = timeField(time, fallbackZone);
 }
 
 function isoOf(component: ICAL.Component, name: string): string | undefined {

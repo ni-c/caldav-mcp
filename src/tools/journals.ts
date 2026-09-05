@@ -191,7 +191,7 @@ export function registerJournalWriteTools(
           (component) => {
             writeTime(component, 'dtstart', {
               instant: at.instant,
-              zone: at.allDay ? undefined : at.zone,
+              zone: at.zone,
               allDay: at.allDay,
             });
             applyCommonFields(component, {
@@ -263,7 +263,7 @@ export function registerJournalWriteTools(
           );
           writeTime(loaded.target, 'dtstart', {
             instant: at.instant,
-            zone: at.allDay ? undefined : at.zone,
+            zone: at.zone,
             allDay: at.allDay,
           });
         }

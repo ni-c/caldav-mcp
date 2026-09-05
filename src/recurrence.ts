@@ -396,11 +396,13 @@ function toOccurrence(
   fallbackZone: string,
   isOverride: boolean
 ): Occurrence | undefined {
-  const start = readTime(component, 'dtstart', fallbackZone);
+  // A VTODO may carry DUE and no DTSTART — which is the ordinary shape for a
+  // task with a deadline and no scheduled start. Requiring DTSTART made every
+  // such task invisible to list_tasks, and nothing said why.
+  const due = readTime(component, 'due', fallbackZone);
+  const start = readTime(component, 'dtstart', fallbackZone) ?? due;
   if (start === undefined) return undefined;
-  const end =
-    readTime(component, 'dtend', fallbackZone) ??
-    readTime(component, 'due', fallbackZone);
+  const end = readTime(component, 'dtend', fallbackZone) ?? due;
   const recurrenceProperty = component.getFirstProperty('recurrence-id');
   return {
     recurrenceId:
