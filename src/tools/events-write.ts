@@ -8,7 +8,7 @@ import {
 
 import { escapeInvisible, quoted } from '../analyze.js';
 import { resourceUrl, type CalendarRegistry } from '../calendars.js';
-import type { ToolContext } from '../entries.js';
+import { selfAddressesOf, type ToolContext } from '../entries.js';
 import { buildSeriesId, parseEntityId, type EntityId } from '../entity-id.js';
 import { ToolInputError } from '../errors.js';
 import {
@@ -593,10 +593,7 @@ export function registerEventWriteTools(
         const registry = await context.discovery.registry();
         const entity = parseEntityId(args.id, 'vevent', registry);
         const principal = await context.discovery.principal();
-        const addresses =
-          context.config.userEmail === undefined
-            ? principal.addresses
-            : [context.config.userEmail, ...principal.addresses];
+        const addresses = selfAddressesOf(context.config, principal.addresses);
         if (addresses.length === 0) {
           throw new ToolInputError(
             'caldav-mcp: this server cannot tell which attendee is you, so it ' +

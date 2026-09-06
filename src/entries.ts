@@ -471,10 +471,18 @@ export function selfAddressesOf(
   config: Config,
   discovered: readonly string[]
 ): string[] {
+  // Lower case throughout, because the comparison is against a lower-cased
+  // ATTENDEE value. This used to be the one place that lower-cased the
+  // configured address, while three other tools built the same list by hand
+  // without — so `is_self` was true in a listing and absent in get_event for
+  // the same entry and the same CALDAV_USER_EMAIL=Me@Example.COM.
   const configured = config.userEmail?.toLowerCase();
-  return configured === undefined
-    ? [...discovered]
-    : [configured, ...discovered];
+  return dedupe(
+    (configured === undefined
+      ? [...discovered]
+      : [configured, ...discovered]
+    ).map((address) => address.toLowerCase())
+  );
 }
 
 function dedupe(values: readonly string[]): string[] {

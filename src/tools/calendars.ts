@@ -2,7 +2,7 @@ import { z } from 'zod';
 import type { McpServer } from '@modelcontextprotocol/server';
 
 import { freeBusyQueryBody, textMatchBody } from '../dav-xml.js';
-import type { ToolContext } from '../entries.js';
+import { selfAddressesOf, type ToolContext } from '../entries.js';
 import { notes, shapedCalendar, untrustedFields } from '../output-schema.js';
 import { ownWordsResult, run, untrustedResult } from '../result.js';
 import { shapeCalendar } from '../shape.js';
@@ -179,10 +179,10 @@ export function registerCalendarTools(
           }
         }
 
-        const selfAddresses =
-          context.config.userEmail === undefined
-            ? [...principal.addresses]
-            : [context.config.userEmail, ...principal.addresses];
+        const selfAddresses = selfAddressesOf(
+          context.config,
+          principal.addresses
+        );
         if (selfAddresses.length === 0) {
           collected.push(
             'No address could be determined for this account, so ' +

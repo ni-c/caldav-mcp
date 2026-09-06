@@ -359,3 +359,49 @@ describe('what an error is allowed to say, second pass', () => {
     expect(textOf(result)).toMatch(/\n/);
   });
 });
+
+describe('who is_self is', () => {
+  afterEach(() => vi.unstubAllGlobals());
+
+  it('is decided the same way in every tool', async () => {
+    // The configured address was lower-cased for listings and not for
+    // get_event or get_server_info, so `CALDAV_USER_EMAIL=Me@Example.COM`
+    // marked the attendee in one answer and not in the other.
+    const fake = new FakeCalDav({ addresses: ['Shared@Example.NET'] });
+    fake.install();
+    fake.seed(
+      'work',
+      'a.ics',
+      event([
+        'ATTENDEE;PARTSTAT=NEEDS-ACTION:mailto:me@example.com',
+        'ATTENDEE;PARTSTAT=ACCEPTED:mailto:other@example.com',
+      ])
+    );
+    const session = await connect({ userEmail: 'Me@Example.COM' }, 'accept');
+    try {
+      const call = (name: string, args: Record<string, unknown>) =>
+        session.client.callTool({ name, arguments: args });
+      const listing = dataOf(
+        await call('list_events', { from: '2026-09-01', to: '2026-09-30' })
+      );
+      const listed = (listing.events as Record<string, unknown>[])[0] ?? {};
+      const fromList = (listed.attendees as { is_self?: boolean }[]).map(
+        (attendee) => attendee.is_self === true
+      );
+      const single = dataOf(await call('get_event', { id: listed.id }));
+      const fromGet = (
+        single.event as { attendees: { is_self?: boolean }[] }
+      ).attendees.map((attendee) => attendee.is_self === true);
+      expect(fromList).toEqual([true, false]);
+      expect(fromGet).toEqual(fromList);
+
+      const info = dataOf(await call('get_server_info', {}));
+      expect(info.self_addresses).toEqual([
+        'me@example.com',
+        'shared@example.net',
+      ]);
+    } finally {
+      await session.close();
+    }
+  });
+});

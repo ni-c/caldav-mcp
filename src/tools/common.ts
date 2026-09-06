@@ -1,7 +1,7 @@
 import type { CalendarRegistry } from '../calendars.js';
 import { resourceUrl } from '../calendars.js';
 import type { Config } from '../config.js';
-import type { ToolContext } from '../entries.js';
+import { selfAddressesOf, type ToolContext } from '../entries.js';
 import type { EntityId } from '../entity-id.js';
 import { ToolInputError } from '../errors.js';
 import { componentsOf, parseCalendar } from '../ical.js';
@@ -111,10 +111,7 @@ export async function loadEntry(
   }
 
   const principal = await context.discovery.principal();
-  const selfAddresses =
-    context.config.userEmail === undefined
-      ? [...principal.addresses]
-      : [context.config.userEmail, ...principal.addresses];
+  const selfAddresses = selfAddressesOf(context.config, principal.addresses);
 
   return {
     shaped: shapeEntry(occurrence, {
