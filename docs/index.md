@@ -75,6 +75,8 @@ features:
 <figcaption>caldav-mcp speaks MCP over stdio to the client and WebDAV over HTTPS to the calendar. Nothing it reads is treated as an instruction.</figcaption>
 </figure>
 
+![Two tool calls against a local Radicale: listing the calendars this server may use, and expanding a weekly meeting into its occurrences.](/demo.gif)
+
 ## Running it elsewhere
 
 A client that cannot spawn a local process — ChatGPT connectors, Claude on the web,

@@ -33,6 +33,8 @@ reliably from seven than from twenty-two — see
   <img alt="An MCP client speaks stdio to caldav-mcp, which speaks WebDAV over HTTPS to a CalDAV server. Answers come back marked as untrusted calendar content." src="https://caldav-mcp.ni-c.de/architecture.svg">
 </picture>
 
+![Two tool calls against a local Radicale: listing the calendars this server may use, and expanding a weekly meeting into its occurrences.](https://caldav-mcp.ni-c.de/demo.gif)
+
 ## What makes it different
 
 **Recurring entries are expanded here, not asked of the server.** A weekly

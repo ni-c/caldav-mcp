@@ -22,6 +22,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   cannot drift.
 - An OpenSSF Scorecard run, weekly and on every push to `main`, reporting into
   the Security tab next to CodeQL and Trivy. The badge is the second in the row.
+- The demo recording is embedded in the README and on the docs home page. It
+  had been rendered and shipped since 0.1.0 and was linked from neither.
 
 ### Changed
 
@@ -30,6 +32,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   a `src/` this package does not ship — so a stack trace under that flag named a
   file nobody could open. `dist/**/*.js` is unchanged; the package is about a
   fifth smaller.
+- The docs workflow builds and deploys in two jobs, so `contents: write` is
+  scoped to the deploy step rather than granted to the whole workflow.
+- `oxlint` to 1.81.
 
 [Unreleased]: https://github.com/ni-c/caldav-mcp/compare/v0.1.2...HEAD
 
