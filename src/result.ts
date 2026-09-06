@@ -4,11 +4,12 @@ import type {
 } from '@modelcontextprotocol/server';
 
 import { CalDavApiError } from './api.js';
-import { sanitizeText, wrapUntrusted } from './analyze.js';
+import { quoted, sanitizeText, wrapUntrusted } from './analyze.js';
 import { parseDavError, XmlValueError } from './dav-xml.js';
 import {
   AllowlistError,
   CalendarNotAllowedError,
+  ConfigurationError,
   PreconditionFailedError,
   ResultTooLargeError,
   ToolInputError,
@@ -302,6 +303,7 @@ export async function run(
       error instanceof ResultTooLargeError ||
       error instanceof CalendarNotAllowedError ||
       error instanceof AllowlistError ||
+      error instanceof ConfigurationError ||
       error instanceof XmlValueError
     ) {
       return errorResult(
@@ -320,7 +322,13 @@ export async function run(
           hintFor(error.status, error.precondition)
       );
     }
+    // Anything untyped is quoted, not repeated. ical.js writes the offending
+    // value into its messages — `invalid BYDAY value "…"`, the whole rule —
+    // and a rule is calendar content, written by whoever wrote the entry.
+    // The typed errors above build their sentences through `quoted()`
+    // already; this is the one path that reached the model with the raw
+    // text, in this server's own voice, outside any fence.
     const message = error instanceof Error ? error.message : String(error);
-    return errorResult(`caldav-mcp: ${message}`);
+    return errorResult(`caldav-mcp: ${quoted(message, 500)}`);
   }
 }

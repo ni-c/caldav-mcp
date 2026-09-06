@@ -649,11 +649,15 @@ export function registerEventWriteTools(
         const loaded = await loadForWrite(context, entity, scope);
         const mine = findSelfAttendee(loaded.target, addresses);
         if (mine === undefined) {
+          // The addresses came from the principal's `calendar-user-address-set`,
+          // which the DAV server chose — quoted and capped like any other
+          // value an error repeats.
           throw new ToolInputError(
             'caldav-mcp: none of the attendees on this event matches the ' +
               `address${addresses.length === 1 ? '' : 'es'} this server knows ` +
-              `you by (${addresses.join(', ')}). It will not guess which one ` +
-              'is yours.'
+              `you by (${quoted(addresses.slice(0, 5).join(', '))}` +
+              `${addresses.length > 5 ? ', …' : ''}). It will not guess which ` +
+              'one is yours.'
           );
         }
         mine.setParameter('partstat', args.response);

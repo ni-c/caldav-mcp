@@ -17,6 +17,7 @@ import {
   type DavResponse,
   type PropName,
 } from './dav-xml.js';
+import { ConfigurationError } from './errors.js';
 
 const REQUEST_TIMEOUT_MS = 30_000;
 
@@ -213,7 +214,9 @@ export class CalDavApi {
     // Credentials are only required here, not at startup, so the server can be
     // started and introspected without them.
     const missing = missingConfigKeys(this.config);
-    if (missing.length > 0) throw new Error(missingConfigMessage(missing));
+    if (missing.length > 0) {
+      throw new ConfigurationError(missingConfigMessage(missing));
+    }
 
     // The invariant "credentials go to the configured origin and nowhere
     // else" is asserted at the sink, not left to the callers. Every caller
