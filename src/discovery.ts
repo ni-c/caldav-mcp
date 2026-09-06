@@ -165,7 +165,19 @@ export class Discovery {
     try {
       return await this.api.propfind(url, 0, HOME_PROPS);
     } catch (error) {
-      if (error instanceof CalDavApiError) throw error;
+      // A 404 or a 405 is the same "not here" as an HTML page: the origin
+      // root behind a `/dav.php` prefix is often a plain web server that
+      // has no such path or no such method, and treating that as the
+      // answer ended discovery one step before its home-set fallback. A
+      // 401, a 403 and a 5xx are still the answer, and still thrown.
+      if (
+        error instanceof CalDavApiError &&
+        error.status !== 404 &&
+        error.status !== 405
+      ) {
+        throw error;
+      }
+      if (!(error instanceof CalDavApiError)) return [];
       return [];
     }
   }
