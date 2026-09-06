@@ -1,24 +1,40 @@
 # Environment variables
 
-<!-- One table, this shape. Three of the eleven repositories grew a
-     heading-per-variable style instead; both read fine, but a new server starts
-     here so that the family stops adding variants. -->
-
 | Variable | Required | Default | Description |
 | --- | --- | --- | --- |
-| `CALDAV_URL` | yes | — | Base URL of the CalDAV instance |
-| `CALDAV_TOKEN` | yes | — | API token |
+| `CALDAV_URL` | yes | — | Root of the CalDAV server, e.g. `https://dav.example.net`. A calendar collection URL works too and limits this server to that one calendar |
+| `CALDAV_USERNAME` | yes¹ | — | Account name |
+| `CALDAV_PASSWORD` | yes¹ | — | Password, or an app-specific password where the provider offers one. Deleted from the environment once read |
+| `CALDAV_TOKEN` | yes¹ | — | Bearer token instead of username and password. Never both — a configuration carrying both is refused at startup |
+| `CALDAV_CALENDARS` | no | every calendar the account can see | Comma-separated calendars this server may touch, by full path or by final path segment |
+| `CALDAV_TIMEZONE` | no | `UTC` | IANA zone for timestamps that carry no offset, e.g. `Europe/Berlin` |
+| `CALDAV_USER_EMAIL` | no | the principal's address set | The address you are invited as, so `respond_to_event` can find your own attendee line |
+| `CALDAV_MAX_EVENTS` | no | `100` | Entries a listing returns by default, 1–500 |
 | `CALDAV_READ_ONLY` | no | `false` | `true` registers only the read tools |
 | `CALDAV_ALLOW_TOOLS` | no | — | Tool names, `list_*` prefixes or `essential`; only these register |
 | `CALDAV_DENY_TOOLS` | no | — | Same syntax; subtracted from whatever the allow list left |
-| `CALDAV_INSECURE_TLS` | no | `false` | `true` accepts self-signed certificates |
-| `CALDAV_ALLOW_PLAINTEXT` | no | `false` | `true` allows plain `http://` to a non-loopback host; otherwise such a URL refuses to start |
+| `CALDAV_INSECURE_TLS` | no | `false` | `true` accepts a self-signed certificate, on the configured host only |
+| `CALDAV_ALLOW_PLAINTEXT` | no | `false` | `true` allows a plain `http://` URL to a host that is not loopback, which sends the credentials unencrypted on every request. Otherwise such a URL refuses to start |
 | `ELICITATION` | no | `true` | `false` replaces the approval dialog with the two-call token. **Not prefixed** |
 
-## `ELICITATION`
+¹ Either `CALDAV_USERNAME` + `CALDAV_PASSWORD`, or `CALDAV_TOKEN`. Most CalDAV
+servers speak Basic authentication and want the first pair; the token exists for
+the deployments that put a bearer-token proxy in front of one. There is no OAuth
+flow here and nothing resembling a scope: what the account can do, this server
+can do, which is why an app-specific password is worth using where the provider
+offers one.
 
-<!-- Only for a server that has a guarded tool. Drop this section and the table
-     row above if nothing here asks anybody. -->
+**Every one of these is a secret or shapes what a secret can reach.** The
+booleans are read strictly where a `true` removes a protection
+(`CALDAV_INSECURE_TLS`, `CALDAV_ALLOW_PLAINTEXT` accept the exact string `true`
+and nothing else) and tolerantly where it turns one on (`CALDAV_READ_ONLY` also
+takes `1`, `yes`, `TRUE`). A typo should never quietly remove a safeguard.
+
+The credentials are deleted from `process.env` as soon as they are read, before
+any branch that can exit — so a crash reporter, a child process or a later
+`printenv` finds nothing. That is also why they cannot be re-read at runtime.
+
+## `ELICITATION`
 
 Whether a client that *can* show a dialog is asked before a guarded tool acts.
 `false` takes the two-call-token path instead — it does not remove the guard, and a
@@ -35,8 +51,8 @@ Two ways it differs from every other variable here:
   while you believed it was off.
 
 Values are trimmed and matched case-insensitively. It is read *after*
-`CALDAV_TOKEN` is deleted from `process.env`, so the fatal path cannot leave
-the token sitting there for a crash reporter.
+the credentials are deleted from `process.env`, so the fatal path cannot leave
+one sitting there for a crash reporter.
 
 ## Narrowing the tool list
 
