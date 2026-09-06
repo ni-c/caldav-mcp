@@ -158,7 +158,7 @@ describe('parsing a multistatus', () => {
         label
       ).toEqual(['VEVENT', 'VTODO']);
       expect(
-        privileges(first?.props['current-user-privilege-set']).sort(),
+        privileges(first?.props['current-user-privilege-set']).toSorted(),
         label
       ).toEqual(['read', 'write']);
     }
@@ -265,18 +265,18 @@ END:VCALENDAR</C:calendar-data>
   });
 });
 
-describe('the iCalendar document inside a multistatus', () => {
-  function dataOf(ics: string): string {
-    const xml =
-      `<?xml version="1.0"?><D:multistatus xmlns:D="DAV:" ` +
-      `xmlns:C="urn:ietf:params:xml:ns:caldav"><D:response>` +
-      `<D:href>/tester/work/a.ics</D:href><D:propstat>` +
-      `<D:status>HTTP/1.1 200 OK</D:status><D:prop>` +
-      `<C:calendar-data>${ics}</C:calendar-data>` +
-      `</D:prop></D:propstat></D:response></D:multistatus>`;
-    return String(parseMultiStatus(xml, 'test')[0]?.props['calendar-data']);
-  }
+function dataOf(ics: string): string {
+  const xml =
+    `<?xml version="1.0"?><D:multistatus xmlns:D="DAV:" ` +
+    `xmlns:C="urn:ietf:params:xml:ns:caldav"><D:response>` +
+    `<D:href>/tester/work/a.ics</D:href><D:propstat>` +
+    `<D:status>HTTP/1.1 200 OK</D:status><D:prop>` +
+    `<C:calendar-data>${ics}</C:calendar-data>` +
+    `</D:prop></D:propstat></D:response></D:multistatus>`;
+  return String(parseMultiStatus(xml, 'test')[0]?.props['calendar-data']);
+}
 
+describe('the iCalendar document inside a multistatus', () => {
   it('decodes the entities the parser was told to leave alone', () => {
     // `calendar-data` is a stop node and the one property read straight out of
     // `props` rather than through `textOf`, so it used to skip decoding

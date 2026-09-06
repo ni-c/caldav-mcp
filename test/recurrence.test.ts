@@ -726,27 +726,27 @@ describe('a zone name the platform does not know', () => {
   });
 });
 
-describe('a resource with thousands of edited occurrences', () => {
-  function overrides(count: number): string[] {
-    const lines: string[] = [];
-    for (let index = 0; index < count; index += 1) {
-      const day = String(1 + (index % 28)).padStart(2, '0');
-      const month = String(1 + (Math.floor(index / 28) % 12)).padStart(2, '0');
-      const year = 2000 + Math.floor(index / 336);
-      lines.push(
-        'BEGIN:VEVENT',
-        'UID:series@example.net',
-        'DTSTAMP:20260901T120000Z',
-        `RECURRENCE-ID;TZID=Europe/Berlin:${year}${month}${day}T090000`,
-        `DTSTART;TZID=Europe/Berlin:${year}${month}${day}T100000`,
-        `DTEND;TZID=Europe/Berlin:${year}${month}${day}T110000`,
-        'SUMMARY:Moved',
-        'END:VEVENT'
-      );
-    }
-    return lines;
+function movedOverrides(count: number): string[] {
+  const lines: string[] = [];
+  for (let index = 0; index < count; index += 1) {
+    const day = String(1 + (index % 28)).padStart(2, '0');
+    const month = String(1 + (Math.floor(index / 28) % 12)).padStart(2, '0');
+    const year = 2000 + Math.floor(index / 336);
+    lines.push(
+      'BEGIN:VEVENT',
+      'UID:series@example.net',
+      'DTSTAMP:20260901T120000Z',
+      `RECURRENCE-ID;TZID=Europe/Berlin:${year}${month}${day}T090000`,
+      `DTSTART;TZID=Europe/Berlin:${year}${month}${day}T100000`,
+      `DTEND;TZID=Europe/Berlin:${year}${month}${day}T110000`,
+      'SUMMARY:Moved',
+      'END:VEVENT'
+    );
   }
+  return lines;
+}
 
+describe('a resource with thousands of edited occurrences', () => {
   it('reads a bounded number of them and says so', () => {
     const root = parseCalendar(
       calendar([
@@ -756,7 +756,7 @@ describe('a resource with thousands of edited occurrences', () => {
           'RRULE:FREQ=DAILY',
           'SUMMARY:Daily',
         ]),
-        ...overrides(2_500),
+        ...movedOverrides(2_500),
       ]),
       'fixture'
     );
@@ -782,7 +782,7 @@ describe('a resource with thousands of edited occurrences', () => {
           'RRULE:FREQ=DAILY',
           'SUMMARY:Daily',
         ]),
-        ...overrides(2_000),
+        ...movedOverrides(2_000),
       ]),
       'fixture'
     );

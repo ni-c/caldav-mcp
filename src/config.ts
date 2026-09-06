@@ -177,7 +177,8 @@ function splitList(raw: string | undefined): string[] {
  */
 function assertKnownTimezone(zone: string): void {
   try {
-    new Intl.DateTimeFormat('en-US', { timeZone: zone });
+    // The constructor is the check: it throws for a name it does not know.
+    new Intl.DateTimeFormat('en-US', { timeZone: zone }).resolvedOptions();
   } catch {
     console.error(
       `caldav-mcp: CALDAV_TIMEZONE is not an IANA time zone name: "${zone}". ` +

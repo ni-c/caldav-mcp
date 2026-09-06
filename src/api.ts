@@ -274,14 +274,9 @@ export class CalDavApi {
       await readBoundedBody(response, url, MAX_FREEBUSY_BYTES)
     ).toString('utf8');
     if (!ok) throw await apiError(status, body, 'OPTIONS', url);
-    const split = (value: string | null): string[] =>
-      (value ?? '')
-        .split(',')
-        .map((entry) => entry.trim().toLowerCase())
-        .filter((entry) => entry.length > 0);
     return {
-      dav: split(headers.get('dav')),
-      allow: split(headers.get('allow')),
+      dav: splitHeaderList(headers.get('dav')),
+      allow: splitHeaderList(headers.get('allow')),
     };
   }
 
@@ -519,6 +514,14 @@ function normaliseEtag(raw: string | null): string | undefined {
   const value = raw.trim();
   if (value === '' || value.startsWith('W/')) return undefined;
   return value;
+}
+
+/** The entries of a comma-separated header such as `DAV:` or `Allow`. */
+function splitHeaderList(value: string | null): string[] {
+  return (value ?? '')
+    .split(',')
+    .map((entry) => entry.trim().toLowerCase())
+    .filter((entry) => entry.length > 0);
 }
 
 /** Keeps a URL's query and userinfo out of an error message. */
