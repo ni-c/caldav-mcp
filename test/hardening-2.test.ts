@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
-import { connect, FakeCalDav, type Connected } from './harness.js';
+import { connect, dataOf, FakeCalDav, type Connected } from './harness.js';
 
 /**
  * The second hardening pass, 2026-09-07.
@@ -9,6 +9,41 @@ import { connect, FakeCalDav, type Connected } from './harness.js';
  * this tree and pins the fix through the tools, asserting on what went on the
  * wire or what came back — never on a guard having been called.
  */
+
+const CALENDAR = ['BEGIN:VCALENDAR', 'VERSION:2.0', 'PRODID:-//t//EN'];
+
+/** One VEVENT with the given extra lines, as a stored resource. */
+function event(lines: string[], uid = 'e@example.net'): string {
+  return [
+    ...CALENDAR,
+    'BEGIN:VEVENT',
+    `UID:${uid}`,
+    'DTSTAMP:20260901T120000Z',
+    'DTSTART:20260907T070000Z',
+    'DTEND:20260907T080000Z',
+    'SUMMARY:Plain',
+    ...lines,
+    'END:VEVENT',
+    'END:VCALENDAR',
+    '',
+  ].join('\r\n');
+}
+
+/** One VTODO with the given extra lines, as a stored resource. */
+function task(lines: string[], uid = 't@example.net'): string {
+  return [
+    ...CALENDAR,
+    'BEGIN:VTODO',
+    `UID:${uid}`,
+    'DTSTAMP:20260901T120000Z',
+    'DUE:20260910T120000Z',
+    'SUMMARY:Chore',
+    ...lines,
+    'END:VTODO',
+    'END:VCALENDAR',
+    '',
+  ].join('\r\n');
+}
 
 describe('what a write argument may carry', () => {
   let fake: FakeCalDav;
@@ -156,5 +191,125 @@ describe('what a write argument may carry', () => {
         .filter((line) => line.startsWith('TRIGGER'));
       expect(triggers, trigger).toEqual([written]);
     }
+  });
+});
+
+describe('an integer somebody else wrote', () => {
+  let fake: FakeCalDav;
+  let session: Connected;
+
+  beforeEach(async () => {
+    fake = new FakeCalDav();
+    fake.install();
+    session = await connect({}, 'accept');
+  });
+
+  afterEach(async () => {
+    await session.close();
+    vi.unstubAllGlobals();
+  });
+
+  async function call(
+    name: string,
+    args: Record<string, unknown> = {}
+  ): Promise<unknown> {
+    return session.client.callTool({ name, arguments: args });
+  }
+
+  it('leaves a task field that is not an integer out instead of failing the answer', async () => {
+    // The SDK checks every result against the tool's output schema and
+    // answers a protocol error when it does not match — for the whole call,
+    // not the one entry. `percent_complete` and `priority` are declared as
+    // integers; ical.js hands `VALUE=FLOAT:1.5` over as 1.5, and a
+    // twenty-digit SEQUENCE as 1e20. One such line, written by anybody with
+    // access to a shared calendar, took `list_tasks` and `get_task` down.
+    fake.seed(
+      'work',
+      'a.ics',
+      task(['PERCENT-COMPLETE;VALUE=FLOAT:1.5'], 'a@example.net')
+    );
+    fake.seed(
+      'work',
+      'b.ics',
+      task(['PRIORITY;VALUE=FLOAT:2.7'], 'b@example.net')
+    );
+    fake.seed(
+      'work',
+      'c.ics',
+      task(['SEQUENCE:99999999999999999999'], 'c@example.net')
+    );
+    fake.seed(
+      'work',
+      'd.ics',
+      task(['PERCENT-COMPLETE;VALUE=TEXT:50', 'PRIORITY:3'], 'd@example.net')
+    );
+    const listing = dataOf(
+      await call('list_tasks', { from: '2026-09-01', to: '2026-09-30' })
+    );
+    const entries = listing.tasks as Record<string, unknown>[];
+    expect(entries.map((entry) => entry.uid).toSorted()).toEqual([
+      'a@example.net',
+      'b@example.net',
+      'c@example.net',
+      'd@example.net',
+    ]);
+    const byUid = Object.fromEntries(
+      entries.map((entry) => [entry.uid as string, entry])
+    );
+    expect(byUid['a@example.net']).not.toHaveProperty('percent_complete');
+    expect(byUid['b@example.net']).not.toHaveProperty('priority');
+    expect(byUid['c@example.net']).not.toHaveProperty('sequence');
+    expect(byUid['d@example.net']?.percent_complete).toBe(50);
+    expect(byUid['d@example.net']?.priority).toBe(3);
+    for (const entry of entries) {
+      const single = dataOf(await call('get_task', { id: entry.id }));
+      expect((single.task as { uid?: string }).uid).toBe(entry.uid);
+    }
+  });
+
+  it('leaves an attachment size that is not a number out', async () => {
+    // `ATTACH;SIZE=` with three hundred digits is Infinity to Number(), and
+    // twenty digits is past the safe-integer range the schema's `int()`
+    // accepts. Either one failed the whole listing.
+    fake.seed(
+      'work',
+      'a.ics',
+      event([
+        `ATTACH;FMTTYPE=application/pdf;SIZE=${'9'.repeat(300)}:https://files.example/a.pdf`,
+      ])
+    );
+    fake.seed(
+      'work',
+      'b.ics',
+      event(
+        ['ATTACH;SIZE=99999999999999999999:https://files.example/b.pdf'],
+        'b@example.net'
+      )
+    );
+    fake.seed(
+      'work',
+      'c.ics',
+      event(['ATTACH;SIZE=1234:https://files.example/c.pdf'], 'c@example.net')
+    );
+    const listing = dataOf(
+      await call('list_events', { from: '2026-09-01', to: '2026-09-30' })
+    );
+    const entries = listing.events as Record<string, unknown>[];
+    expect(entries).toHaveLength(3);
+    const sizes = entries.map(
+      (entry) =>
+        (entry.attachments as { size?: number }[] | undefined)?.[0]?.size
+    );
+    expect(sizes.toSorted()).toEqual([1234, undefined, undefined]);
+  });
+
+  it('is the same for an event: a SEQUENCE that is not an integer is left out', async () => {
+    fake.seed('work', 'a.ics', event(['SEQUENCE;VALUE=FLOAT:1.5']));
+    const listing = dataOf(
+      await call('list_events', { from: '2026-09-01', to: '2026-09-30' })
+    );
+    const entries = listing.events as Record<string, unknown>[];
+    expect(entries).toHaveLength(1);
+    expect(entries[0]).not.toHaveProperty('sequence');
   });
 });

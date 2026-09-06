@@ -377,8 +377,12 @@ function readAttachments(component: ICAL.Component): Record<string, unknown>[] {
     const sizeParam = property.getParameter('size');
     const raw = String(property.getFirstValue() ?? '');
 
+    // Fifteen digits, because the schema promises an integer and a safe one:
+    // `Number('9'.repeat(300))` is Infinity and twenty digits is past 2^53,
+    // and either failed the whole listing's output validation. A SIZE that is
+    // not a number this server can carry is treated as no SIZE at all.
     let size: number | undefined;
-    if (typeof sizeParam === 'string' && /^\d+$/.test(sizeParam)) {
+    if (typeof sizeParam === 'string' && /^\d{1,15}$/.test(sizeParam)) {
       size = Number(sizeParam);
     } else if (inline) {
       const padding = raw.endsWith('==') ? 2 : raw.endsWith('=') ? 1 : 0;

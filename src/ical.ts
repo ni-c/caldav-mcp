@@ -226,7 +226,17 @@ export function readText(
   return text.length > 0 ? text : undefined;
 }
 
-/** Reads an integer property, or undefined. */
+/**
+ * Reads an integer property, or undefined.
+ *
+ * An integer, not a number: the output schema promises `int()` for
+ * `sequence`, `priority` and `percent_complete`, and the SDK checks every
+ * result against that promise and fails the *whole call* when it is broken.
+ * ical.js hands `PERCENT-COMPLETE;VALUE=FLOAT:1.5` over as 1.5 and a
+ * twenty-digit SEQUENCE as 1e20, so one such line — written by anybody with
+ * access to a shared calendar — took every listing it was in down. A value
+ * that is not a safe integer is not this property, and is left out.
+ */
 export function readInt(
   component: ICAL.Component,
   name: string
@@ -234,7 +244,7 @@ export function readInt(
   const value = component.getFirstPropertyValue(name);
   if (value === null || value === undefined) return undefined;
   const parsed = Number(value);
-  return Number.isFinite(parsed) ? parsed : undefined;
+  return Number.isSafeInteger(parsed) ? parsed : undefined;
 }
 
 /** Every value of a property that may appear more than once. */
