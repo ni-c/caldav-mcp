@@ -94,7 +94,7 @@ The injection patterns the server recognises are reported as a **signal**, never
 to drop an entry silently. A filter that appeared to work would be an argument for
 trusting whatever got through, which is precisely the wrong conclusion: an attacker
 who can iterate will find a phrasing the patterns do not match. Every pattern is
-timed against a million characters of its own trigger, because a pattern with an
+timed against tens of thousands of characters of its own trigger, because a pattern with an
 unbounded run and no anchor is quadratic and this process is single-threaded with
 stdio as its transport — a scan that takes a second on a real input takes the whole
 server with it on a crafted one.
