@@ -13,6 +13,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- `docs/reference/tools.md` is written by hand again. It used to be generated
+  from the registered tools, which kept it in step with the code at the price of
+  a page nobody could edit: `--check` compared it byte for byte, so every line
+  had to be derivable and a paragraph about how an endpoint really behaves had
+  nowhere to go. A test now asserts what the generator guaranteed — the page
+  documents exactly the tools that exist, marks exactly the `essential` preset,
+  and marks exactly the tools that ask a person first — and leaves the prose to
+  a person.
+
 ### Added
 
 - The server introduces itself in full. `title`, `description`, `websiteUrl` and
