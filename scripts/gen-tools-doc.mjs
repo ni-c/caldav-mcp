@@ -18,21 +18,31 @@ import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { Client, InMemoryTransport } from '@modelcontextprotocol/client';
 import { createServer } from '../dist/server.js';
-import { ESSENTIAL_TOOLS } from '../dist/tools/catalogue.js';
+import { ALL_TOOLS, ESSENTIAL_TOOLS } from '../dist/tools/catalogue.js';
 
 const root = join(dirname(fileURLToPath(import.meta.url)), '..');
 const target = join(root, 'docs', 'reference', 'tools.md');
 
 /** Connects to a fully configured server so every tool is registered. */
 async function listTools() {
+  // Every field `Config` declares, spelled out. This file is plain JavaScript,
+  // so nothing typechecks that claim — and the previous version made it while
+  // passing seven of the thirteen. The assertion at the end of this function is
+  // what actually holds it: a field this server needs in order to register a
+  // tool, left out here, shows up as a missing tool rather than as a silent
+  // omission in a page that claims to be generated from the code.
   const server = createServer({
-    url: 'https://service.example.com',
-    token: 'placeholder',
+    url: 'https://dav.example.net',
+    username: 'placeholder',
+    password: 'placeholder',
+    token: undefined,
+    userEmail: undefined,
+    calendars: [],
+    timezone: 'UTC',
+    maxEntries: 100,
     insecureTls: false,
     readOnly: false,
     elicitation: true,
-    // Every field `Config` declares. Leaving the filter fields out would make
-    // this generator disagree with a server built the normal way.
     allowTools: undefined,
     denyTools: undefined,
   });
@@ -45,6 +55,18 @@ async function listTools() {
   ]);
   const { tools } = await client.listTools();
   await client.close();
+
+  // See the comment above: this is the guard that makes the config claim
+  // checkable from a file nothing typechecks.
+  const missing = ALL_TOOLS.filter(
+    (name) => !tools.some((tool) => tool.name === name)
+  );
+  if (missing.length > 0) {
+    throw new Error(
+      `the generator built a server missing ${missing.length} tool(s): ` +
+        `${missing.join(', ')}. Its Config literal is probably incomplete.`
+    );
+  }
   return tools;
 }
 
