@@ -1,18 +1,89 @@
 # Connecting clients
 
+Every example below is the same three variables, and there is no fourth. See
+[Configuration](/guide/configuration#signing-in) for why there is no token to
+obtain, and add `-e CALDAV_TIMEZONE=Europe/Berlin` wherever a time typed without
+an offset should not mean UTC.
+
 ## Claude Code
 
 ```sh
-claude mcp add caldav-mcp -- npx -y @ni-c/caldav-mcp
+claude mcp add caldav \
+  -e CALDAV_URL=https://dav.example.net \
+  -e CALDAV_USERNAME=you \
+  -e CALDAV_PASSWORD=your-app-password \
+  -- npx -y @ni-c/caldav-mcp
 ```
+
+Add `-e CALDAV_CALENDARS=work` to fence it to one calendar, and
+`-e CALDAV_READ_ONLY=true` to register only the read tools.
 
 ## Claude Desktop
 
+In `claude_desktop_config.json`:
+
+```json
+{
+  "mcpServers": {
+    "caldav": {
+      "command": "npx",
+      "args": ["-y", "@ni-c/caldav-mcp"],
+      "env": {
+        "CALDAV_URL": "https://dav.example.net",
+        "CALDAV_USERNAME": "you",
+        "CALDAV_PASSWORD": "your-app-password"
+      }
+    }
+  }
+}
+```
+
 ## Codex
+
+In `~/.codex/config.toml`:
+
+```toml
+[mcp_servers.caldav]
+command = "npx"
+args = ["-y", "@ni-c/caldav-mcp"]
+env = { CALDAV_URL = "https://dav.example.net", CALDAV_USERNAME = "you", CALDAV_PASSWORD = "your-app-password" }
+```
 
 ## MCP Inspector
 
+For looking at one tool by hand:
+
+```sh
+npx @modelcontextprotocol/inspector --cli npx -y @ni-c/caldav-mcp \
+  -e CALDAV_URL=https://dav.example.net \
+  -e CALDAV_USERNAME=you \
+  -e CALDAV_PASSWORD=your-app-password \
+  --method tools/list
+```
+
+Two things about that command line, both of which cost an afternoon at least
+once. The inspector does **not** pass the ambient environment through to the
+server it spawns, so exporting the variables first does nothing — they go in
+`-e` flags. And those flags have to come **after** the target command: put them
+before it and the positional parsing shifts, the target is lost, and the
+inspector quietly connects to whatever server its own catalogue file lists
+instead.
+
+Drop `--cli` for the browser UI, where the variables are entered in a form.
+
 ## Docker
+
+```sh
+docker run --rm -i \
+  -e CALDAV_URL=https://dav.example.net \
+  -e CALDAV_USERNAME=you \
+  -e CALDAV_PASSWORD=your-app-password \
+  ghcr.io/ni-c/caldav-mcp
+```
+
+`-i` is required and `-t` must not be: stdin and stdout are the protocol. The
+image runs as the unprivileged `node` user, carries no package manager, and
+writes nothing to disk.
 
 <!-- "Through mcp-hub" goes here: after Docker, which is the last "how you actually
      run it" section, and before anything about the artifact (Pinning a version,
@@ -41,8 +112,9 @@ already have:
       "command": "npx",
       "args": ["-y", "@ni-c/caldav-mcp"],
       "env": {
-        "CALDAV_URL": "https://service.example.com",
-        "CALDAV_TOKEN": "…",
+        "CALDAV_URL": "https://dav.example.net",
+        "CALDAV_USERNAME": "you",
+        "CALDAV_PASSWORD": "your-app-password",
         "CALDAV_ALLOW_TOOLS": "essential"
       },
       "denyTools": ["delete_event"]
