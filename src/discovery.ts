@@ -26,7 +26,7 @@ import {
  * - `https://example.net/dav.php/` — Baikal, where the CalDAV endpoint sits
  *   under a path and the well-known route is only present when the vhost was
  *   configured for it. Its absence is normal, not a fault.
- * - `https://dav.example.net/calendars/willi/work/` — a collection URL, pasted
+ * - `https://dav.example.net/calendars/you/work/` — a collection URL, pasted
  *   out of a calendar client's settings. Which is what most people actually do,
  *   so it is detected first rather than treated as a mistake.
  */

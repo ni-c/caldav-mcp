@@ -64,7 +64,7 @@ A CalDAV server keeps no version history. Once it is gone there is nothing to
 restore it from.
 
 Values below are supplied by the caller, not by this server:
-  Calendar: /calendars/willi/work/
+  Calendar: /calendars/you/work/
 ```
 
 That sentence is worked out from the entry rather than from the argument, which

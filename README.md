@@ -226,9 +226,9 @@ repeated here.
   "source": "caldav",
   "events": [
     {
-      "id": "e1.L2NhbGVuZGFycy93aWxsaS93b3JrLw.YTFiMmMz.VFpJRD1FdXJvcGUvQmVybGluOjIwMjYwOTE0VDA5MDAwMA",
-      "series_id": "e1.L2NhbGVuZGFycy93aWxsaS93b3JrLw.YTFiMmMz",
-      "calendar": "/calendars/willi/work/",
+      "id": "e1.L2NhbGVuZGFycy95b3Uvd29yay8.YTFiMmMz.VFpJRD1FdXJvcGUvQmVybGluOjIwMjYwOTE0VDA5MDAwMA",
+      "series_id": "e1.L2NhbGVuZGFycy95b3Uvd29yay8.YTFiMmMz",
+      "calendar": "/calendars/you/work/",
       "summary": "Team sync",
       "start": {
         "value": "2026-09-14T09:00:00+02:00",
