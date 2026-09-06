@@ -100,8 +100,7 @@ stdio as its transport — a scan that takes a second on a real input takes the 
 server with it on a crafted one.
 
 **Calendar names are content too**, and they reach the model through `list_calendars`
-long before anyone reads an event. Each entry carries both the raw name and a display
-copy, and says so where the two differ: `Team` and `Team<U+200B>` are the same pixels.
+long before anyone reads an event. Each entry's name is cleaned like any other text, and its id is the collection's path, printed byte for byte — validated rather than cleaned, because it has to come back as `calendar_id` and match what discovery resolved.
 
 Confirmation text never quotes a summary, a description or an attendee. That text is
 read by a human and by a model, and putting attacker-chosen prose into it would hand
@@ -112,6 +111,33 @@ content takes resistance to injection from roughly 61% to roughly 90% — a real
 improvement, and nowhere near a guarantee, with the weakest models benefiting least.
 Against an attacker who adapts to the defence, prompt-level measures fail. They are a
 speed bump. The architecture above is the wall.
+
+## What a call may cost
+
+The transport bounds one request: thirty seconds, and a ceiling on every body. That
+is not a bound on a call. A listing issues one request per calendar and a search one
+per calendar per field, over every calendar the credentials can see when the caller
+names none, and the principal's home sets, addresses and calendars are lists whose
+length the server chooses. So a call has a budget of its own — thirty seconds checked
+before each request, five thousand collected occurrences — and an answer that says
+after how many of how many calendars it stopped. Discovery keeps eight home sets,
+twenty addresses and 256 calendars, counts the rest and reports it through
+`list_calendars`, and uses a collection a home set lists only if it sits under that
+home set. An href longer than 8 KiB is refused before anything walks it, and every
+function that walks a string the server or the caller chose is timed at its ceiling
+in `test/linear-time.test.ts`.
+
+Two things about a refused request. The status is decided before the body is read, so
+a proxy answering `401` with a two-megabyte login page is reported as a `401`, and an
+error body is read up to 64 KiB and cut there. And a `401` is repeated from memory
+for ten seconds rather than sent to the server again: every request is a login, a
+hosted provider locks an account after a handful of failed ones, and a model told
+"authentication refused" retries a tool annotated cheap and read-only. The repeated
+error says how old it is and what to check.
+
+An ETag the server sent goes back out in `If-Match` on the next write, so it is held
+to the RFC 9110 grammar first; one that is not an entity-tag is treated like a weak
+one, which the write path refuses with a sentence.
 
 ## Addressing, and why ids are opaque
 
