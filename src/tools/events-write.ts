@@ -1,10 +1,6 @@
 import { z } from 'zod';
 import type { McpServer } from '@modelcontextprotocol/server';
-import {
-  setResourceKey,
-  type Approver,
-  type ConfirmationStore,
-} from 'mcp-approval';
+import { type Approver, type ConfirmationStore } from 'mcp-approval';
 
 import { escapeInvisible, quoted } from '../analyze.js';
 import { resourceUrl, type CalendarRegistry } from '../calendars.js';
@@ -54,6 +50,7 @@ import {
   loadForWrite,
   type LoadedEntry,
   type Scope,
+  orderedResourceKey,
 } from '../write.js';
 import { CREATE, DELETE, MOVE, REPLACE, SET_STATE } from './annotations.js';
 import { loadEntry } from './common.js';
@@ -268,7 +265,7 @@ export function registerEventWriteTools(
               // in the key, one yes would cover any other edit of the same
               // series for as long as the approval lives. A retry with the
               // same arguments — after a 412, say — still matches.
-              resourceKey: setResourceKey('update_event:series', [
+              resourceKey: orderedResourceKey('update_event:series', [
                 entity.calendarPath,
                 entity.resourceName,
                 changeDigest(args),
@@ -383,7 +380,7 @@ export function registerEventWriteTools(
             consequence:
               'A CalDAV server keeps no version history. Once it is gone ' +
               'there is nothing to restore it from.',
-            resourceKey: setResourceKey(`delete_event:${scope}`, [
+            resourceKey: orderedResourceKey(`delete_event:${scope}`, [
               entity.calendarPath,
               entity.resourceName,
               entity.recurrenceId ?? '',
@@ -504,7 +501,7 @@ export function registerEventWriteTools(
               'The event is written to the destination and deleted from the ' +
               'source. Its id changes, and if the destination is shared, ' +
               'other people can see it from then on.',
-            resourceKey: setResourceKey('move_event', [
+            resourceKey: orderedResourceKey('move_event', [
               entity.calendarPath,
               destination.path,
               entity.resourceName,
@@ -622,7 +619,7 @@ export function registerEventWriteTools(
                 'to the organiser. Mail that has been sent cannot be recalled.'
               : 'The answer is stored on the calendar. This server does not ' +
                 'advertise scheduling, so no mail is sent.',
-            resourceKey: setResourceKey('respond_to_event', [
+            resourceKey: orderedResourceKey('respond_to_event', [
               entity.calendarPath,
               entity.resourceName,
               entity.recurrenceId ?? '',

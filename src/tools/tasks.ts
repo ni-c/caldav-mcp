@@ -1,10 +1,6 @@
 import { z } from 'zod';
 import type { McpServer } from '@modelcontextprotocol/server';
-import {
-  setResourceKey,
-  type Approver,
-  type ConfirmationStore,
-} from 'mcp-approval';
+import { type Approver, type ConfirmationStore } from 'mcp-approval';
 
 import { escapeInvisible } from '../analyze.js';
 import { resourceUrl } from '../calendars.js';
@@ -46,6 +42,7 @@ import {
   commit,
   createEntry,
   loadForWrite,
+  orderedResourceKey,
 } from '../write.js';
 import {
   CREATE,
@@ -449,7 +446,7 @@ export function registerTaskWriteTools(
               'A CalDAV server keeps no version history. Once it is gone ' +
               'there is nothing to restore it from. If the task is finished ' +
               'rather than unwanted, complete_task keeps it and marks it done.',
-            resourceKey: setResourceKey('delete_task', [
+            resourceKey: orderedResourceKey('delete_task', [
               entity.calendarPath,
               entity.resourceName,
             ]),

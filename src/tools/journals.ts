@@ -1,10 +1,6 @@
 import { z } from 'zod';
 import type { McpServer } from '@modelcontextprotocol/server';
-import {
-  setResourceKey,
-  type Approver,
-  type ConfirmationStore,
-} from 'mcp-approval';
+import { type Approver, type ConfirmationStore } from 'mcp-approval';
 
 import { escapeInvisible } from '../analyze.js';
 import { resourceUrl } from '../calendars.js';
@@ -44,6 +40,7 @@ import {
   commit,
   createEntry,
   loadForWrite,
+  orderedResourceKey,
 } from '../write.js';
 import { CREATE, DELETE, READ_ONLY, REPLACE } from './annotations.js';
 import { loadEntry, resolveWindow } from './common.js';
@@ -315,7 +312,7 @@ export function registerJournalWriteTools(
             consequence:
               'A journal entry is a piece of writing, and a CalDAV server ' +
               'keeps no version history. There is nothing to restore it from.',
-            resourceKey: setResourceKey('delete_journal', [
+            resourceKey: orderedResourceKey('delete_journal', [
               entity.calendarPath,
               entity.resourceName,
             ]),
