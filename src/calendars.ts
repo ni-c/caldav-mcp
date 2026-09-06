@@ -35,10 +35,24 @@ export interface CalendarEntry {
   readOnly: boolean;
 }
 
-/** Normalises a collection path for comparison: exactly one trailing slash. */
+/**
+ * Normalises a collection path for comparison: exactly one trailing slash.
+ *
+ * A counted walk from the end rather than `replace(/\/+$/, '')`: a regex
+ * anchored at the end and starting with a repetition is tried from every
+ * position of a run and consumes the run each time, which is quadratic. Eighty
+ * thousand slashes followed by one other character cost two seconds, and a
+ * server chooses every href this is applied to.
+ */
 export function normalisePath(path: string): string {
-  const trimmed = path.replace(/\/+$/, '');
-  return `${trimmed}/`;
+  return `${stripTrailingSlashes(path)}/`;
+}
+
+/** `path` without its trailing slashes, in one pass. */
+export function stripTrailingSlashes(path: string): string {
+  let end = path.length;
+  while (end > 0 && path.charCodeAt(end - 1) === 0x2f) end -= 1;
+  return path.slice(0, end);
 }
 
 /**
@@ -79,7 +93,7 @@ function matches(
   if (candidate.startsWith('/')) {
     return normalisePath(candidate) === calendar.path;
   }
-  return finalSegment(calendar.path) === candidate.replace(/\/+$/, '');
+  return finalSegment(calendar.path) === stripTrailingSlashes(candidate);
 }
 
 function finalSegment(path: string): string {
@@ -133,7 +147,7 @@ export function resourceUrl(
   } catch {
     throw notInside();
   }
-  const parent = url.pathname.replace(/[^/]*$/, '');
+  const parent = url.pathname.slice(0, url.pathname.lastIndexOf('/') + 1);
   if (
     parent !== calendar.path ||
     url.pathname === calendar.path ||

@@ -2,6 +2,7 @@ import { CalDavApiError, type CalDavApi } from './api.js';
 import {
   CalendarRegistry,
   normalisePath,
+  stripTrailingSlashes,
   type CalendarEntry,
 } from './calendars.js';
 import { AllowlistError } from './errors.js';
@@ -425,7 +426,7 @@ export class Discovery {
     const path = normalisePath(new URL(url).pathname);
     const granted = privileges(response.props['current-user-privilege-set']);
     return {
-      url: `${url.replace(/\/+$/, '')}/`,
+      url: `${stripTrailingSlashes(url)}/`,
       path,
       displayName: textOf(response.props.displayname),
       description: textOf(response.props['calendar-description']),

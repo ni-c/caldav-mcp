@@ -88,7 +88,9 @@ export function resourceNameOf(
   // the collection, and it is not the collection itself. An href equal to the
   // collection used to pass the first check and file the collection's own
   // name as a resource.
-  const parent = path.replace(/[^/]*$/, '');
+  // `lastIndexOf`, not `replace(/[^/]*$/, '')`: the regex is quadratic on a
+  // long last segment followed by a slash, and the href is the server's.
+  const parent = path.slice(0, path.lastIndexOf('/') + 1);
   if (parent !== calendar.path || path === calendar.path) return '';
   return path.slice(parent.length);
 }

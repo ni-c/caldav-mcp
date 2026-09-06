@@ -73,6 +73,9 @@ const MAX_ERROR_BODY_BYTES = 64 * 1024;
  */
 const UNAUTHORIZED_MEMORY_MS = 10_000;
 
+/** Longest href from a server this server will resolve. */
+const MAX_HREF_CHARS = 8 * 1024;
+
 export class CalDavApiError extends Error {
   constructor(
     public readonly status: number,
@@ -192,6 +195,15 @@ export class CalDavApi {
    * between two.
    */
   resolveHref(href: string, relativeTo: string = this.baseUrl): string {
+    // Bounded before anything walks it. No real href is a kilobyte, and the
+    // multistatus ceiling would otherwise let a server hand this process
+    // sixteen megabytes of path to normalise.
+    if (href.length > MAX_HREF_CHARS) {
+      throw new Error(
+        `the CalDAV server returned a link of ${href.length} characters, ` +
+          `which is longer than any link this server follows (${MAX_HREF_CHARS}).`
+      );
+    }
     let resolved: URL;
     try {
       resolved = new URL(href, relativeTo);
@@ -605,7 +617,8 @@ function redactPath(url: string): string {
     const parsed = new URL(url);
     return `${parsed.origin}${parsed.pathname}`;
   } catch {
-    return url.replace(/\?.*$/, '');
+    const query = url.indexOf('?');
+    return query === -1 ? url : url.slice(0, query);
   }
 }
 

@@ -1,5 +1,6 @@
 import { internalHostKind } from 'mcp-internal-hosts';
 
+import { stripTrailingSlashes } from './calendars.js';
 import { redactUrlCredentials } from './redact.js';
 
 /** Default number of entries a listing returns when the caller does not say. */
@@ -355,8 +356,14 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
 
   // Keep the path, drop only trailing slashes: a CALDAV_URL of
   // https://host/dav.php is a real and common shape (Baikal), and stripping the
-  // path would send discovery to a root that answers 404.
-  return { url: url.replace(/\/+$/, ''), ...base };
+  // path would send discovery to a root that answers 404. Rebuilt from the
+  // parsed URL rather than kept as the environment string: the parser strips
+  // the whitespace a copied line carries and spells the host in lower case,
+  // and the string it was given would have been glued in front of every path.
+  return {
+    url: `${parsed.origin}${stripTrailingSlashes(parsed.pathname)}`,
+    ...base,
+  };
 }
 
 /**
