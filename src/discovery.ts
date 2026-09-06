@@ -5,6 +5,7 @@ import {
   stripTrailingSlashes,
   type CalendarEntry,
 } from './calendars.js';
+import { describeCalendarEntry } from './config.js';
 import { AllowlistError } from './errors.js';
 import {
   hrefsOf,
@@ -379,8 +380,8 @@ export class Discovery {
         console.error(
           `caldav-mcp: CALDAV_CALENDARS names ${unmatched.length} entr` +
             `${unmatched.length === 1 ? 'y' : 'ies'} matching no calendar on ` +
-            `this account: ${unmatched.join(', ')}. Check the spelling — an ` +
-            `entry that matches nothing grants nothing.`
+            `this account: ${unmatched.map(describeCalendarEntry).join(', ')}. ` +
+            'Check the spelling — an entry that matches nothing grants nothing.'
         );
       }
     }

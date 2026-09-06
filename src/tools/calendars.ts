@@ -2,6 +2,7 @@ import { z } from 'zod';
 import type { McpServer } from '@modelcontextprotocol/server';
 
 import { sanitizeText } from '../analyze.js';
+import { describeCalendarEntry } from '../config.js';
 import { freeBusyQueryBody, textMatchBody } from '../dav-xml.js';
 import { selfAddressesOf, type ToolContext } from '../entries.js';
 import { notes, shapedCalendar, untrustedFields } from '../output-schema.js';
@@ -60,8 +61,9 @@ export function registerCalendarTools(
           collected.push(
             `CALDAV_CALENDARS names ${unmatched.length} entr` +
               `${unmatched.length === 1 ? 'y' : 'ies'} that match no calendar: ` +
-              `${unmatched.join(', ')}. Check the spelling — an entry that ` +
-              'matches nothing narrows this server for no reason.'
+              `${unmatched.map(describeCalendarEntry).join(', ')}. Check the ` +
+              'spelling — an entry that matches nothing narrows this server ' +
+              'for no reason.'
           );
         }
 

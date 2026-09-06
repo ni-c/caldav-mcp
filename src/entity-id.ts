@@ -159,7 +159,10 @@ export function parseEntityId(
     string,
     string | undefined,
   ];
-  const kind = KIND_OF[tag];
+  // `Object.hasOwn`, because the tag is the caller's string and the table is
+  // an object literal: `constructor` and `__proto__` are keys on it too, and
+  // reached the sentence below as "the id of a undefined".
+  const kind = Object.hasOwn(KIND_OF, tag) ? KIND_OF[tag] : undefined;
   if (kind === undefined) throw badId(id);
   if (kind !== expectedKind) {
     throw new ToolInputError(

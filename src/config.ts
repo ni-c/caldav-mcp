@@ -1,5 +1,6 @@
 import { internalHostKind } from 'mcp-internal-hosts';
 
+import { quoted } from './analyze.js';
 import { stripTrailingSlashes } from './calendars.js';
 import { redactUrlCredentials } from './redact.js';
 
@@ -131,10 +132,33 @@ export function parseElicitation(raw: string | undefined): boolean {
   if (value === undefined || value === '' || value === 'true') return true;
   if (value === 'false') return false;
   console.error(
-    `caldav-mcp: ELICITATION must be "true" or "false" — got "${raw}". ` +
-      'Refusing to start rather than guess.'
+    `caldav-mcp: ELICITATION must be "true" or "false" — got ` +
+      `"${quoted(raw ?? '', 40)}". Refusing to start rather than guess.`
   );
   process.exit(1);
+}
+
+/**
+ * A `CALDAV_CALENDARS` entry as a diagnostic may repeat it.
+ *
+ * The variable sits one line below `CALDAV_PASSWORD` in every compose file,
+ * and an entry that matches nothing is exactly what a secret pasted into the
+ * wrong line looks like. Only a value with the shape of a calendar reference —
+ * a URL, an absolute path, or a short final segment — is quoted; anything else
+ * is described by its length, to stderr and to the model alike.
+ */
+export function describeCalendarEntry(entry: string): string {
+  // A path may carry a space — that is what the percent-encoding warning is
+  // about — but no control character; a URL and a segment may not.
+  const shaped =
+    /^https?:\/\/[!-~]{1,512}$/i.test(entry) ||
+    /^\/[ -~]{0,512}$/.test(entry) ||
+    /^[A-Za-z0-9._~%-]{1,40}$/.test(entry);
+  return shaped
+    ? `"${quoted(entry, 512)}"`
+    : `an entry of ${entry.length} characters (not shown — it does not look ` +
+        'like a calendar reference, and this variable sits next to the ' +
+        'password)';
 }
 
 /**
@@ -182,8 +206,8 @@ function assertKnownTimezone(zone: string): void {
     new Intl.DateTimeFormat('en-US', { timeZone: zone }).resolvedOptions();
   } catch {
     console.error(
-      `caldav-mcp: CALDAV_TIMEZONE is not an IANA time zone name: "${zone}". ` +
-        'Expected something like "Europe/Berlin" or "UTC".'
+      `caldav-mcp: CALDAV_TIMEZONE is not an IANA time zone name: ` +
+        `"${quoted(zone, 40)}". Expected something like "Europe/Berlin" or "UTC".`
     );
     process.exit(1);
   }
@@ -195,7 +219,7 @@ function parseMaxEntries(raw: string | undefined): number {
   if (!Number.isInteger(value) || value < 1 || value > MAX_MAX_ENTRIES) {
     console.error(
       `caldav-mcp: CALDAV_MAX_EVENTS must be an integer between 1 and ` +
-        `${MAX_MAX_ENTRIES} — got "${raw}".`
+        `${MAX_MAX_ENTRIES} — got "${quoted(raw, 40)}".`
     );
     process.exit(1);
   }
@@ -380,7 +404,7 @@ function warnAboutUnencodedPaths(entries: readonly string[]): void {
   if (suspect.length === 0) return;
   console.error(
     `caldav-mcp: CALDAV_CALENDARS entr${suspect.length === 1 ? 'y' : 'ies'} ` +
-      `${suspect.map((entry) => `"${entry}"`).join(', ')} contain${
+      `${suspect.map(describeCalendarEntry).join(', ')} contain${
         suspect.length === 1 ? 's' : ''
       } characters that appear percent-encoded in a calendar path, so ` +
       'the entry will match nothing as written. Write the path the way ' +

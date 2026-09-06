@@ -1,7 +1,14 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { CalDavApi } from '../src/api.js';
-import { run, textResult } from '../src/result.js';
+import { parseEntityId } from '../src/entity-id.js';
+import {
+  budget,
+  fencedUntrustedResult,
+  MAX_RESULT_BYTES,
+  run,
+  textResult,
+} from '../src/result.js';
 import {
   connect,
   dataOf,
@@ -713,6 +720,140 @@ describe('a budget for the whole call', () => {
       expect(listing.notes).toEqual(
         expect.arrayContaining([expect.stringMatching(/300 calendars; only/)])
       );
+    } finally {
+      await session.close();
+    }
+  });
+});
+
+describe('the channels a budget has to see', () => {
+  it('measures the fence as emitted and cuts it on a line', () => {
+    // The fence carries a datamark on every line, so it is longer than the
+    // text it wraps; it used to go out beside the measured JSON unmeasured,
+    // and an entry just under the ceiling was answered three times over.
+    const line = 'x'.repeat(20);
+    const lines = Math.floor(330_000 / (line.length + 1));
+    const description = Array.from({ length: lines }, () => line).join('\n');
+    const result = fencedUntrustedResult(
+      { event: { description } },
+      description,
+      []
+    );
+    const fence = result.content[0] as { text: string };
+    expect(fence.text.length).toBeLessThanOrEqual(MAX_RESULT_BYTES);
+    expect(fence.text).toContain('cut here');
+    // The cut falls on a line boundary: every marked line is a whole line.
+    const marked = fence.text
+      .split('\n')
+      .filter((entry) => /^[0-9a-f]{8}\| /.test(entry));
+    expect(marked.length).toBeGreaterThan(100);
+    for (const entry of marked.slice(0, -1)) {
+      expect(entry.endsWith(line) || entry.includes('cut here')).toBe(true);
+    }
+    // The structured half still carries the whole entry.
+    expect(
+      (result.structuredContent as { event: { description: string } }).event
+        .description
+    ).toHaveLength(description.length);
+  });
+
+  it('shortens an array one level down rather than refusing the entry', () => {
+    // `{ event: { attendees: [...] } }` is what the single-entry tools answer,
+    // and a budget that only saw top-level arrays found nothing to drop
+    // there and refused the whole answer.
+    const attendees = Array.from({ length: 20_000 }, (_, index) => ({
+      email: `person${index}@example.net`,
+      name: `Person number ${index}`,
+    }));
+    const shrunk = budget({ event: { summary: 'Big', attendees } }, 'Ask.');
+    const kept = shrunk.event as { attendees: unknown[]; summary: string };
+    expect(kept.summary).toBe('Big');
+    expect(kept.attendees.length).toBeLessThan(20_000);
+    expect(kept.attendees.length).toBeGreaterThan(0);
+    expect(JSON.stringify(shrunk).length).toBeLessThanOrEqual(MAX_RESULT_BYTES);
+    expect(shrunk.notes).toEqual([expect.stringMatching(/left out/)]);
+  });
+});
+
+describe('a lookup keyed by the caller', () => {
+  it('does not find Object.prototype behind an id tag', () => {
+    // `KIND_OF[tag]` on an object literal: `constructor` is a key on it too,
+    // and the sentence built from it said "that is the id of a undefined".
+    const lookup = { allows: () => true, knows: () => true };
+    for (const tag of [
+      'constructor',
+      '__proto__',
+      'hasOwnProperty',
+      'toString',
+    ]) {
+      expect(
+        () =>
+          parseEntityId(`${tag}.L3Rlc3Rlci93b3JrLw.YS5pY3M`, 'vevent', lookup),
+        tag
+      ).toThrow(/not an id this server issued/);
+    }
+  });
+});
+
+describe('the variable next to the password', () => {
+  const jwt =
+    'eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiJhbGljZSIsImlhdCI6MTcwMDAwMDAwMH0.' +
+    'YWJjZGVmZ2hpamtsbW5vcHFyc3R1dnd4eXowMTIzNDU2Nzg5';
+  const hex = 'a'.repeat(64);
+  const b64 = 'QUJDREVGR0hJSktMTU5PUFFSU1RVVldYWVowMTIzNDU2Nzg5Kys=';
+
+  afterEach(() => {
+    vi.restoreAllMocks();
+    vi.unstubAllGlobals();
+  });
+
+  it('is not printed to stderr when it matches nothing', async () => {
+    // CALDAV_CALENDARS sits one line below CALDAV_PASSWORD in every compose
+    // file, and an entry that matches nothing is what a secret pasted into
+    // the wrong line looks like. It used to be printed in full — to stderr,
+    // which is the client's log, and into the model's context.
+    const stderr = vi.spyOn(console, 'error').mockImplementation(() => {});
+    const fake = new FakeCalDav();
+    fake.install();
+    const session = await connect({ calendars: [jwt, hex, b64, 'work'] });
+    try {
+      const listing = dataOf(
+        await session.client.callTool({ name: 'list_calendars', arguments: {} })
+      );
+      const said = JSON.stringify(listing.notes);
+      const logged = stderr.mock.calls.map((call) => call.join(' ')).join('\n');
+      for (const secret of [jwt, hex, b64]) {
+        expect(said).not.toContain(secret);
+        expect(logged).not.toContain(secret);
+      }
+      expect(said).toMatch(/3 entries that match no calendar/);
+      expect(said).toMatch(/not shown/);
+      expect(logged).toMatch(/not shown/);
+      expect((listing.calendars as unknown[]).length).toBe(1);
+    } finally {
+      await session.close();
+    }
+  });
+
+  it('still names an entry that looks like a calendar', async () => {
+    const stderr = vi.spyOn(console, 'error').mockImplementation(() => {});
+    const fake = new FakeCalDav();
+    fake.install();
+    const session = await connect({
+      calendars: [
+        '/tester/wrok/',
+        'https://dav.example.net/tester/nope/',
+        'work',
+      ],
+    });
+    try {
+      const listing = dataOf(
+        await session.client.callTool({ name: 'list_calendars', arguments: {} })
+      );
+      const said = JSON.stringify(listing.notes);
+      expect(said).toContain('/tester/wrok/');
+      expect(said).toContain('https://dav.example.net/tester/nope/');
+      expect(stderr.mock.calls.join('\n')).toContain('/tester/wrok/');
     } finally {
       await session.close();
     }
