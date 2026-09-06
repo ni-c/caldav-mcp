@@ -134,7 +134,7 @@ export class FakeCalDav {
       for (const [name, ics] of Object.entries(calendar.resources ?? {})) {
         resources.set(name, { ics, etag: this.nextEtag() });
       }
-      this.calendars.set(`/${USER}/${calendar.name}/`, {
+      this.calendars.set(pathOfCalendar(calendar.name), {
         entry: calendar,
         resources,
       });
@@ -148,21 +148,21 @@ export class FakeCalDav {
 
   /** Puts a resource in place without going through the server under test. */
   seed(calendar: string, name: string, ics: string): void {
-    const store = this.calendars.get(`/${USER}/${calendar}/`);
+    const store = this.calendars.get(pathOfCalendar(calendar));
     if (store === undefined) throw new Error(`no calendar ${calendar}`);
     store.resources.set(name, { ics, etag: this.nextEtag() });
   }
 
   /** Reads a resource back as stored. */
   stored(calendar: string, name: string): string | undefined {
-    return this.calendars.get(`/${USER}/${calendar}/`)?.resources.get(name)
+    return this.calendars.get(pathOfCalendar(calendar))?.resources.get(name)
       ?.ics;
   }
 
   /** Every resource name in a calendar. */
   names(calendar: string): string[] {
     return [
-      ...(this.calendars.get(`/${USER}/${calendar}/`)?.resources.keys() ?? []),
+      ...(this.calendars.get(pathOfCalendar(calendar))?.resources.keys() ?? []),
     ];
   }
 
@@ -555,6 +555,17 @@ export class FakeCalDav {
     found.store.delete(found.name);
     return this.reply(204);
   }
+}
+
+/**
+ * The pathname of a calendar, as a URL parser spells it.
+ *
+ * The fake keys its collections on the pathname a request arrives with, which
+ * the server under test built with `new URL()` — so a name with a space or a
+ * non-ASCII letter is keyed percent-encoded, exactly as it is addressed.
+ */
+function pathOfCalendar(name: string): string {
+  return new URL(`/${USER}/${name}/`, ORIGIN).pathname;
 }
 
 function escapeXml(value: string): string {

@@ -405,3 +405,131 @@ describe('who is_self is', () => {
     }
   });
 });
+
+describe('a calendar id is the same in every tool', () => {
+  afterEach(() => vi.unstubAllGlobals());
+
+  it('prints an id byte for byte, and the same one twice', async () => {
+    // `list_calendars` ran the path through the text cleaner, which rewrote
+    // `![a](b)` into a note about a removed image, normalised to NFKC and
+    // cut a long path — an id no tool could resolve — while
+    // `get_server_info` printed the raw path beside it.
+    const exotic = '![a](b)';
+    const fake = new FakeCalDav({
+      calendars: [
+        { name: exotic, displayName: 'Exotic' },
+        { name: 'Ünïcode', displayName: 'Accents' },
+        { name: 'work', displayName: 'Work' },
+      ],
+    });
+    fake.install();
+    fake.seed('Ünïcode', 'a.ics', event([]));
+    const session = await connect();
+    try {
+      const call = (name: string, args: Record<string, unknown> = {}) =>
+        session.client.callTool({ name, arguments: args });
+      const listed = dataOf(await call('list_calendars')).calendars as {
+        id: string;
+        url: string;
+      }[];
+      const info = dataOf(await call('get_server_info')).calendars as {
+        id: string;
+      }[];
+      const ids = listed.map((calendar) => calendar.id).toSorted();
+      expect(ids).toEqual(info.map((calendar) => calendar.id).toSorted());
+      expect(ids).toEqual([
+        '/tester/![a](b)/',
+        '/tester/%C3%9Cn%C3%AFcode/',
+        '/tester/work/',
+      ]);
+      expect(listed.map((calendar) => calendar.url).toSorted()).toEqual(
+        ids.map((id) => `https://dav.example.net${id}`)
+      );
+      for (const id of ids) {
+        const listing = dataOf(
+          await call('list_events', {
+            from: '2026-09-01',
+            to: '2026-09-30',
+            calendars: [id],
+          })
+        );
+        expect(listing.count, id).toBe(id.includes('%C3') ? 1 : 0);
+      }
+    } finally {
+      await session.close();
+    }
+  });
+
+  it('cleans what get_server_info repeats from the server', async () => {
+    // "This server's own words" — and the DAV compliance tokens, the allowed
+    // methods, the principal and home hrefs in that answer were all the
+    // server's. A header cannot carry a control character, but it can carry
+    // a Markdown image, which is a fetch in any client that renders it.
+    const fake = new FakeCalDav({
+      calendars: [{ name: 'work', displayName: 'Work' }],
+      failWith: (method) =>
+        method === 'OPTIONS'
+          ? {
+              status: 200,
+              headers: {
+                dav: '1, calendar-access ![leak](https://evil.example/p)',
+                allow: 'GET, PUT ![leak](https://evil.example/q), REPORT',
+              },
+            }
+          : undefined,
+    });
+    fake.install();
+    const session = await connect();
+    try {
+      const info = dataOf(
+        await session.client.callTool({
+          name: 'get_server_info',
+          arguments: {},
+        })
+      );
+      const text = JSON.stringify(info);
+      // Defused, not hidden: the URL stays as inert text, the image syntax
+      // that would make a client fetch it does not.
+      expect(text).not.toContain('![leak](');
+      expect(text).toContain('inline image removed');
+      expect(info.dav).toContain('1');
+    } finally {
+      await session.close();
+    }
+  });
+
+  it('cleans the attendee tokens and the attachment type', async () => {
+    const fake = new FakeCalDav();
+    fake.install();
+    fake.seed(
+      'work',
+      'a.ics',
+      event([
+        `ATTENDEE;CN=Bob;ROLE=REQ-PARTICIPANT${String.fromCharCode(7)};PARTSTAT=ACCEPTED‮:mailto:bob@example.com`,
+        'ATTACH;FMTTYPE=application/pdf​;SIZE=12:https://files.example/a.pdf',
+      ])
+    );
+    const session = await connect();
+    try {
+      const listing = dataOf(
+        await session.client.callTool({
+          name: 'list_events',
+          arguments: { from: '2026-09-01', to: '2026-09-30' },
+        })
+      );
+      const text = JSON.stringify(listing);
+      expect(text).not.toContain(String.fromCharCode(7));
+      expect(text).not.toContain('‮');
+      expect(text).not.toContain('​');
+      const entry = (listing.events as Record<string, unknown>[])[0] ?? {};
+      expect((entry.attendees as { role?: string }[])[0]?.role).toBe(
+        'REQ-PARTICIPANT'
+      );
+      expect(
+        (entry.attachments as { mime_type?: string }[])[0]?.mime_type
+      ).toBe('application/pdf');
+    } finally {
+      await session.close();
+    }
+  });
+});

@@ -1,11 +1,12 @@
 import { z } from 'zod';
 import type { McpServer } from '@modelcontextprotocol/server';
 
+import { sanitizeText } from '../analyze.js';
 import { freeBusyQueryBody, textMatchBody } from '../dav-xml.js';
 import { selfAddressesOf, type ToolContext } from '../entries.js';
 import { notes, shapedCalendar, untrustedFields } from '../output-schema.js';
 import { ownWordsResult, run, untrustedResult } from '../result.js';
-import { shapeCalendar } from '../shape.js';
+import { calendarId, shapeCalendar } from '../shape.js';
 import { toUtcStamp } from '../time.js';
 import { READ_ONLY } from './annotations.js';
 
@@ -192,16 +193,29 @@ export function registerCalendarTools(
           );
         }
 
+        // "This server's own words" — and yet the principal href, the home
+        // set hrefs, the compliance tokens and the calendar paths were all
+        // chosen by the DAV server. The display-only ones are cleaned; the
+        // calendar id has to round-trip and is validated instead, the same
+        // way `list_calendars` prints it, so the two tools agree.
         return ownWordsResult({
           url: context.api.url,
-          ...(principal.url === undefined ? {} : { principal: principal.url }),
-          calendar_homes: [...principal.homes],
-          dav: options.dav,
-          allowed_methods: options.allow,
+          ...(principal.url === undefined
+            ? {}
+            : { principal: sanitizeText(principal.url, 2048) }),
+          calendar_homes: principal.homes.map((home) =>
+            sanitizeText(home, 2048)
+          ),
+          dav: options.dav.map((token) => sanitizeText(token, 100)),
+          allowed_methods: options.allow.map((method) =>
+            sanitizeText(method, 50)
+          ),
           scheduling,
           calendars: allowed.map((calendar) => ({
-            id: calendar.path,
-            components: [...calendar.components],
+            id: calendarId(calendar.path),
+            components: calendar.components.map((name) =>
+              sanitizeText(name, 50)
+            ),
             read_only: calendar.readOnly,
           })),
           withheld: registry.withheld(),
