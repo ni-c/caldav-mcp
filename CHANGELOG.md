@@ -13,6 +13,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+[Unreleased]: https://github.com/ni-c/caldav-mcp/compare/v0.1.3...HEAD
+
+## [0.1.3] - 2026-09-07
+
 ### Security
 
 The second internal hardening pass, 2026-09-07. Every item below was a real
@@ -168,7 +172,7 @@ Trivy, and each ships with a test that asserts on the wire or on the result.
   scoped to the deploy step rather than granted to the whole workflow.
 - `oxlint` to 1.81.
 
-[Unreleased]: https://github.com/ni-c/caldav-mcp/compare/v0.1.2...HEAD
+[0.1.3]: https://github.com/ni-c/caldav-mcp/releases/tag/v0.1.3
 
 ## [0.1.2] - 2026-09-06
 
