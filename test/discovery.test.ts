@@ -68,7 +68,9 @@ describe('the well-known route', () => {
       ])
     );
     expect(
-      fake.requests.some((r) => r.url.startsWith('https://elsewhere.example'))
+      fake.requests.some(
+        (r) => new URL(r.url).origin === 'https://elsewhere.example'
+      )
     ).toBe(false);
   });
 
@@ -227,7 +229,9 @@ describe('what a home set lists', () => {
     });
     expect(calendars).toEqual(['/tester/plain/', ...BOTH]);
     expect(
-      fake.requests.some((r) => r.url.startsWith('https://elsewhere.example'))
+      fake.requests.some(
+        (r) => new URL(r.url).origin === 'https://elsewhere.example'
+      )
     ).toBe(false);
   });
 });
