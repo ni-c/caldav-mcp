@@ -2,9 +2,11 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { setResourceKey } from 'mcp-approval';
 
+import { buildSeriesId } from '../src/entity-id.js';
 import { orderedResourceKey } from '../src/write.js';
 import {
   connect,
+  connectModern,
   dataOf,
   FakeCalDav,
   textOf,
@@ -124,5 +126,75 @@ describe('what a move token is bound to', () => {
     );
     expect(moved.moved).toBe(true);
     expect(fake.stored('work', 'e.ics')).toBeUndefined();
+  });
+});
+
+describe('a sealed dialog answer, on the revision where it travels', () => {
+  afterEach(() => vi.unstubAllGlobals());
+
+  const ACCEPTED = {
+    confirm: { action: 'accept', content: { confirm: true } },
+  };
+
+  it('is spent on its first use, so a replayed state asks again', async () => {
+    // On 2026-07-28 the dialog is a return value: the server answers
+    // `input_required` with a sealed state, and the client calls again with
+    // the answer and the state. With mcp-approval 0.8.0 the seal proved
+    // binding and nothing else, so the same state and the same ticked box
+    // executed the edit again for as long as the state lived — and the key
+    // for changing a whole series is the same on every call, which is what
+    // made every replay land. 0.8.1 spends the state on its first answer.
+    const fake = new FakeCalDav();
+    fake.install();
+    fake.seed(
+      'work',
+      'weekly.ics',
+      event('weekly@example.net', 'Weekly').replace(
+        'SUMMARY:Weekly',
+        'RRULE:FREQ=WEEKLY;COUNT=5\r\nSUMMARY:Weekly'
+      )
+    );
+    const client = await connectModern();
+    try {
+      const id = buildSeriesId('vevent', '/tester/work/', 'weekly.ics');
+      const args = { id, scope: 'entire_series', summary: 'Renamed' };
+      const puts = () => fake.requests.filter((r) => r.method === 'PUT').length;
+
+      const asked = await client.call('update_event', args);
+      expect(asked.resultType).toBe('input_required');
+      expect(asked.requestState).toBeTruthy();
+      expect(puts()).toBe(0);
+
+      const done = await client.call('update_event', args, {
+        inputResponses: ACCEPTED,
+        requestState: asked.requestState,
+      });
+      expect(done.resultType).toBeUndefined();
+      expect(done.isError).not.toBe(true);
+      expect(puts()).toBe(1);
+
+      const replayed = await client.call('update_event', args, {
+        inputResponses: ACCEPTED,
+        requestState: asked.requestState,
+      });
+      expect(replayed.resultType).toBe('input_required');
+      expect(replayed.requestState).not.toBe(asked.requestState);
+      expect(puts()).toBe(1);
+
+      // A declined state cannot be re-presented as an accept either.
+      const askedAgain = await client.call('update_event', args);
+      await client.call('update_event', args, {
+        inputResponses: { confirm: { action: 'decline' } },
+        requestState: askedAgain.requestState,
+      });
+      const flipped = await client.call('update_event', args, {
+        inputResponses: ACCEPTED,
+        requestState: askedAgain.requestState,
+      });
+      expect(flipped.resultType).toBe('input_required');
+      expect(puts()).toBe(1);
+    } finally {
+      await client.close();
+    }
   });
 });
