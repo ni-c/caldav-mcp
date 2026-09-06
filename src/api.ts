@@ -49,6 +49,30 @@ const MAX_ROUNDTRIP_BYTES = 8 * 1024 * 1024;
 /** Ceiling on a free-busy answer, which is a small VFREEBUSY document. */
 const MAX_FREEBUSY_BYTES = 1 * 1024 * 1024;
 
+/**
+ * How much of an error body is read, and it is *cut* there, not refused.
+ *
+ * Every verb used to read its body under the success ceiling and only then
+ * look at the status, so a reverse proxy answering `401` with a two-megabyte
+ * login page surfaced as "the answer was larger than 1048576 bytes and was
+ * refused" — the size, not the status, and no hint about credentials. The
+ * status is decided first now, and an error body is read only as far as a
+ * DAV error document or a useful sentence can reach.
+ */
+const MAX_ERROR_BODY_BYTES = 64 * 1024;
+
+/**
+ * How long a `401` is repeated from memory before the server is asked again.
+ *
+ * Every request authenticates, so every tool call is a login, and a hosted
+ * provider locks an account after a handful of failed ones. A model that is
+ * told "authentication refused" retries — the read tools are annotated cheap
+ * and idempotent, which is exactly what invites it — and one wrong password
+ * became a locked mailbox. Ten seconds is long enough to absorb a retry loop
+ * and short enough that a corrected password is tried without a restart.
+ */
+const UNAUTHORIZED_MEMORY_MS = 10_000;
+
 export class CalDavApiError extends Error {
   constructor(
     public readonly status: number,
@@ -56,10 +80,13 @@ export class CalDavApiError extends Error {
     method: string,
     url: string,
     /** The DAV precondition element name, where the server named one. */
-    public readonly precondition?: string
+    public readonly precondition?: string,
+    /** Set when the error is repeated from memory rather than fresh. */
+    public readonly remembered?: string
   ) {
     super(
-      `CalDAV ${method} ${quoted(redactPath(url))} failed with HTTP ${status}`
+      `CalDAV ${method} ${quoted(redactPath(url))} failed with HTTP ${status}` +
+        (remembered === undefined ? '' : `. ${remembered}`)
     );
     this.name = 'CalDavApiError';
   }
@@ -117,6 +144,8 @@ export class CalDavApi {
    * disabling it process-wide via NODE_TLS_REJECT_UNAUTHORIZED.
    */
   private readonly insecureDispatcher: Agent | undefined;
+  /** The last `401`, repeated for {@link UNAUTHORIZED_MEMORY_MS}. */
+  private unauthorized: { at: number; error: CalDavApiError } | undefined;
 
   constructor(config: Config) {
     this.config = config;
@@ -230,6 +259,26 @@ export class CalDavApi {
       );
     }
 
+    if (this.unauthorized !== undefined) {
+      const age = Date.now() - this.unauthorized.at;
+      if (age >= 0 && age < UNAUTHORIZED_MEMORY_MS) {
+        const remembered = this.unauthorized.error;
+        throw new CalDavApiError(
+          remembered.status,
+          remembered.body,
+          method,
+          url,
+          remembered.precondition,
+          `The server refused the credentials ${Math.round(age / 1000)}s ago ` +
+            `and was not asked again: a 401 is repeated for ` +
+            `${UNAUTHORIZED_MEMORY_MS / 1000}s, so a retry loop cannot lock ` +
+            'the account. Check CALDAV_USERNAME and CALDAV_PASSWORD (or ' +
+            'CALDAV_TOKEN), then try again.'
+        );
+      }
+      this.unauthorized = undefined;
+    }
+
     const headers: Record<string, string> = {
       'User-Agent': 'caldav-mcp',
       ...(options.accept === undefined ? {} : { Accept: options.accept }),
@@ -270,13 +319,30 @@ export class CalDavApi {
     };
   }
 
+  /**
+   * Turns a non-2xx answer into the error every verb throws.
+   *
+   * The status decides; the body is read afterwards, cut at a size a DAV error
+   * document fits in, and never refused for its length. A `401` is kept for a
+   * while — see {@link UNAUTHORIZED_MEMORY_MS}.
+   */
+  private async failure(
+    status: number,
+    response: BodyLike,
+    method: string,
+    url: string
+  ): Promise<CalDavApiError> {
+    const body = (await readErrorBody(response)).toString('utf8');
+    const error = await apiError(status, body, method, url);
+    if (status === 401) this.unauthorized = { at: Date.now(), error };
+    return error;
+  }
+
   /** `OPTIONS`: the `DAV:` compliance tokens and the allowed methods. */
   async options(url: string): Promise<{ dav: string[]; allow: string[] }> {
     const { ok, status, headers, response } = await this.send('OPTIONS', url);
-    const body = (
-      await readBoundedBody(response, url, MAX_FREEBUSY_BYTES)
-    ).toString('utf8');
-    if (!ok) throw await apiError(status, body, 'OPTIONS', url);
+    if (!ok) throw await this.failure(status, response, 'OPTIONS', url);
+    await readBoundedBody(response, url, MAX_FREEBUSY_BYTES);
     return {
       dav: splitHeaderList(headers.get('dav')),
       allow: splitHeaderList(headers.get('allow')),
@@ -312,9 +378,9 @@ export class CalDavApi {
       body,
       accept: 'application/xml, text/xml',
     });
+    if (!ok) throw await this.failure(status, response, method, url);
     const bytes = await readBoundedBody(response, url, MAX_MULTISTATUS_BYTES);
     const text = bytes.toString('utf8');
-    if (!ok) throw await apiError(status, text, method, url);
     return parseMultiStatus(text, `CalDAV ${method} ${redactPath(url)}`);
   }
 
@@ -332,10 +398,9 @@ export class CalDavApi {
       body,
       accept: 'text/calendar',
     });
+    if (!ok) throw await this.failure(status, response, 'REPORT', url);
     const bytes = await readBoundedBody(response, url, MAX_FREEBUSY_BYTES);
-    const text = bytes.toString('utf8');
-    if (!ok) throw await apiError(status, text, 'REPORT', url);
-    return text;
+    return bytes.toString('utf8');
   }
 
   /** `GET` a calendar resource. `forWrite` raises the ceiling — see the constant. */
@@ -343,14 +408,16 @@ export class CalDavApi {
     const { ok, status, headers, response } = await this.send('GET', url, {
       accept: 'text/calendar',
     });
+    if (!ok) throw await this.failure(status, response, 'GET', url);
     const bytes = await readBoundedBody(
       response,
       url,
       forWrite ? MAX_ROUNDTRIP_BYTES : MAX_RESOURCE_BYTES
     );
-    const text = bytes.toString('utf8');
-    if (!ok) throw await apiError(status, text, 'GET', url);
-    return { ics: text, etag: normaliseEtag(headers.get('etag')) };
+    return {
+      ics: bytes.toString('utf8'),
+      etag: normaliseEtag(headers.get('etag')),
+    };
   }
 
   /**
@@ -380,10 +447,8 @@ export class CalDavApi {
       contentType: 'text/calendar; charset=utf-8',
       headers,
     });
-    const text = (
-      await readBoundedBody(response, url, MAX_FREEBUSY_BYTES)
-    ).toString('utf8');
-    if (!ok) throw await apiError(status, text, 'PUT', url);
+    if (!ok) throw await this.failure(status, response, 'PUT', url);
+    await readBoundedBody(response, url, MAX_FREEBUSY_BYTES);
     return { etag: normaliseEtag(got.get('etag')), status };
   }
 
@@ -392,10 +457,8 @@ export class CalDavApi {
     const { ok, status, response } = await this.send('DELETE', url, {
       headers: { 'If-Match': ifMatch },
     });
-    const text = (
-      await readBoundedBody(response, url, MAX_FREEBUSY_BYTES)
-    ).toString('utf8');
-    if (!ok) throw await apiError(status, text, 'DELETE', url);
+    if (!ok) throw await this.failure(status, response, 'DELETE', url);
+    await readBoundedBody(response, url, MAX_FREEBUSY_BYTES);
     return status;
   }
 
@@ -546,6 +609,44 @@ function redactPath(url: string): string {
   }
 }
 
+/** What a verb needs of a response to read its body. */
+interface BodyLike {
+  headers: Headers;
+  body?: unknown;
+  arrayBuffer(): Promise<ArrayBuffer>;
+}
+
+/**
+ * Reads an error body up to {@link MAX_ERROR_BODY_BYTES} and stops there.
+ *
+ * Cutting rather than refusing: the caller is already building an error, and
+ * the body's size is not the news. A declared length past the cap is not
+ * consulted — the bytes are read up to the cap and the rest is left on the
+ * wire, which is what `reader.cancel()` is for.
+ */
+async function readErrorBody(response: BodyLike): Promise<Buffer> {
+  const body = response.body;
+  if (!hasStreamingBody(body)) {
+    const buffer = Buffer.from(await response.arrayBuffer());
+    return buffer.subarray(0, MAX_ERROR_BODY_BYTES);
+  }
+  const reader = body.getReader();
+  const chunks: Uint8Array[] = [];
+  let total = 0;
+  for (;;) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    if (value === undefined) continue;
+    chunks.push(value);
+    total += value.byteLength;
+    if (total >= MAX_ERROR_BODY_BYTES) {
+      await reader.cancel();
+      break;
+    }
+  }
+  return Buffer.concat(chunks).subarray(0, MAX_ERROR_BODY_BYTES);
+}
+
 /** Minimal shape of a response body we can read incrementally. */
 interface StreamingBody {
   getReader(): {
@@ -572,11 +673,7 @@ function hasStreamingBody(body: unknown): body is StreamingBody {
  * afterwards.
  */
 async function readBoundedBody(
-  response: {
-    headers: Headers;
-    body?: unknown;
-    arrayBuffer(): Promise<ArrayBuffer>;
-  },
+  response: BodyLike,
   url: string,
   maxBytes: number
 ): Promise<Buffer> {
