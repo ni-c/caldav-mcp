@@ -80,6 +80,20 @@ jobs:
       - run: npm ci --ignore-scripts
       - run: npm audit --audit-level=high
 
+  dependency-review:
+    # `npm audit` checks the tree as it is; this checks what a pull request
+    # changes — a bump that brings a known vulnerability in, or a licence the
+    # project does not use. Pull requests only: there is no diff on a push.
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/dependency-review-action@a1d282b36b6f3519aa1f3fc636f609c47dddb294 # v5.0.0
+        with:
+          fail-on-severity: high
+
   codeql:
     # Code scanning needs GitHub Advanced Security, which a private repository
     # on the Free plan does not have: the analysis runs fine and then the SARIF
