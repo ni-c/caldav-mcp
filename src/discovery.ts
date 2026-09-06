@@ -323,7 +323,11 @@ export class Discovery {
     found.sort((left, right) => left.path.localeCompare(right.path));
     const unique = dedupe(found);
     const kept = unique.slice(0, MAX_CALENDARS);
-    const registry = new CalendarRegistry(kept, this.allowlist);
+    const registry = new CalendarRegistry(
+      kept,
+      this.allowlist,
+      this.api.origin
+    );
     if (unique.length > MAX_CALENDARS) {
       registry.notes.push(
         `This account has ${unique.length} calendars; only the first ` +
