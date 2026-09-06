@@ -22,7 +22,7 @@
 # its natural size and stops short of the right edge, next to a diagram that
 # fills it. custom.css pins the width regardless; being oversized is the belt.
 
-Output public/demo.gif
+Output docs/public/demo.gif
 
 Set FontSize 16
 Set Width 1200
