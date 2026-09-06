@@ -11,6 +11,47 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
      marker last in the file so the link definitions come along. -->
 <!-- #region changelog -->
 
+## [0.1.2] - 2026-09-06
+
+### Fixed
+
+- **A cross-host `/.well-known/caldav` redirect ended discovery instead of
+  degrading past it.** RFC 6764 §6 defines that route as a redirect and permits
+  it to point at another host, which is how a hosted provider sends a client
+  from the domain you typed to the one that serves DAV. Refusing to follow it is
+  correct — following it would send the credentials somewhere you did not
+  configure — but the refusal was thrown rather than returned, so discovery
+  never reached its later steps or its home-set fallback. Because the principal
+  is resolved once and memoised, that turned into the same error on **every**
+  tool call for the life of the process. It is now a note naming the origin that
+  was not followed, which is the address `CALDAV_URL` should have had.
+- The tool reference generator built its server from seven of `Config`'s
+  thirteen fields, under a comment claiming all of them. It now passes the whole
+  record and asserts that every tool in the catalogue came back, so an
+  incomplete literal fails the build instead of quietly producing a short page.
+
+### Changed
+
+- `npm run docs:tools:check` runs in CI, which it never had, so the generated
+  tool reference can no longer drift from the code.
+
+### Documentation
+
+- **The guide's three unfinished pages are written.** `/guide/security` shipped
+  as four empty headings — with the brief for writing one of them published as
+  an HTML comment. `/guide/configuration` promised "Getting a token" and
+  "Required scopes", which CalDAV does not have at all. `/guide/clients`
+  documented one of five clients, with a command that passes no credentials.
+- One authentication story everywhere: username and app-specific password, as
+  the README always had it. Getting started, the clients page and the mcp-hub
+  example had been describing a bearer token and scopes.
+- `/reference/environment` lists all fourteen variables instead of eight, and no
+  longer marks `CALDAV_TOKEN` as required.
+- The Glama badge, and both asset markers now name `svg-asset-set` rather than a
+  generator script deleted some releases ago.
+
+[0.1.2]: https://github.com/ni-c/caldav-mcp/releases/tag/v0.1.2
+
 ## [0.1.0] - 2026-09-05
 
 ### Added
