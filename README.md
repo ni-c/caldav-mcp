@@ -8,6 +8,7 @@
 [![container](https://img.shields.io/badge/ghcr.io-ni--c%2Fcaldav--mcp-blue)](https://github.com/ni-c/caldav-mcp/pkgs/container/caldav-mcp)
 [![docs](https://img.shields.io/badge/docs-caldav--mcp.ni--c.de-informational)](https://caldav-mcp.ni-c.de)
 [![HTTP • via mcp-hub](https://img.shields.io/badge/HTTP-via%20mcp--hub-6f42c1)](https://mcp-hub.ni-c.de)
+[![Glama](https://glama.ai/mcp/servers/ni-c/caldav-mcp/badges/score.svg)](https://glama.ai/mcp/servers/ni-c/caldav-mcp)
 [![sponsor](https://img.shields.io/badge/sponsor-ni--c-ea4aaa?logo=githubsponsors&logoColor=white)](https://github.com/sponsors/ni-c)
 
 A [Model Context Protocol](https://modelcontextprotocol.io) (MCP) server for

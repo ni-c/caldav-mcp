@@ -70,6 +70,20 @@ export interface Resource {
   etag: string | undefined;
 }
 
+/**
+ * What `/.well-known/caldav` said, in the three ways it can say it.
+ *
+ * `{}` covers both "no such route" and "an answer that named nothing" — a
+ * caller has the same next step either way. `refusedOrigin` is the case worth
+ * keeping apart: the route worked and pointed somewhere this server will not
+ * follow, which is an operator's misconfigured `CALDAV_URL` rather than a
+ * server that lacks the route.
+ */
+export interface WellKnownProbe {
+  url?: string;
+  refusedOrigin?: string;
+}
+
 interface SendOptions {
   depth?: 0 | 1;
   body?: string;
@@ -401,7 +415,7 @@ export class CalDavApi {
    * request without depending on anyone remembering. `discovery.ts` is the only
    * caller, and a test asserts every other verb throws on a 3xx.
    */
-  async probeWellKnown(): Promise<string | undefined> {
+  async probeWellKnown(): Promise<WellKnownProbe> {
     const url = new URL('/.well-known/caldav', this.baseUrl).toString();
     let result;
     try {
@@ -413,14 +427,32 @@ export class CalDavApi {
     } catch {
       // A server without the well-known route is the normal case, not a fault:
       // Baikal only ships it when the vhost is configured for it.
-      return undefined;
+      return {};
     }
     const location = result.headers.get('location');
     if (result.status >= 300 && result.status < 400 && location) {
-      return this.resolveHref(location, url);
+      // RFC 6764 §6 lets this route redirect to a *different* host — it is how
+      // `example.net/.well-known/caldav` sends a client to `dav.example.net`,
+      // which is the ordinary hosted-provider bootstrap. Refusing to follow it
+      // is right; throwing here is not. `resolveHref` throws, and this used to
+      // sit outside the `try`, so one such redirect killed discovery before the
+      // later steps ran — and the principal promise is memoised, so every tool
+      // call for the life of the process returned it. The refused origin is
+      // worth naming, though: it is exactly what `CALDAV_URL` should have been.
+      try {
+        return { url: this.resolveHref(location, url) };
+      } catch {
+        let refusedOrigin;
+        try {
+          refusedOrigin = new URL(location, url).origin;
+        } catch {
+          refusedOrigin = undefined;
+        }
+        return refusedOrigin === undefined ? {} : { refusedOrigin };
+      }
     }
-    if (result.status === 207) return url;
-    return undefined;
+    if (result.status === 207) return { url };
+    return {};
   }
 
   /**
