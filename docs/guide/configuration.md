@@ -2,11 +2,70 @@
 
 See the [environment variable reference](/reference/environment) for the full table.
 
-## Getting a token
+## Signing in
 
-## Required scopes
+CalDAV authenticates the way the web did before OAuth: a username and a
+password, sent on every request. There is no authorisation flow to complete and
+there are **no scopes** — a point worth stating plainly, because MCP servers for
+hosted APIs mostly have both, and looking for a token page in your calendar
+provider's settings is a way to spend an afternoon finding nothing.
+
+```sh
+CALDAV_URL=https://dav.example.net
+CALDAV_USERNAME=you
+CALDAV_PASSWORD=your-app-password
+```
+
+**Use an app-specific password where the provider offers one.** Fastmail,
+iCloud, mailbox.org and most Nextcloud deployments do. It is not stronger
+cryptographically; it is revocable on its own, which means an MCP client's
+config file holding one is a thing you can turn off without changing the
+password you log in with. iCloud requires one — its account password will not
+authenticate against the CalDAV endpoint at all.
+
+`CALDAV_TOKEN` exists for the other shape: a deployment that puts a
+bearer-token proxy in front of a CalDAV server. It replaces the pair rather than
+joining it, and a configuration carrying both is refused at startup instead of
+picking one — which one was meant is not knowable, and the wrong guess
+authenticates as somebody else.
+
+Whichever you use, what the account can do is what this server can do. Narrow it
+with `CALDAV_CALENDARS`, which names the collections this server may touch and
+makes everything else on the account invisible to it, and with
+`CALDAV_READ_ONLY` where nothing needs to write.
+
+## Finding the URL
+
+Point `CALDAV_URL` at the **server root** and let discovery walk from there: it
+asks for the principal, then for the calendar home set, the way a real client
+does. `https://dav.example.net` is usually the whole answer, and
+`get_server_info` reports what it found.
+
+A **collection URL** works too and means something different — it short-circuits
+discovery to that one calendar, and nothing else on the account is reachable.
+That is a legitimate way to fence a deployment to a single calendar without an
+allowlist.
+
+Where a provider publishes a well-known route, RFC 6764 lets it redirect to
+another host. This server does not follow a redirect to a different origin —
+that would send your credentials somewhere you did not configure — so if the
+route points elsewhere, set `CALDAV_URL` to where it points.
 
 ## TLS
+
+`https://` everywhere except loopback, and no setting relaxes that quietly.
+
+`http://` to a host that is not `127.0.0.1` or `::1` **refuses to start**, and
+`CALDAV_ALLOW_PLAINTEXT=true` is what overrides it — deliberately spelled as an
+exact `true`, because Basic authentication puts the credentials on the wire in
+every single request and a typo must not be what turns that on. Plain HTTP to
+loopback needs nothing: the packets do not leave the machine.
+
+`CALDAV_INSECURE_TLS=true` accepts a self-signed certificate, which is the
+common case for a Radicale or Baikal instance on a home network. It is scoped to
+the configured host rather than switching validation off process-wide — no
+`NODE_TLS_REJECT_UNAUTHORIZED` here — so anything else this process talks to is
+still checked. It, too, takes the exact string `true`.
 
 <!-- The heading below is fixed: every repository uses "Choosing the tools that
      load", so /guide/configuration#choosing-the-tools-that-load is the same anchor
@@ -15,9 +74,6 @@ See the [environment variable reference](/reference/environment) for the full ta
      and that adjacency does half the explaining. -->
 
 ## Turning the approval dialog off
-
-<!-- Only for a server that has a guarded tool. Drop this section if nothing
-     here asks anybody. -->
 
 The guarded tools ask a person through MCP elicitation before they act.
 `ELICITATION=false` takes them to the two-call token instead. It does not remove
