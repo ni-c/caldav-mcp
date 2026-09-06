@@ -859,3 +859,47 @@ describe('the variable next to the password', () => {
     }
   });
 });
+
+describe('what the property tests found', () => {
+  afterEach(() => vi.unstubAllGlobals());
+
+  it('lists an entry whose alarm trigger ical.js cannot read', async () => {
+    // `TRIGGER:0`, which some client once wrote: ical.js parses the value
+    // lazily and threw on first read, out of `shapeEntry`, which runs after
+    // the per-entry guard — so one alarm took the whole listing down.
+    const fake = new FakeCalDav();
+    fake.install();
+    fake.seed(
+      'work',
+      'a.ics',
+      event([
+        'BEGIN:VALARM',
+        'ACTION:DISPLAY',
+        'DESCRIPTION:Reminder',
+        'TRIGGER:0',
+        'END:VALARM',
+      ])
+    );
+    fake.seed('work', 'b.ics', event(['SEQUENCE:-0'], 'b@example.net'));
+    const session = await connect();
+    try {
+      const listing = dataOf(
+        await session.client.callTool({
+          name: 'list_events',
+          arguments: { from: '2026-09-01', to: '2026-09-30' },
+        })
+      );
+      const entries = listing.events as Record<string, unknown>[];
+      expect(entries).toHaveLength(2);
+      const alarms = entries.find((e) => e.uid === 'e@example.net')?.alarms as {
+        trigger?: string;
+      }[];
+      expect(alarms[0]?.trigger).toBe('0');
+      expect(
+        Object.is(entries.find((e) => e.uid === 'b@example.net')?.sequence, 0)
+      ).toBe(true);
+    } finally {
+      await session.close();
+    }
+  });
+});

@@ -244,7 +244,11 @@ export function readInt(
   const value = component.getFirstPropertyValue(name);
   if (value === null || value === undefined) return undefined;
   const parsed = Number(value);
-  return Number.isSafeInteger(parsed) ? parsed : undefined;
+  // `+ 0` turns a negative zero into zero: `SEQUENCE:-0` is a safe integer
+  // that serialises as `0`, so the structured half and the text half of a
+  // result disagreed on it — the kind of gap the harness's channel check
+  // exists for.
+  return Number.isSafeInteger(parsed) ? parsed + 0 : undefined;
 }
 
 /** Every value of a property that may appear more than once. */

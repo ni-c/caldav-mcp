@@ -341,16 +341,36 @@ export function isSimpleAlarm(alarm: ICAL.Component): boolean {
   return names.size === 0;
 }
 
+/**
+ * The trigger of an alarm as text, whatever was written there.
+ *
+ * ical.js parses a TRIGGER lazily, when its value is first read, and throws
+ * for one it cannot read — `TRIGGER:0`, which some client once wrote. That
+ * throw came out of `shapeEntry`, which runs *after* the per-entry guard in
+ * the listing, so one such alarm in one entry took the whole listing down.
+ * Found by the property test over arbitrary property values, not by anyone
+ * reading the code. The raw text is reported instead, cleaned like any other.
+ */
+function triggerOf(property: ICAL.Property): string | undefined {
+  try {
+    return sanitizeText(String(property.getFirstValue()), 100);
+  } catch {
+    const raw = (property.jCal as unknown[] | undefined)?.[3];
+    return typeof raw === 'string' ? sanitizeText(raw, 100) : undefined;
+  }
+}
+
 function readAlarms(component: ICAL.Component): Record<string, unknown>[] {
   return component.getAllSubcomponents('valarm').map((alarm) => {
     const trigger = alarm.getFirstProperty('trigger');
     const description = readText(alarm, 'description');
+    const action = readText(alarm, 'action');
     return {
-      ...maybe('action', readText(alarm, 'action')),
       ...maybe(
-        'trigger',
-        trigger === null ? undefined : String(trigger.getFirstValue())
+        'action',
+        action === undefined ? undefined : sanitizeText(action, 50)
       ),
+      ...maybe('trigger', trigger === null ? undefined : triggerOf(trigger)),
       ...maybe(
         'description',
         description === undefined ? undefined : sanitizeText(description, 500)
