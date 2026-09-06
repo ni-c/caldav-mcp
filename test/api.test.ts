@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
-import { CalDavApi, CalDavApiError } from '../src/api.js';
+import { CalDavApi, CalDavApiError, normaliseEtag } from '../src/api.js';
 import { Discovery } from '../src/discovery.js';
 import { testConfig } from './harness.js';
 
@@ -284,6 +284,41 @@ describe('validators', () => {
     // ETag the origin issued strong.
     answer('BEGIN:VCALENDAR', { headers: { etag: 'W/"abc"' } });
     expect((await api().get(`${ORIGIN}/x.ics`)).etag).toBeUndefined();
+  });
+
+  it('treats an ETag that is not one as absent', async () => {
+    // The value goes back out in If-Match on the next write. undici refuses
+    // a header value with a control character, which reached the model as
+    // `fetch failed` on every write to that resource; a bare word or an
+    // unbalanced quote is not an entity-tag either (RFC 9110 §8.8.3).
+    for (const etag of [
+      'abc',
+      '"a"b',
+      '"a b"',
+      '"',
+      '""x',
+      `"${'a'.repeat(1025)}"`,
+    ]) {
+      expect(normaliseEtag(etag), etag).toBeUndefined();
+    }
+    for (const etag of ['"abc"', '"00123"', '""', '"a-b_c.d:e/f"']) {
+      expect(normaliseEtag(etag), etag).toBe(etag);
+    }
+    expect(normaliseEtag('  "abc"  ')).toBe('"abc"');
+  });
+
+  it('cannot receive a line break in an ETag, nor send one', () => {
+    // The platform's half of the guarantee, pinned: neither a Response nor a
+    // Headers object can be built with a value carrying CR or LF, so a
+    // header-injecting ETag cannot even be received, and could not be sent
+    // if it were.
+    expect(
+      () => new Response('', { headers: { etag: '"a"\r\nX-Injected: y' } })
+    ).toThrow(TypeError);
+    expect(() => new Headers({ 'If-Match': '"a"\r\nX-Injected: y' })).toThrow(
+      TypeError
+    );
+    expect(() => new Headers({ 'If-Match': '"a"\nX' })).toThrow(TypeError);
   });
 
   it('sends exactly one guard on every write', async () => {

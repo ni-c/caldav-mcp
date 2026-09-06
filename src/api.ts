@@ -512,10 +512,19 @@ async function apiError(
  * write tools refuse with an explanation instead of quietly dropping `If-Match`
  * and racing.
  */
-function normaliseEtag(raw: string | null): string | undefined {
+export function normaliseEtag(raw: string | null): string | undefined {
   if (raw === null) return undefined;
   const value = raw.trim();
   if (value === '' || value.startsWith('W/')) return undefined;
+  // RFC 9110 §8.8.3: an entity-tag is `"` etagc* `"`, where etagc is any
+  // visible ASCII except `"`, or an obs-text byte. This value goes back out
+  // in an `If-Match` header on the next write, so it is held to that
+  // grammar here rather than trusted for its shape: a header value that
+  // undici refuses would otherwise reach the model as `fetch failed`, on
+  // every write to that resource, for as long as the server kept sending
+  // it. An ETag that is not one is treated like a weak one — the write
+  // path refuses with a sentence instead of racing.
+  if (!/^"[\x21\x23-\x7e\x80-\xff]{0,1024}"$/.test(value)) return undefined;
   return value;
 }
 

@@ -534,6 +534,24 @@ describe('a calendar id is the same in every tool', () => {
   });
 });
 
+/** A daily series, so one calendar yields hundreds of occurrences. */
+const daily = (uid: string): string =>
+  [
+    'BEGIN:VCALENDAR',
+    'VERSION:2.0',
+    'PRODID:-//t//EN',
+    'BEGIN:VEVENT',
+    `UID:${uid}`,
+    'DTSTAMP:20260101T120000Z',
+    'DTSTART:20260101T070000Z',
+    'DTEND:20260101T080000Z',
+    'RRULE:FREQ=DAILY',
+    'SUMMARY:Daily',
+    'END:VEVENT',
+    'END:VCALENDAR',
+    '',
+  ].join('\r\n');
+
 /** `count` calendars named c000…, each holding one resource built by `ics`. */
 function manyCalendars(count: number, ics: (name: string) => string) {
   return Array.from({ length: count }, (_, index) => {
@@ -547,24 +565,6 @@ describe('a budget for the whole call', () => {
     vi.useRealTimers();
     vi.unstubAllGlobals();
   });
-
-  /** A daily series, so one calendar yields hundreds of occurrences. */
-  const daily = (uid: string): string =>
-    [
-      'BEGIN:VCALENDAR',
-      'VERSION:2.0',
-      'PRODID:-//t//EN',
-      'BEGIN:VEVENT',
-      `UID:${uid}`,
-      'DTSTAMP:20260101T120000Z',
-      'DTSTART:20260101T070000Z',
-      'DTEND:20260101T080000Z',
-      'RRULE:FREQ=DAILY',
-      'SUMMARY:Daily',
-      'END:VEVENT',
-      'END:VCALENDAR',
-      '',
-    ].join('\r\n');
 
   it('stops a listing when the budget runs out, and says how far it got', async () => {
     // One REPORT per calendar, thirty seconds allowed for each, and every
