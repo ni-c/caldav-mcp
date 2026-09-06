@@ -533,3 +533,188 @@ describe('a calendar id is the same in every tool', () => {
     }
   });
 });
+
+/** `count` calendars named c000…, each holding one resource built by `ics`. */
+function manyCalendars(count: number, ics: (name: string) => string) {
+  return Array.from({ length: count }, (_, index) => {
+    const name = `c${String(index).padStart(3, '0')}`;
+    return { name, resources: { 'a.ics': ics(name) } };
+  });
+}
+
+describe('a budget for the whole call', () => {
+  afterEach(() => {
+    vi.useRealTimers();
+    vi.unstubAllGlobals();
+  });
+
+  /** A daily series, so one calendar yields hundreds of occurrences. */
+  const daily = (uid: string): string =>
+    [
+      'BEGIN:VCALENDAR',
+      'VERSION:2.0',
+      'PRODID:-//t//EN',
+      'BEGIN:VEVENT',
+      `UID:${uid}`,
+      'DTSTAMP:20260101T120000Z',
+      'DTSTART:20260101T070000Z',
+      'DTEND:20260101T080000Z',
+      'RRULE:FREQ=DAILY',
+      'SUMMARY:Daily',
+      'END:VEVENT',
+      'END:VCALENDAR',
+      '',
+    ].join('\r\n');
+
+  it('stops a listing when the budget runs out, and says how far it got', async () => {
+    // One REPORT per calendar, thirty seconds allowed for each, and every
+    // calendar the credentials can see when the caller names none: a slow
+    // server with a hundred collections turned one call into an hour.
+    vi.useFakeTimers({ toFake: ['Date'] });
+    const fake = new FakeCalDav({
+      calendars: manyCalendars(120, (name) => event([], `${name}@example.net`)),
+      latencyMs: 1_000,
+    });
+    fake.install();
+    const session = await connect();
+    try {
+      const listing = dataOf(
+        await session.client.callTool({
+          name: 'list_events',
+          arguments: { from: '2026-09-01', to: '2026-09-30', limit: 500 },
+        })
+      );
+      const reports = fake.requests.filter((r) => r.method === 'REPORT');
+      expect(reports.length).toBeLessThan(120);
+      expect(reports.length).toBeGreaterThan(10);
+      const truncated = listing.truncated as {
+        reason: string;
+        follow_up: string;
+      };
+      expect(truncated.reason).toMatch(
+        /^Stopped after \d+ of 120 calendars: the call's 30-second budget ran out\./
+      );
+      expect(truncated.follow_up).toMatch(/fewer calendars/);
+      expect((listing.events as unknown[]).length).toBe(reports.length);
+    } finally {
+      await session.close();
+    }
+  });
+
+  it('stops a search the same way, between fields as well as calendars', async () => {
+    vi.useFakeTimers({ toFake: ['Date'] });
+    const fake = new FakeCalDav({
+      calendars: manyCalendars(40, (name) => event([], `${name}@example.net`)),
+      latencyMs: 1_000,
+    });
+    fake.install();
+    const session = await connect();
+    try {
+      const listing = dataOf(
+        await session.client.callTool({
+          name: 'search_events',
+          arguments: {
+            query: 'plain',
+            fields: ['SUMMARY', 'DESCRIPTION', 'LOCATION'],
+            from: '2026-09-01',
+            to: '2026-09-30',
+          },
+        })
+      );
+      const reports = fake.requests.filter((r) => r.method === 'REPORT');
+      expect(reports.length).toBeLessThan(120);
+      const truncated = listing.truncated as { reason: string };
+      expect(truncated.reason).toMatch(/^Stopped after \d+ of 40 calendars/);
+    } finally {
+      await session.close();
+    }
+  });
+
+  it('stops collecting at the occurrence ceiling', async () => {
+    const fake = new FakeCalDav({ calendars: manyCalendars(16, daily) });
+    fake.install();
+    const session = await connect();
+    try {
+      const listing = dataOf(
+        await session.client.callTool({
+          name: 'list_events',
+          arguments: { from: '2026-01-01', to: '2026-12-31', limit: 500 },
+        })
+      );
+      const reports = fake.requests.filter((r) => r.method === 'REPORT');
+      expect(reports.length).toBeLessThan(16);
+      const truncated = listing.truncated as { reason: string };
+      expect(truncated.reason).toMatch(
+        /^Stopped after \d+ of 16 calendars: 5000 occurrences had been collected\./
+      );
+    } finally {
+      await session.close();
+    }
+  });
+
+  it('uses at most eight calendar home sets, and says so', async () => {
+    const homes = Array.from({ length: 50 }, (_, i) => `/tester/home${i}/`);
+    const fake = new FakeCalDav({ homes });
+    fake.install();
+    const session = await connect();
+    try {
+      const listing = dataOf(
+        await session.client.callTool({ name: 'list_calendars', arguments: {} })
+      );
+      const depthOne = fake.requests.filter(
+        (r) =>
+          r.method === 'PROPFIND' && homes.includes(new URL(r.url).pathname)
+      );
+      expect(depthOne).toHaveLength(8);
+      expect(listing.notes).toEqual(
+        expect.arrayContaining([expect.stringMatching(/50 calendar home sets/)])
+      );
+    } finally {
+      await session.close();
+    }
+  });
+
+  it('keeps a listed collection only under the home set that listed it', async () => {
+    const fake = new FakeCalDav({
+      extraCollections: [
+        { href: '/other/work/', types: ['calendar'], displayName: 'Elsewhere' },
+        { href: '/tester/', types: ['calendar'] },
+      ],
+    });
+    fake.install();
+    const session = await connect();
+    try {
+      const listing = dataOf(
+        await session.client.callTool({ name: 'list_calendars', arguments: {} })
+      );
+      const ids = (listing.calendars as { id: string }[]).map((c) => c.id);
+      expect(ids).toEqual(['/tester/private/', '/tester/work/']);
+      expect(listing.notes).toEqual(
+        expect.arrayContaining([
+          expect.stringMatching(/2 collections .* did not sit inside it/),
+        ])
+      );
+    } finally {
+      await session.close();
+    }
+  });
+
+  it('uses at most 256 calendars, and says so', async () => {
+    const fake = new FakeCalDav({
+      calendars: manyCalendars(300, (name) => event([], `${name}@example.net`)),
+    });
+    fake.install();
+    const session = await connect();
+    try {
+      const listing = dataOf(
+        await session.client.callTool({ name: 'list_calendars', arguments: {} })
+      );
+      expect(listing.count).toBe(256);
+      expect(listing.notes).toEqual(
+        expect.arrayContaining([expect.stringMatching(/300 calendars; only/)])
+      );
+    } finally {
+      await session.close();
+    }
+  });
+});

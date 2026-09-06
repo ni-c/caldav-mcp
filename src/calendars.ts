@@ -145,6 +145,8 @@ export class CalendarRegistry implements CalendarLookup {
   private readonly all: readonly CalendarEntry[];
   private readonly permitted: readonly CalendarEntry[];
   private readonly allowlist: readonly string[];
+  /** What discovery had to leave out, for `list_calendars` to say. */
+  readonly notes: string[] = [];
 
   constructor(all: readonly CalendarEntry[], allowlist: readonly string[]) {
     this.all = all;

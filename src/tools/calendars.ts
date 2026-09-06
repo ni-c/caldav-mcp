@@ -55,7 +55,7 @@ export function registerCalendarTools(
         const allowed = registry.allowed();
         const unmatched = registry.unmatched();
 
-        const collected = [...principal.notes];
+        const collected = [...principal.notes, ...registry.notes];
         if (unmatched.length > 0) {
           collected.push(
             `CALDAV_CALENDARS names ${unmatched.length} entr` +

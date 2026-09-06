@@ -55,6 +55,21 @@ const COLLECTION_PROPS: readonly PropName[] = [
 /** How long a calendar list is reused before it is fetched again. */
 const CALENDAR_TTL_MS = 300_000;
 
+/**
+ * Ceilings on what the server's own answers can make this server do.
+ *
+ * A principal names its home sets and its addresses, and a home set lists its
+ * calendars — three lists whose length the server chooses. Each home set costs
+ * a Depth:1 PROPFIND, and every calendar costs a REPORT in every listing that
+ * does not name calendars. Eight homes is more than any known server reports
+ * (one is the norm, two where a server splits tasks from events); 256 calendars
+ * is more than any known client will show. What lies past a ceiling is counted
+ * and said, never dropped in silence.
+ */
+const MAX_HOMES = 8;
+const MAX_ADDRESSES = 20;
+const MAX_CALENDARS = 256;
+
 /** What discovery established about the account, once per process. */
 export interface Principal {
   /** Absolute URL of the principal, when one was found. */
@@ -233,12 +248,26 @@ export class Discovery {
       PRINCIPAL_PROPS
     );
     const props = onPrincipal[0]?.props ?? {};
-    const homes = hrefsOf(props['calendar-home-set']).map((href) =>
-      this.api.resolveHref(href, principalUrl)
-    );
-    const addresses = hrefsOf(props['calendar-user-address-set'])
+    const allHomes = hrefsOf(props['calendar-home-set']);
+    const homes = allHomes
+      .slice(0, MAX_HOMES)
+      .map((href) => this.api.resolveHref(href, principalUrl));
+    if (allHomes.length > MAX_HOMES) {
+      notes.push(
+        `The principal named ${allHomes.length} calendar home sets; only the ` +
+          `first ${MAX_HOMES} are used.`
+      );
+    }
+    const allAddresses = hrefsOf(props['calendar-user-address-set'])
       .filter((entry) => /^mailto:/i.test(entry))
       .map((entry) => entry.replace(/^mailto:/i, '').toLowerCase());
+    const addresses = allAddresses.slice(0, MAX_ADDRESSES);
+    if (allAddresses.length > MAX_ADDRESSES) {
+      notes.push(
+        `The principal named ${allAddresses.length} addresses; only the ` +
+          `first ${MAX_ADDRESSES} are used.`
+      );
+    }
 
     if (homes.length === 0) {
       notes.push(
@@ -259,6 +288,7 @@ export class Discovery {
   private async discoverCalendars(): Promise<CalendarRegistry> {
     const principal = await this.principal();
     const found: CalendarEntry[] = [];
+    let outsideHome = 0;
 
     if (principal.singleCalendar) {
       const url = `${this.api.url}/`;
@@ -268,16 +298,45 @@ export class Discovery {
     } else {
       for (const home of principal.homes) {
         const responses = await this.api.propfind(home, 1, COLLECTION_PROPS);
+        const homePath = normalisePath(new URL(home).pathname);
         for (const response of responses) {
           const entry = this.toEntry(response, home);
-          if (entry !== undefined) found.push(entry);
+          if (entry === undefined) continue;
+          // A Depth:1 listing names the collection's members (RFC 4918 §9.1),
+          // and a member sits under it. An href that does not is not a child
+          // the home set contains, whatever the server says — and it is the
+          // one way a listing could reach past the home set into a path the
+          // operator never pointed this server at. Under, not directly under:
+          // a server that lists a nested collection is bending the depth
+          // rule, not the boundary, and refusing it would refuse a calendar
+          // the operator can see in every other client.
+          if (!entry.path.startsWith(homePath) || entry.path === homePath) {
+            outsideHome += 1;
+            continue;
+          }
+          found.push(entry);
         }
       }
     }
 
     // Stable order, so two runs of the same listing agree.
     found.sort((left, right) => left.path.localeCompare(right.path));
-    const registry = new CalendarRegistry(dedupe(found), this.allowlist);
+    const unique = dedupe(found);
+    const kept = unique.slice(0, MAX_CALENDARS);
+    const registry = new CalendarRegistry(kept, this.allowlist);
+    if (unique.length > MAX_CALENDARS) {
+      registry.notes.push(
+        `This account has ${unique.length} calendars; only the first ` +
+          `${MAX_CALENDARS} by path are used.`
+      );
+    }
+    if (outsideHome > 0) {
+      registry.notes.push(
+        `${outsideHome} collection${outsideHome === 1 ? '' : 's'} the server ` +
+          'listed under a calendar home set did not sit inside it and ' +
+          `${outsideHome === 1 ? 'was' : 'were'} not used.`
+      );
+    }
 
     // The allowlist is checked here because here is the first moment it can be:
     // its entries are matched against calendars that do not exist until this
