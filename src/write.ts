@@ -1,5 +1,6 @@
 import { randomUUID } from 'node:crypto';
 
+import { quoted } from './analyze.js';
 import { CalDavApiError } from './api.js';
 import { resourceUrl } from './calendars.js';
 import type { CalendarEntry } from './calendars.js';
@@ -214,6 +215,9 @@ function hasThisAndFuture(overrides: readonly ICAL.Component[]): boolean {
  * An override is one instance; carrying the recurrence rule into it would make
  * that instance a series of its own.
  */
+/** The furthest a relative reminder may sit from its entry: a year. */
+const MAX_TRIGGER_SECONDS = 366 * 24 * 60 * 60;
+
 const SERIES_ONLY = new Set([
   'rrule',
   'rdate',
@@ -331,15 +335,33 @@ export function applyAlarms(
     );
     const trigger = new ICAL.Property('trigger', valarm);
     if (/^[+-]?P/i.test(alarm.trigger.trim())) {
-      trigger.setValue(ICAL.Duration.fromString(alarm.trigger.trim()));
+      // Upper case, because ical.js reads `pt15m` as an error where RFC 5545
+      // reads it as fifteen minutes. The schema has already held the value
+      // to the duration grammar; the magnitude check is what the grammar
+      // cannot say — four digits of weeks is still two centuries.
+      const duration = ICAL.Duration.fromString(
+        alarm.trigger.trim().toUpperCase()
+      );
+      if (Math.abs(duration.toSeconds()) > MAX_TRIGGER_SECONDS) {
+        throw new ToolInputError(
+          `caldav-mcp: a reminder of "${quoted(alarm.trigger)}" is more than a ` +
+            'year away from the entry, which is not a reminder. Use a ' +
+            'shorter offset or an absolute time.'
+        );
+      }
+      trigger.setValue(duration);
     } else {
       const parsed = parseInstant(
         alarm.trigger,
         'alarms[].trigger',
         fallbackZone
       );
+      // ical.js writes `VALUE=DATE-TIME` itself when the value's type differs
+      // from the property's default. Setting the parameter as well produced
+      // `TRIGGER;VALUE=DATE-TIME;VALUE=DATE-TIME:…` — a parameter twice on
+      // one property, which RFC 5545 does not allow — on every absolute
+      // reminder this server ever wrote.
       trigger.setValue(ICAL.Time.fromJSDate(parsed.instant, true));
-      trigger.setParameter('value', 'DATE-TIME');
     }
     valarm.addProperty(trigger);
     component.addSubcomponent(valarm);

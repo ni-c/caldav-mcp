@@ -159,6 +159,30 @@ export const scopeParam = z
       'Defaults to whichever the id names. Changing a whole series asks first.'
   );
 
+/**
+ * An RFC 5545 duration, by its grammar rather than by what ical.js accepts.
+ *
+ * ical.js reads `PT-5M`, `P1W2D` and `-PT1M,PT2M` without complaint and writes
+ * something else — `PT-5M` verbatim (invalid), `P9D`, `PT2M` — and it drops
+ * whatever follows a line break. A caller who wrote one of those meant
+ * something, and this server writing a different thing into a shared calendar
+ * is not what they meant. The grammar is `dur-week | dur-date [dur-time] |
+ * dur-time`, each unit at most four digits: enough for a reminder years ahead,
+ * not enough for one a hundred billion hours away.
+ */
+const DURATION =
+  /^[+-]?P(?:\d{1,4}W|(?=\d|T\d)(?:\d{1,4}D)?(?:T(?=\d)(?:\d{1,4}H)?(?:\d{1,4}M)?(?:\d{1,4}S)?)?)$/i;
+
+const NOT_A_DURATION = {
+  message:
+    'looks like a duration but is not one. Expected an RFC 5545 value such ' +
+    'as "-PT15M", "-P1D" or "PT1H30M", or an absolute ISO 8601 time.',
+};
+
+function durationOrInstant(value: string): boolean {
+  return !/^[+-]?P/i.test(value) || DURATION.test(value);
+}
+
 /** A plain reminder. */
 export const alarmParam = z.object({
   trigger: z
@@ -166,6 +190,8 @@ export const alarmParam = z.object({
     .trim()
     .min(2)
     .max(64)
+    .refine(noControl, NO_CONTROL)
+    .refine(durationOrInstant, NOT_A_DURATION)
     .describe(
       'Relative to the start ("-PT15M", "-P1D") or an absolute ISO 8601 time.'
     ),
@@ -195,6 +221,35 @@ export const textParam = (what: string, max = 8192) =>
     .refine(noControl, NO_CONTROL)
     .nullish()
     .describe(`${what} Pass null to remove it, leave it out to keep it.`);
+
+/**
+ * The characters an RRULE value is made of: part names, `=`, `;`, `,`, digits,
+ * signs and the letters of a weekday or a frequency. Anything else — a line
+ * break most of all — is not part of a rule, and ical.js would drop it and
+ * everything after it without a word.
+ */
+const RRULE_VALUE = /^(?:RRULE:)?[A-Za-z0-9=;,+-]+$/;
+
+const NOT_AN_RRULE = {
+  message:
+    'is not a recurrence rule as RFC 5545 writes one. Expected an RRULE ' +
+    'value, e.g. "FREQ=WEEKLY;BYDAY=MO;COUNT=10".',
+};
+
+/** A recurrence rule, given as written. */
+export const recurrenceParam = z
+  .string()
+  .trim()
+  .max(500)
+  .refine(noControl, NO_CONTROL)
+  .refine((value) => RRULE_VALUE.test(value), NOT_AN_RRULE)
+  .optional()
+  .describe(
+    'A raw RRULE, e.g. "FREQ=WEEKLY;BYDAY=MO;COUNT=10". Given as written ' +
+      'rather than as separate fields, because the rule grammar is richer ' +
+      'than any short set of parameters, and a half-modelled rule is how a ' +
+      'series ends up wrong.'
+  );
 
 /** Categories, replaced as a whole. */
 export const categoriesParam = z

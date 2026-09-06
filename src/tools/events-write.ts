@@ -39,6 +39,7 @@ import {
   confirmTokenParam,
   entityIdParam,
   instantParam,
+  recurrenceParam,
   scopeParam,
   summaryParam,
   textParam,
@@ -118,17 +119,7 @@ export function registerEventWriteTools(
           .boolean()
           .optional()
           .describe('True to leave the time free rather than marking it busy.'),
-        recurrence: z
-          .string()
-          .trim()
-          .max(500)
-          .optional()
-          .describe(
-            'A raw RRULE, e.g. "FREQ=WEEKLY;BYDAY=MO;COUNT=10". Given as ' +
-              'written rather than as separate fields, because the rule ' +
-              'grammar is richer than any short set of parameters, and a ' +
-              'half-modelled rule is how a series ends up wrong.'
-          ),
+        recurrence: recurrenceParam,
         alarms: alarmsParam,
       }),
       annotations: CREATE,
@@ -946,9 +937,53 @@ function setRecurrence(component: ICAL.Component, rule: string): void {
         'e.g. "FREQ=WEEKLY;BYDAY=MO;COUNT=10".'
     );
   }
+  // ical.js is lenient in the other direction too: it reads `COUNT=1e9` as
+  // `COUNT=1`, drops `INTERVAL=0`, an unknown part, an RFC 7529 `RSCALE` and
+  // the second of two `COUNT`s — and serialises the rule it understood, not
+  // the one it was given. What this server writes has to be what the caller
+  // asked for, so the two are compared part by part and any difference is a
+  // refusal that names it. `INTERVAL=1` is the one rewrite that changes
+  // nothing and is let through.
+  const given = rruleParts(text, rule);
+  const written = rruleParts(recur.toString(), rule);
+  const differences = [...given.keys(), ...written.keys()]
+    .filter((key, index, keys) => keys.indexOf(key) === index)
+    .filter((key) => given.get(key) !== written.get(key))
+    .filter((key) => !(key === 'INTERVAL' && given.get(key) === '1'));
+  if (differences.length > 0) {
+    throw new ToolInputError(
+      `caldav-mcp: "${quoted(rule)}" would be written as ` +
+        `"${quoted(recur.toString())}", which is not the same rule — ` +
+        `${differences.join(', ')} ${differences.length === 1 ? 'differs' : 'differ'}. ` +
+        'Write the rule the way RFC 5545 spells it, with each part once.'
+    );
+  }
   const property = new ICAL.Property('rrule', component);
   property.setValue(recur);
   component.addProperty(property);
+}
+
+/** The parts of an RRULE value, refusing a part that appears twice. */
+function rruleParts(text: string, rule: string): Map<string, string> {
+  const parts = new Map<string, string>();
+  for (const part of text.split(';')) {
+    if (part.length === 0) continue;
+    const separator = part.indexOf('=');
+    const key = (separator === -1 ? part : part.slice(0, separator))
+      .trim()
+      .toUpperCase();
+    const value = (separator === -1 ? '' : part.slice(separator + 1))
+      .trim()
+      .toUpperCase();
+    if (parts.has(key)) {
+      throw new ToolInputError(
+        `caldav-mcp: "${quoted(rule)}" names ${key} twice. A rule part appears ` +
+          'once; write the value you mean.'
+      );
+    }
+    parts.set(key, value);
+  }
+  return parts;
 }
 
 /**
