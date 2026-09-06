@@ -1,6 +1,7 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import { CalDavApi, CalDavApiError } from '../src/api.js';
+import { Discovery } from '../src/discovery.js';
 import { testConfig } from './harness.js';
 
 /**
@@ -215,10 +216,16 @@ describe('redirects', () => {
     });
     // RFC 6764 defines the endpoint *as* a redirect, so refusing one here would
     // refuse the mechanism. The Location still goes through the origin guard.
-    expect(await api().probeWellKnown()).toBe(`${ORIGIN}/dav/`);
+    expect(await api().probeWellKnown()).toEqual({ url: `${ORIGIN}/dav/` });
   });
 
-  it('refuses a well-known redirect to another host', async () => {
+  it('refuses a well-known redirect to another host without throwing', async () => {
+    // Refusing to follow it is right — it would send the credentials to a host
+    // nobody configured. Throwing is not: this used to propagate out of
+    // discovery, which then never reached its later steps, and the principal
+    // promise is memoised, so one redirect failed every tool call for the life
+    // of the process. RFC 6764 §6 explicitly allows the cross-host form, so
+    // this is the ordinary hosted-provider bootstrap rather than an attack.
     vi.stubGlobal('fetch', async () =>
       Promise.resolve(
         new Response('', {
@@ -227,13 +234,42 @@ describe('redirects', () => {
         })
       )
     );
-    await expect(api().probeWellKnown()).rejects.toThrow(/not the configured/);
+    expect(await api().probeWellKnown()).toEqual({
+      refusedOrigin: 'https://evil.example',
+    });
   });
 
   it('treats a missing well-known route as normal', async () => {
     // Baikal only ships it when the vhost is configured for it.
     answer('not found', { status: 404 });
-    expect(await api().probeWellKnown()).toBeUndefined();
+    expect(await api().probeWellKnown()).toEqual({});
+  });
+
+  it('lets discovery carry on past a refused cross-host redirect', async () => {
+    // The transport-level assertion above is only half of it: what matters is
+    // that discovery reaches its later steps and its fallback, and says which
+    // host it would not follow. That host is what CALDAV_URL should have been,
+    // so naming it turns a mystery into an instruction.
+    vi.stubGlobal('fetch', (url: string) => {
+      const target = new URL(String(url));
+      if (target.pathname === '/.well-known/caldav') {
+        return Promise.resolve(
+          new Response(null, {
+            status: 301,
+            headers: { location: 'https://elsewhere.example/dav/' },
+          })
+        );
+      }
+      return Promise.resolve(
+        new Response(
+          '<?xml version="1.0"?><multistatus xmlns="DAV:"><response><href>/</href><propstat><prop/><status>HTTP/1.1 404 Not Found</status></propstat></response></multistatus>',
+          { status: 207, headers: { 'content-type': 'application/xml' } }
+        )
+      );
+    });
+    const principal = await new Discovery(api(), []).principal();
+    expect(principal.homes).toEqual([`${ORIGIN}/`]);
+    expect(JSON.stringify(principal.notes)).toContain('elsewhere.example');
   });
 });
 
