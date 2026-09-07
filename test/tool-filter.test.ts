@@ -37,7 +37,7 @@ afterEach(async () => {
 async function names(config: Parameters<typeof connect>[0]): Promise<string[]> {
   session = await connect(config);
   const { tools } = await session.client.listTools();
-  const list = tools.map((tool) => tool.name).sort();
+  const list = tools.map((tool) => tool.name).toSorted();
   await session.close();
   session = undefined;
   return list;
@@ -45,12 +45,12 @@ async function names(config: Parameters<typeof connect>[0]): Promise<string[]> {
 
 describe('the catalogue', () => {
   it('is exactly the set of tools the server registers', async () => {
-    expect(await names({})).toEqual([...ALL_TOOLS].sort());
+    expect(await names({})).toEqual(ALL_TOOLS.toSorted());
   });
 
   it('splits into read and write with nothing left over', () => {
-    expect([...READ_TOOLS, ...WRITE_TOOLS].sort()).toEqual(
-      [...ALL_TOOLS].sort()
+    expect([...READ_TOOLS, ...WRITE_TOOLS].toSorted()).toEqual(
+      ALL_TOOLS.toSorted()
     );
     expect(new Set(ALL_TOOLS).size).toBe(ALL_TOOLS.length);
   });
@@ -103,7 +103,7 @@ describe('narrowing the tool list', () => {
 
   it('selects the essential preset', async () => {
     expect(await names({ allowTools: 'essential' })).toEqual(
-      [...ESSENTIAL_TOOLS].sort()
+      ESSENTIAL_TOOLS.toSorted()
     );
   });
 
@@ -119,16 +119,16 @@ describe('narrowing the tool list', () => {
     // `CALDAV_ALLOW_TOOLS=` line in a compose file must not take the server
     // down. This server follows the library rather than reinterpreting it, and
     // this test is here so that stays a decision rather than a surprise.
-    expect(await names({ allowTools: '' })).toEqual([...ALL_TOOLS].sort());
-    expect(await names({ allowTools: '  ' })).toEqual([...ALL_TOOLS].sort());
-    expect(await names({ allowTools: ',,' })).toEqual([...ALL_TOOLS].sort());
+    expect(await names({ allowTools: '' })).toEqual(ALL_TOOLS.toSorted());
+    expect(await names({ allowTools: '  ' })).toEqual(ALL_TOOLS.toSorted());
+    expect(await names({ allowTools: ',,' })).toEqual(ALL_TOOLS.toSorted());
   });
 });
 
-describe('an unusable list aborts the server', () => {
-  const build = (config: Parameters<typeof testConfig>[0]) => () =>
-    createServer(testConfig(config));
+const build = (config: Parameters<typeof testConfig>[0]) => () =>
+  createServer(testConfig(config));
 
+describe('an unusable list aborts the server', () => {
   it('refuses a name that is not a tool, and lists the real ones', () => {
     expect(build({ allowTools: 'list_evnets' })).toThrow(ToolFilterError);
     try {
@@ -169,7 +169,7 @@ describe('an unusable list aborts the server', () => {
 
 describe('read-only mode', () => {
   it('registers only the read tools', async () => {
-    expect(await names({ readOnly: true })).toEqual([...READ_TOOLS].sort());
+    expect(await names({ readOnly: true })).toEqual(READ_TOOLS.toSorted());
   });
 
   it('combines with an allow list naming only read tools', async () => {

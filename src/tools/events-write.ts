@@ -1,14 +1,14 @@
 import { z } from 'zod';
 import type { McpServer } from '@modelcontextprotocol/server';
 import {
-  setResourceKey,
+  orderedResourceKey,
   type Approver,
   type ConfirmationStore,
 } from 'mcp-approval';
 
 import { escapeInvisible, quoted } from '../analyze.js';
 import { resourceUrl, type CalendarRegistry } from '../calendars.js';
-import type { ToolContext } from '../entries.js';
+import { selfAddressesOf, type ToolContext } from '../entries.js';
 import { buildSeriesId, parseEntityId, type EntityId } from '../entity-id.js';
 import { ToolInputError } from '../errors.js';
 import {
@@ -39,6 +39,7 @@ import {
   confirmTokenParam,
   entityIdParam,
   instantParam,
+  recurrenceParam,
   scopeParam,
   summaryParam,
   textParam,
@@ -118,17 +119,7 @@ export function registerEventWriteTools(
           .boolean()
           .optional()
           .describe('True to leave the time free rather than marking it busy.'),
-        recurrence: z
-          .string()
-          .trim()
-          .max(500)
-          .optional()
-          .describe(
-            'A raw RRULE, e.g. "FREQ=WEEKLY;BYDAY=MO;COUNT=10". Given as ' +
-              'written rather than as separate fields, because the rule ' +
-              'grammar is richer than any short set of parameters, and a ' +
-              'half-modelled rule is how a series ends up wrong.'
-          ),
+        recurrence: recurrenceParam,
         alarms: alarmsParam,
       }),
       annotations: CREATE,
@@ -277,7 +268,7 @@ export function registerEventWriteTools(
               // in the key, one yes would cover any other edit of the same
               // series for as long as the approval lives. A retry with the
               // same arguments — after a 412, say — still matches.
-              resourceKey: setResourceKey('update_event:series', [
+              resourceKey: orderedResourceKey('update_event:series', [
                 entity.calendarPath,
                 entity.resourceName,
                 changeDigest(args),
@@ -392,7 +383,7 @@ export function registerEventWriteTools(
             consequence:
               'A CalDAV server keeps no version history. Once it is gone ' +
               'there is nothing to restore it from.',
-            resourceKey: setResourceKey(`delete_event:${scope}`, [
+            resourceKey: orderedResourceKey(`delete_event:${scope}`, [
               entity.calendarPath,
               entity.resourceName,
               entity.recurrenceId ?? '',
@@ -513,7 +504,7 @@ export function registerEventWriteTools(
               'The event is written to the destination and deleted from the ' +
               'source. Its id changes, and if the destination is shared, ' +
               'other people can see it from then on.',
-            resourceKey: setResourceKey('move_event', [
+            resourceKey: orderedResourceKey('move_event', [
               entity.calendarPath,
               destination.path,
               entity.resourceName,
@@ -602,10 +593,7 @@ export function registerEventWriteTools(
         const registry = await context.discovery.registry();
         const entity = parseEntityId(args.id, 'vevent', registry);
         const principal = await context.discovery.principal();
-        const addresses =
-          context.config.userEmail === undefined
-            ? principal.addresses
-            : [context.config.userEmail, ...principal.addresses];
+        const addresses = selfAddressesOf(context.config, principal.addresses);
         if (addresses.length === 0) {
           throw new ToolInputError(
             'caldav-mcp: this server cannot tell which attendee is you, so it ' +
@@ -634,7 +622,7 @@ export function registerEventWriteTools(
                 'to the organiser. Mail that has been sent cannot be recalled.'
               : 'The answer is stored on the calendar. This server does not ' +
                 'advertise scheduling, so no mail is sent.',
-            resourceKey: setResourceKey('respond_to_event', [
+            resourceKey: orderedResourceKey('respond_to_event', [
               entity.calendarPath,
               entity.resourceName,
               entity.recurrenceId ?? '',
@@ -658,11 +646,15 @@ export function registerEventWriteTools(
         const loaded = await loadForWrite(context, entity, scope);
         const mine = findSelfAttendee(loaded.target, addresses);
         if (mine === undefined) {
+          // The addresses came from the principal's `calendar-user-address-set`,
+          // which the DAV server chose — quoted and capped like any other
+          // value an error repeats.
           throw new ToolInputError(
             'caldav-mcp: none of the attendees on this event matches the ' +
               `address${addresses.length === 1 ? '' : 'es'} this server knows ` +
-              `you by (${addresses.join(', ')}). It will not guess which one ` +
-              'is yours.'
+              `you by (${quoted(addresses.slice(0, 5).join(', '))}` +
+              `${addresses.length > 5 ? ', …' : ''}). It will not guess which ` +
+              'one is yours.'
           );
         }
         mine.setParameter('partstat', args.response);
@@ -946,9 +938,53 @@ function setRecurrence(component: ICAL.Component, rule: string): void {
         'e.g. "FREQ=WEEKLY;BYDAY=MO;COUNT=10".'
     );
   }
+  // ical.js is lenient in the other direction too: it reads `COUNT=1e9` as
+  // `COUNT=1`, drops `INTERVAL=0`, an unknown part, an RFC 7529 `RSCALE` and
+  // the second of two `COUNT`s — and serialises the rule it understood, not
+  // the one it was given. What this server writes has to be what the caller
+  // asked for, so the two are compared part by part and any difference is a
+  // refusal that names it. `INTERVAL=1` is the one rewrite that changes
+  // nothing and is let through.
+  const given = rruleParts(text, rule);
+  const written = rruleParts(recur.toString(), rule);
+  const differences = [...given.keys(), ...written.keys()]
+    .filter((key, index, keys) => keys.indexOf(key) === index)
+    .filter((key) => given.get(key) !== written.get(key))
+    .filter((key) => !(key === 'INTERVAL' && given.get(key) === '1'));
+  if (differences.length > 0) {
+    throw new ToolInputError(
+      `caldav-mcp: "${quoted(rule)}" would be written as ` +
+        `"${quoted(recur.toString())}", which is not the same rule — ` +
+        `${differences.join(', ')} ${differences.length === 1 ? 'differs' : 'differ'}. ` +
+        'Write the rule the way RFC 5545 spells it, with each part once.'
+    );
+  }
   const property = new ICAL.Property('rrule', component);
   property.setValue(recur);
   component.addProperty(property);
+}
+
+/** The parts of an RRULE value, refusing a part that appears twice. */
+function rruleParts(text: string, rule: string): Map<string, string> {
+  const parts = new Map<string, string>();
+  for (const part of text.split(';')) {
+    if (part.length === 0) continue;
+    const separator = part.indexOf('=');
+    const key = (separator === -1 ? part : part.slice(0, separator))
+      .trim()
+      .toUpperCase();
+    const value = (separator === -1 ? '' : part.slice(separator + 1))
+      .trim()
+      .toUpperCase();
+    if (parts.has(key)) {
+      throw new ToolInputError(
+        `caldav-mcp: "${quoted(rule)}" names ${key} twice. A rule part appears ` +
+          'once; write the value you mean.'
+      );
+    }
+    parts.set(key, value);
+  }
+  return parts;
 }
 
 /**

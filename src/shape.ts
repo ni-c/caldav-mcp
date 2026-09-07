@@ -286,8 +286,11 @@ function readParticipant(
   return {
     ...(email === undefined ? {} : { email }),
     ...(typeof name === 'string' ? { name: sanitizeText(name, 200) } : {}),
-    ...(typeof role === 'string' ? { role } : {}),
-    ...(typeof status === 'string' ? { status } : {}),
+    // ROLE and PARTSTAT are tokens from a closed list in RFC 5545, but they
+    // arrive as whatever the writer put there; cleaned like the CN beside
+    // them rather than trusted for their shape.
+    ...(typeof role === 'string' ? { role: sanitizeText(role, 50) } : {}),
+    ...(typeof status === 'string' ? { status: sanitizeText(status, 50) } : {}),
     ...(typeof rsvp === 'string'
       ? { rsvp: rsvp.toUpperCase() === 'TRUE' }
       : {}),
@@ -338,16 +341,36 @@ export function isSimpleAlarm(alarm: ICAL.Component): boolean {
   return names.size === 0;
 }
 
+/**
+ * The trigger of an alarm as text, whatever was written there.
+ *
+ * ical.js parses a TRIGGER lazily, when its value is first read, and throws
+ * for one it cannot read — `TRIGGER:0`, which some client once wrote. That
+ * throw came out of `shapeEntry`, which runs *after* the per-entry guard in
+ * the listing, so one such alarm in one entry took the whole listing down.
+ * Found by the property test over arbitrary property values, not by anyone
+ * reading the code. The raw text is reported instead, cleaned like any other.
+ */
+function triggerOf(property: ICAL.Property): string | undefined {
+  try {
+    return sanitizeText(String(property.getFirstValue()), 100);
+  } catch {
+    const raw = (property.jCal as unknown[] | undefined)?.[3];
+    return typeof raw === 'string' ? sanitizeText(raw, 100) : undefined;
+  }
+}
+
 function readAlarms(component: ICAL.Component): Record<string, unknown>[] {
   return component.getAllSubcomponents('valarm').map((alarm) => {
     const trigger = alarm.getFirstProperty('trigger');
     const description = readText(alarm, 'description');
+    const action = readText(alarm, 'action');
     return {
-      ...maybe('action', readText(alarm, 'action')),
       ...maybe(
-        'trigger',
-        trigger === null ? undefined : String(trigger.getFirstValue())
+        'action',
+        action === undefined ? undefined : sanitizeText(action, 50)
       ),
+      ...maybe('trigger', trigger === null ? undefined : triggerOf(trigger)),
       ...maybe(
         'description',
         description === undefined ? undefined : sanitizeText(description, 500)
@@ -377,8 +400,12 @@ function readAttachments(component: ICAL.Component): Record<string, unknown>[] {
     const sizeParam = property.getParameter('size');
     const raw = String(property.getFirstValue() ?? '');
 
+    // Fifteen digits, because the schema promises an integer and a safe one:
+    // `Number('9'.repeat(300))` is Infinity and twenty digits is past 2^53,
+    // and either failed the whole listing's output validation. A SIZE that is
+    // not a number this server can carry is treated as no SIZE at all.
     let size: number | undefined;
-    if (typeof sizeParam === 'string' && /^\d+$/.test(sizeParam)) {
+    if (typeof sizeParam === 'string' && /^\d{1,15}$/.test(sizeParam)) {
       size = Number(sizeParam);
     } else if (inline) {
       const padding = raw.endsWith('==') ? 2 : raw.endsWith('=') ? 1 : 0;
@@ -389,7 +416,9 @@ function readAttachments(component: ICAL.Component): Record<string, unknown>[] {
       ...(typeof filename === 'string'
         ? { filename: sanitizeText(filename, 200) }
         : {}),
-      ...(typeof fmtType === 'string' ? { mime_type: fmtType } : {}),
+      ...(typeof fmtType === 'string'
+        ? { mime_type: sanitizeText(fmtType, 200) }
+        : {}),
       ...(size === undefined ? {} : { size }),
       ...(inline || raw.length === 0 ? {} : { url: sanitizeText(raw, 2000) }),
       inline,
@@ -397,17 +426,41 @@ function readAttachments(component: ICAL.Component): Record<string, unknown>[] {
   });
 }
 
+/**
+ * A calendar's path or URL, exactly as it has to come back.
+ *
+ * The id a listing prints is what the caller feeds to `calendar_id`, and
+ * `matches()` compares it byte for byte against the path discovery resolved.
+ * So the id must not be *cleaned*: `sanitizeText` normalises to NFKC, rewrites
+ * `![a](b)` into a note about a removed image and cuts past its limit — each of
+ * which produced an id that `list_calendars` printed and no tool could resolve,
+ * while `get_server_info` printed the raw one beside it. Two spellings of one
+ * identifier out of two tools.
+ *
+ * What makes printing it raw safe is that it is the WHATWG URL parser's output:
+ * everything outside printable ASCII is already percent-encoded there, so this
+ * is the identity on every real value. The replacement below is the guarantee
+ * for the case where it is not — a control character or a non-ASCII byte that
+ * somehow reached a pathname is written as its escape, which is still the same
+ * path to a URL parser and inert to a reader.
+ */
+export function calendarId(value: string): string {
+  return value.replace(/[^\x21-\x7e]/g, (character) =>
+    encodeURIComponent(character)
+  );
+}
+
 /** One calendar, as `list_calendars` reports it. */
 export function shapeCalendar(
   calendar: CalendarEntry
 ): Record<string, unknown> {
-  // `path` and `url` are derived from an href the server chose, and
-  // `components` from an attribute it wrote — the same "looks structural, is
-  // not" case as a UID. The path is a percent-encoded pathname, so cleaning
-  // it changes nothing on a conforming server and stays feedable as an id.
+  // `components` comes from an attribute the server wrote — the same "looks
+  // structural, is not" case as a UID — and is cleaned. `id` and `url` are
+  // identifiers that have to round-trip, so they are validated, not cleaned:
+  // see `calendarId`.
   return {
-    id: sanitizeText(calendar.path, 1024),
-    url: sanitizeText(calendar.url, 2048),
+    id: calendarId(calendar.path),
+    url: calendarId(calendar.url),
     ...(calendar.displayName === undefined
       ? {}
       : { name: sanitizeText(calendar.displayName, 200) }),

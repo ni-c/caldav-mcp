@@ -174,7 +174,7 @@ describe('injection signals', () => {
       'meeting-coercion': `${'join '.repeat(20_000)}x`,
       'calendar-command': `${'accept '.repeat(20_000)}x`,
     };
-    expect(Object.keys(hostile).sort()).toEqual([...PATTERN_NAMES].sort());
+    expect(Object.keys(hostile).toSorted()).toEqual(PATTERN_NAMES.toSorted());
 
     for (const [name, text] of Object.entries(hostile)) {
       const started = performance.now();

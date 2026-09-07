@@ -11,7 +11,18 @@ import {
 } from '../src/entity-id.js';
 import { CalendarNotAllowedError, ToolInputError } from '../src/errors.js';
 import type { Kind } from '../src/ical.js';
+import { normaliseEtag } from '../src/api.js';
+import type { CalendarEntry } from '../src/calendars.js';
+import { componentsOf, ICAL, parseCalendar, readInt } from '../src/ical.js';
+import {
+  shapedEvent,
+  shapedJournal,
+  shapedTask,
+} from '../src/output-schema.js';
 import { redactUrlCredentials } from '../src/redact.js';
+import { expandSeries } from '../src/recurrence.js';
+import { alarmParam } from '../src/schema.js';
+import { calendarId, shapeEntry } from '../src/shape.js';
 import { parseRecurrenceId, spellRecurrenceId } from '../src/recurrence.js';
 
 /**
@@ -282,6 +293,278 @@ describe('credential redaction', () => {
           expect(redacted).toContain('***@');
         }
       ),
+      RUNS
+    );
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Second pass, 2026-09-07: the parsers and the shape layer.
+// ---------------------------------------------------------------------------
+
+/** A TEXT value as it sits on a content line: escaped, no line break. */
+function icsText(value: string): string {
+  return value
+    .replace(/[\r\n]/g, ' ')
+    .replace(/\\/g, '\\\\')
+    .replace(/;/g, '\\;')
+    .replace(/,/g, '\\,');
+}
+
+/** Characters that must never reach a result: C0, DEL, and the invisible set. */
+const FORBIDDEN = [0x00, 0x07, 0x1b, 0x7f, 0x200b, 0x202e, 0xfeff].map((code) =>
+  String.fromCodePoint(code)
+);
+
+/** Property values a calendar can carry: text, numbers, and the awkward ones. */
+const propertyValue = fc.oneof(
+  fc.string(),
+  fc.string({ unit: 'grapheme', maxLength: 60 }),
+  fc.integer().map(String),
+  fc.double({ noNaN: false }).map(String),
+  fc.constantFrom(
+    '1.5',
+    '1e20',
+    '99999999999999999999',
+    'abc',
+    '-0',
+    'Infinity',
+    '0x10',
+    '',
+    ' ',
+    'constructor',
+    '__proto__'
+  )
+);
+
+const valueType = fc.constantFrom(
+  '',
+  ';VALUE=FLOAT',
+  ';VALUE=TEXT',
+  ';VALUE=INTEGER'
+);
+
+const CALENDAR_ENTRY: CalendarEntry = {
+  url: 'https://dav.example.net/tester/work/',
+  path: '/tester/work/',
+  displayName: 'Work',
+  description: undefined,
+  components: [],
+  ctag: undefined,
+  color: undefined,
+  readOnly: false,
+};
+
+/** A parameter value: no delimiter, no quote, no line break, no space. */
+const param = (value: string): string =>
+  value.replace(/[\r\n;:"]/g, '').replace(/[ -]/g, '');
+
+/** One component of the given kind with arbitrary property values. */
+const component = fc
+  .record({
+    kind: fc.constantFrom(...kinds),
+    summary: propertyValue,
+    description: propertyValue,
+    location: propertyValue,
+    categories: propertyValue,
+    status: propertyValue,
+    url: propertyValue,
+    priority: fc.tuple(valueType, propertyValue),
+    percent: fc.tuple(valueType, propertyValue),
+    sequence: fc.tuple(valueType, propertyValue),
+    size: propertyValue,
+    fmttype: propertyValue,
+    cn: propertyValue,
+    partstat: propertyValue,
+    role: propertyValue,
+    trigger: propertyValue,
+  })
+  .map((v) => {
+    const name = { vevent: 'VEVENT', vtodo: 'VTODO', vjournal: 'VJOURNAL' }[
+      v.kind
+    ];
+    return {
+      kind: v.kind,
+      ics: [
+        'BEGIN:VCALENDAR',
+        'VERSION:2.0',
+        'PRODID:-//t//EN',
+        `BEGIN:${name}`,
+        'UID:p@example.net',
+        'DTSTAMP:20260901T120000Z',
+        'DTSTART:20260907T070000Z',
+        ...(v.kind === 'vevent' ? ['DTEND:20260907T080000Z'] : []),
+        ...(v.kind === 'vtodo' ? ['DUE:20260908T080000Z'] : []),
+        `SUMMARY:${icsText(v.summary)}`,
+        `DESCRIPTION:${icsText(v.description)}`,
+        `LOCATION:${icsText(v.location)}`,
+        `CATEGORIES:${icsText(v.categories)}`,
+        `STATUS:${icsText(v.status)}`,
+        `URL:${icsText(v.url)}`,
+        `PRIORITY${v.priority[0]}:${icsText(v.priority[1])}`,
+        `PERCENT-COMPLETE${v.percent[0]}:${icsText(v.percent[1])}`,
+        `SEQUENCE${v.sequence[0]}:${icsText(v.sequence[1])}`,
+        `ATTACH;FMTTYPE=${param(v.fmttype)};SIZE=${param(v.size)}:https://files.example/a`,
+        `ATTENDEE;CN="${param(v.cn)}";PARTSTAT=${param(v.partstat)};ROLE=${param(v.role)}:mailto:a@example.net`,
+        'BEGIN:VALARM',
+        'ACTION:DISPLAY',
+        'DESCRIPTION:Reminder',
+        `TRIGGER:${icsText(v.trigger)}`,
+        'END:VALARM',
+        `END:${name}`,
+        'END:VCALENDAR',
+        '',
+      ].join('\r\n'),
+    };
+  });
+
+describe('what somebody else wrote, read', () => {
+  it('is parsed, or refused with a typed one-line error', () => {
+    fc.assert(
+      fc.property(
+        fc.oneof(
+          fc.string(),
+          fc.string({ unit: 'binary' }),
+          component.map((c) => c.ics),
+          component.map((c) =>
+            c.ics.replace('END:VCALENDAR', 'END:VCALENDAR\r\nBEGIN:X')
+          )
+        ),
+        (text) => {
+          try {
+            parseCalendar(text, 'the entry');
+          } catch (error) {
+            expect(error).toBeInstanceOf(ToolInputError);
+            const message = (error as Error).message;
+            expect(message).not.toMatch(/[\r\n]/);
+            expect(message.length).toBeLessThan(400);
+          }
+        }
+      ),
+      { numRuns: 300 }
+    );
+  });
+
+  it('always shapes into what the output schema promises', () => {
+    // The K-02 class, pinned for every value rather than the two that were
+    // found: whatever a calendar holds, a listing must be answerable.
+    const schemas = {
+      vevent: shapedEvent,
+      vtodo: shapedTask,
+      vjournal: shapedJournal,
+    };
+    fc.assert(
+      fc.property(component, ({ kind, ics }) => {
+        let root;
+        try {
+          root = parseCalendar(ics, 'the entry');
+        } catch (error) {
+          expect(error).toBeInstanceOf(ToolInputError);
+          return;
+        }
+        const { occurrences } = expandSeries(componentsOf(root, kind), {
+          from: new Date('2026-01-01T00:00:00Z'),
+          to: new Date('2027-01-01T00:00:00Z'),
+          cap: 10,
+          fallbackZone: FALLBACK_ZONE,
+        });
+        const occurrence = occurrences[0];
+        if (occurrence === undefined) return;
+        for (const detailed of [false, true]) {
+          const shaped = shapeEntry(occurrence, {
+            kind,
+            calendar: CALENDAR_ENTRY,
+            resourceName: 'p.ics',
+            fallbackZone: FALLBACK_ZONE,
+            detailed,
+            selfAddresses: ['a@example.net'],
+          });
+          const parsed = schemas[kind].safeParse(shaped.entry);
+          expect(parsed.success, JSON.stringify(parsed.error?.issues)).toBe(
+            true
+          );
+          const json = JSON.stringify(shaped.entry);
+          expect(JSON.parse(json)).toEqual(shaped.entry);
+          for (const forbidden of FORBIDDEN) {
+            expect(json.includes(forbidden)).toBe(false);
+          }
+          for (const field of ['priority', 'percent_complete', 'sequence']) {
+            const value = (shaped.entry as Record<string, unknown>)[field];
+            if (value !== undefined) {
+              expect(Number.isSafeInteger(value)).toBe(true);
+            }
+          }
+        }
+      }),
+      RUNS
+    );
+  });
+
+  it('reads an integer property as a safe integer or not at all', () => {
+    fc.assert(
+      fc.property(valueType, propertyValue, (type, value) => {
+        const root = parseCalendar(
+          [
+            'BEGIN:VCALENDAR',
+            'VERSION:2.0',
+            'PRODID:-//t//EN',
+            'BEGIN:VTODO',
+            'UID:i@example.net',
+            'DTSTAMP:20260901T120000Z',
+            `PRIORITY${type}:${icsText(value)}`,
+            'END:VTODO',
+            'END:VCALENDAR',
+            '',
+          ].join('\r\n'),
+          'the entry'
+        );
+        const todo = componentsOf(root, 'vtodo')[0];
+        if (todo === undefined) return;
+        const read = readInt(todo, 'priority');
+        expect(read === undefined || Number.isSafeInteger(read)).toBe(true);
+      }),
+      RUNS
+    );
+  });
+});
+
+describe('what goes back out on the wire', () => {
+  it('normalises an ETag to nothing or to an entity-tag', () => {
+    fc.assert(
+      fc.property(fc.string(), (raw) => {
+        const result = normaliseEtag(raw);
+        expect(
+          result === undefined || /^"[\x21\x23-\x7e\x80-\xff]*"$/.test(result)
+        ).toBe(true);
+      }),
+      RUNS
+    );
+  });
+
+  it('accepts a duration only when ical.js reads it whole', () => {
+    fc.assert(
+      fc.property(
+        fc.stringMatching(/^[+-]?[Pp][0-9DdTtHhMmSsWw]{1,14}$/),
+        (trigger) => {
+          const accepted = alarmParam.safeParse({ trigger }).success;
+          if (!accepted) return;
+          const duration = ICAL.Duration.fromString(trigger.toUpperCase());
+          expect(Number.isFinite(duration.toSeconds())).toBe(true);
+          expect(duration.toString()).toMatch(/^-?P/);
+        }
+      ),
+      RUNS
+    );
+  });
+
+  it('prints a calendar id as the URL parser spelled it', () => {
+    fc.assert(
+      fc.property(fc.webPath(), (path) => {
+        const spelled = new URL(
+          `https://h${path.startsWith('/') ? '' : '/'}${path}`
+        ).pathname;
+        expect(calendarId(spelled)).toBe(spelled);
+      }),
       RUNS
     );
   });

@@ -61,6 +61,21 @@ export class AllowlistError extends Error {
 }
 
 /**
+ * The server is not configured to reach anything, and says how to configure it.
+ *
+ * Its message is several lines of setup instructions in this server's own
+ * voice, and it is the one message `run()` passes through verbatim: every
+ * other untyped error is collapsed to one line and escaped, because it may
+ * repeat a value the calendar or the caller chose.
+ */
+export class ConfigurationError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = 'ConfigurationError';
+  }
+}
+
+/**
  * A resource changed between the read and the write, so nothing was written.
  *
  * Carries the state read back afterwards, so the tool can tell the caller what

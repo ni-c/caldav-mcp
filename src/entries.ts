@@ -88,7 +88,9 @@ export function resourceNameOf(
   // the collection, and it is not the collection itself. An href equal to the
   // collection used to pass the first check and file the collection's own
   // name as a resource.
-  const parent = path.replace(/[^/]*$/, '');
+  // `lastIndexOf`, not `replace(/[^/]*$/, '')`: the regex is quadratic on a
+  // long last segment followed by a slash, and the href is the server's.
+  const parent = path.slice(0, path.lastIndexOf('/') + 1);
   if (parent !== calendar.path || path === calendar.path) return '';
   return path.slice(parent.length);
 }
@@ -147,6 +149,44 @@ export interface Listing {
 }
 
 /**
+ * How long one listing or search may spend asking the server, as a whole.
+ *
+ * The 30-second timeout in `api.ts` bounds one request. A listing issues one
+ * per calendar and a search one per calendar per field, over every calendar
+ * the credentials can see when the caller names none — so an account with a
+ * few hundred collections, or a server that answers each one slowly, turned
+ * one call into an hour with no way to say so. The budget is checked before
+ * each request, so a call ends at most one request after it runs out, and the
+ * answer says how far it got.
+ */
+export const CALL_BUDGET_MS = 30_000;
+
+/**
+ * Occurrences a call collects before it stops asking further calendars.
+ *
+ * Each document is capped at `limit` by `expandOne`, but the number of
+ * documents is bounded only by the 16 MiB multistatus ceiling — per calendar.
+ * Ten times the largest page is room for any listing that will be read, and
+ * a bound on what is sorted and shaped before the page is cut.
+ */
+export const MAX_COLLECTED = 5_000;
+
+/** Why a call stopped asking calendars before it had asked them all. */
+type Stop = 'time' | 'ceiling';
+
+/** The sentence a truncated answer carries about an early stop. */
+function stoppedReason(stop: Stop, asked: number, total: number): string {
+  const why =
+    stop === 'time'
+      ? `the call's ${CALL_BUDGET_MS / 1000}-second budget ran out`
+      : `${MAX_COLLECTED} occurrences had been collected`;
+  return `Stopped after ${asked} of ${total} calendars: ${why}.`;
+}
+
+const STOPPED_FOLLOW_UP =
+  'Name fewer calendars in `calendars`, or use a narrower window.';
+
+/**
  * Lists entries across calendars, merged and sorted by start time.
  *
  * The cap applies **after** merging, never per calendar: capping each calendar
@@ -167,9 +207,23 @@ export async function listEntries(
 
   const range = requestRange(options.from, options.to);
   const component = COMPONENT_OF[options.kind];
+  const calendars = options.calendars.filter((calendar) =>
+    accepts(calendar, component)
+  );
+  const started = Date.now();
+  let asked = 0;
+  let stop: Stop | undefined;
 
-  for (const calendar of options.calendars) {
-    if (!accepts(calendar, component)) continue;
+  for (const calendar of calendars) {
+    if (Date.now() - started > CALL_BUDGET_MS) {
+      stop = 'time';
+      break;
+    }
+    if (collected.length >= MAX_COLLECTED) {
+      stop = 'ceiling';
+      break;
+    }
+    asked += 1;
     const documents = await queryCalendar(
       context.api,
       calendar,
@@ -226,14 +280,20 @@ export async function listEntries(
     notes: dedupe(notes),
   };
 
-  if (remaining > 0 || boundedSeries.length > 0) {
+  if (remaining > 0 || boundedSeries.length > 0 || stop !== undefined) {
     const last = page[page.length - 1];
     const nextStart = shaped[afterIndex + page.length];
+    const reason =
+      remaining > 0
+        ? `${remaining} more entr${remaining === 1 ? 'y' : 'ies'} in this window.`
+        : boundedSeries.length > 0
+          ? 'At least one recurring entry generated more occurrences than could be walked.'
+          : '';
     listing.truncated = {
       reason:
-        remaining > 0
-          ? `${remaining} more entr${remaining === 1 ? 'y' : 'ies'} in this window.`
-          : 'At least one recurring entry generated more occurrences than could be walked.',
+        stop === undefined
+          ? reason
+          : `${stoppedReason(stop, asked, calendars.length)}${reason === '' ? '' : ` ${reason}`}`,
       returned: page.length,
       ...(last === undefined
         ? {}
@@ -247,9 +307,11 @@ export async function listEntries(
         ? { bounded_series: dedupe(boundedSeries) }
         : {}),
       follow_up:
-        remaining > 0
-          ? 'Call again with `after` set to next_cursor, or narrow the window.'
-          : 'Narrow the window; the entries named in bounded_series are the expensive ones.',
+        stop !== undefined
+          ? STOPPED_FOLLOW_UP
+          : remaining > 0
+            ? 'Call again with `after` set to next_cursor, or narrow the window.'
+            : 'Narrow the window; the entries named in bounded_series are the expensive ones.',
     };
   }
 
@@ -267,13 +329,31 @@ export async function searchEntries(
   let collation: string | undefined;
 
   const documents: ResourceDocument[] = [];
-  for (const calendar of options.calendars) {
-    if (!accepts(calendar, component)) continue;
+  const calendars = options.calendars.filter((calendar) =>
+    accepts(calendar, component)
+  );
+  const started = Date.now();
+  let asked = 0;
+  let stop: Stop | undefined;
+  for (const calendar of calendars) {
+    if (Date.now() - started > CALL_BUDGET_MS) {
+      stop = 'time';
+      break;
+    }
+    if (documents.length >= MAX_COLLECTED) {
+      stop = 'ceiling';
+      break;
+    }
+    asked += 1;
     const seen = new Set<string>();
     // One REPORT per field, unioned by resource: RFC 4791 combines sibling
     // prop-filters with AND, so a single body asking for SUMMARY *and*
     // DESCRIPTION matches only entries carrying the term in both.
     for (const field of options.fields) {
+      if (Date.now() - started > CALL_BUDGET_MS) {
+        stop = 'time';
+        break;
+      }
       let matched: ResourceDocument[];
       try {
         matched = await queryCalendar(
@@ -353,12 +433,22 @@ export async function searchEntries(
         }).entry
     ),
     notes: dedupe(notes),
-    ...(collected.length > page.length
+    ...(collected.length > page.length || stop !== undefined
       ? {
           truncated: {
-            reason: `${collected.length - page.length} more matches.`,
+            reason: [
+              ...(stop === undefined
+                ? []
+                : [stoppedReason(stop, asked, calendars.length)]),
+              ...(collected.length > page.length
+                ? [`${collected.length - page.length} more matches.`]
+                : []),
+            ].join(' '),
             returned: page.length,
-            follow_up: 'Narrow the query or the time range.',
+            follow_up:
+              stop === undefined
+                ? 'Narrow the query or the time range.'
+                : STOPPED_FOLLOW_UP,
           },
         }
       : {}),
@@ -471,10 +561,18 @@ export function selfAddressesOf(
   config: Config,
   discovered: readonly string[]
 ): string[] {
+  // Lower case throughout, because the comparison is against a lower-cased
+  // ATTENDEE value. This used to be the one place that lower-cased the
+  // configured address, while three other tools built the same list by hand
+  // without — so `is_self` was true in a listing and absent in get_event for
+  // the same entry and the same CALDAV_USER_EMAIL=Me@Example.COM.
   const configured = config.userEmail?.toLowerCase();
-  return configured === undefined
-    ? [...discovered]
-    : [configured, ...discovered];
+  return dedupe(
+    (configured === undefined
+      ? [...discovered]
+      : [configured, ...discovered]
+    ).map((address) => address.toLowerCase())
+  );
 }
 
 function dedupe(values: readonly string[]): string[] {

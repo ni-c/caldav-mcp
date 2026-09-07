@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
-import { CalDavApi, CalDavApiError } from '../src/api.js';
+import { CalDavApi, CalDavApiError, normaliseEtag } from '../src/api.js';
 import { Discovery } from '../src/discovery.js';
 import { testConfig } from './harness.js';
 
@@ -286,6 +286,41 @@ describe('validators', () => {
     expect((await api().get(`${ORIGIN}/x.ics`)).etag).toBeUndefined();
   });
 
+  it('treats an ETag that is not one as absent', async () => {
+    // The value goes back out in If-Match on the next write. undici refuses
+    // a header value with a control character, which reached the model as
+    // `fetch failed` on every write to that resource; a bare word or an
+    // unbalanced quote is not an entity-tag either (RFC 9110 §8.8.3).
+    for (const etag of [
+      'abc',
+      '"a"b',
+      '"a b"',
+      '"',
+      '""x',
+      `"${'a'.repeat(1025)}"`,
+    ]) {
+      expect(normaliseEtag(etag), etag).toBeUndefined();
+    }
+    for (const etag of ['"abc"', '"00123"', '""', '"a-b_c.d:e/f"']) {
+      expect(normaliseEtag(etag), etag).toBe(etag);
+    }
+    expect(normaliseEtag('  "abc"  ')).toBe('"abc"');
+  });
+
+  it('cannot receive a line break in an ETag, nor send one', () => {
+    // The platform's half of the guarantee, pinned: neither a Response nor a
+    // Headers object can be built with a value carrying CR or LF, so a
+    // header-injecting ETag cannot even be received, and could not be sent
+    // if it were.
+    expect(
+      () => new Response('', { headers: { etag: '"a"\r\nX-Injected: y' } })
+    ).toThrow(TypeError);
+    expect(() => new Headers({ 'If-Match': '"a"\r\nX-Injected: y' })).toThrow(
+      TypeError
+    );
+    expect(() => new Headers({ 'If-Match': '"a"\nX' })).toThrow(TypeError);
+  });
+
   it('sends exactly one guard on every write', async () => {
     const headers: Record<string, string>[] = [];
     vi.stubGlobal('fetch', async (_url: string, init: RequestInit) => {
@@ -328,6 +363,112 @@ describe('errors', () => {
     } catch (error) {
       expect((error as Error).message).not.toContain('s3cret');
       expect(error).toBeInstanceOf(CalDavApiError);
+    }
+  });
+});
+
+/** The error a call is expected to throw, typed. */
+async function failing(attempt: Promise<unknown>): Promise<CalDavApiError> {
+  try {
+    await attempt;
+  } catch (thrown) {
+    return thrown as CalDavApiError;
+  }
+  throw new Error('the call was expected to fail');
+}
+
+describe('an answer that is not a success', () => {
+  it('decides on the status before reading the body', async () => {
+    // A reverse proxy answering 401 with a two-megabyte login page used to
+    // surface as "larger than 1048576 bytes and was refused" — the size, not
+    // the status, and no word about credentials.
+    answer('<html>'.padEnd(2 * 1024 * 1024, 'x'), { status: 401 });
+    const error = await failing(api().get(`${ORIGIN}/x.ics`));
+    expect(error).toBeInstanceOf(CalDavApiError);
+    expect(error.status).toBe(401);
+    expect(error.message).toContain('HTTP 401');
+    expect(error.message).not.toMatch(/larger than/);
+    expect(error.body.length).toBeLessThanOrEqual(64 * 1024);
+  });
+
+  it('cuts an error body rather than refusing it, on every verb', async () => {
+    let calls = 0;
+    vi.stubGlobal('fetch', async () => {
+      calls += 1;
+      return Promise.resolve(
+        new Response('x'.repeat(3 * 1024 * 1024), { status: 500 })
+      );
+    });
+    const client = api();
+    for (const attempt of [
+      () => client.options(`${ORIGIN}/`),
+      () => client.propfind(`${ORIGIN}/`, 0, ['D:displayname']),
+      () => client.report(`${ORIGIN}/c/`, 1, '<x/>'),
+      () => client.freeBusy(`${ORIGIN}/c/`, '<x/>'),
+      () => client.get(`${ORIGIN}/c/x.ics`),
+      () =>
+        client.put(`${ORIGIN}/c/x.ics`, 'BEGIN:VCALENDAR', { create: true }),
+      () => client.del(`${ORIGIN}/c/x.ics`, '"a"'),
+    ]) {
+      const error = await attempt().catch((thrown: unknown) => thrown);
+      expect(error).toBeInstanceOf(CalDavApiError);
+      expect((error as CalDavApiError).status).toBe(500);
+      expect((error as CalDavApiError).body.length).toBe(64 * 1024);
+    }
+    expect(calls).toBe(7);
+  });
+
+  it('repeats a 401 from memory for ten seconds instead of asking again', async () => {
+    // Every request is a login, a hosted provider locks an account after a
+    // handful of failed ones, and a model told "authentication refused"
+    // retries a tool that is annotated cheap and read-only.
+    vi.useFakeTimers({ toFake: ['Date'] });
+    try {
+      let calls = 0;
+      vi.stubGlobal('fetch', async () => {
+        calls += 1;
+        return Promise.resolve(new Response('nope', { status: 401 }));
+      });
+      const client = api();
+      const first = await failing(client.get(`${ORIGIN}/x.ics`));
+      expect(first.status).toBe(401);
+      expect(first.remembered).toBeUndefined();
+
+      vi.setSystemTime(Date.now() + 3_000);
+      const second = await failing(
+        client.propfind(`${ORIGIN}/`, 0, ['D:displayname'])
+      );
+      expect(second.status).toBe(401);
+      expect(second.message).toMatch(/3s ago and was not asked again/);
+      expect(second.message).toMatch(/CALDAV_USERNAME/);
+      expect(calls).toBe(1);
+
+      vi.setSystemTime(Date.now() + 8_000);
+      await client.get(`${ORIGIN}/x.ics`).catch(() => undefined);
+      expect(calls).toBe(2);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('forgets a 401 the moment the server answers anything else', async () => {
+    let status = 401;
+    vi.stubGlobal('fetch', async () =>
+      Promise.resolve(new Response('BEGIN:VCALENDAR', { status }))
+    );
+    const client = api();
+    await client.get(`${ORIGIN}/x.ics`).catch(() => undefined);
+    vi.useFakeTimers({ toFake: ['Date'] });
+    try {
+      vi.setSystemTime(Date.now() + 11_000);
+      status = 200;
+      expect((await client.get(`${ORIGIN}/x.ics`)).ics).toBe('BEGIN:VCALENDAR');
+      status = 401;
+      // Not remembered from the first refusal: a fresh 401, then memory again.
+      const again = await failing(client.get(`${ORIGIN}/x.ics`));
+      expect(again.remembered).toBeUndefined();
+    } finally {
+      vi.useRealTimers();
     }
   });
 });

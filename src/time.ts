@@ -100,7 +100,8 @@ export function isKnownZone(tzid: string): boolean {
   if (cached !== undefined) return cached;
   let known: boolean;
   try {
-    new Intl.DateTimeFormat('en-US', { timeZone: tzid });
+    // The constructor is the check: it throws for a name it does not know.
+    new Intl.DateTimeFormat('en-US', { timeZone: tzid }).resolvedOptions();
     known = true;
   } catch {
     known = false;

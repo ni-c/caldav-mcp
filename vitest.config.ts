@@ -21,15 +21,17 @@ export default defineConfig({
       // Entry point: only wires config and server to the stdio transport and
       // exits the process; not reachable from unit tests.
       exclude: ['src/index.ts'],
-      // Measured on 2026-09-05 at 92.13 / 81.55 / 97.24 / 93.76, over 342
-      // tests — after the third audit pass, the one run against the second
-      // audit's own diff. Set just below, with headroom on functions. Write
-      // the missing tests instead of lowering them.
+      // Measured on 2026-09-07 at 97.93 / 89.26 / 99.74 / 99.16, over 464
+      // tests — after the second hardening pass, which wrote a test for
+      // every branch a caller or the backend can reach and left the rest
+      // (a packageVersion() fallback, a URL join that cannot throw) alone.
+      // Set just below, with a point of headroom on branches. Write the
+      // missing tests instead of lowering them.
       thresholds: {
-        statements: 91,
-        branches: 80,
-        functions: 92,
-        lines: 93,
+        statements: 97,
+        branches: 88,
+        functions: 99,
+        lines: 98,
       },
     },
   },

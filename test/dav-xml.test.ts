@@ -108,6 +108,10 @@ describe('refusing a document with a DTD', () => {
   });
 });
 
+/** A multistatus around the given responses, both namespaces declared. */
+const wrap = (inner: string): string =>
+  `<multistatus xmlns="DAV:" xmlns:C="urn:ietf:params:xml:ns:caldav">${inner}</multistatus>`;
+
 describe('parsing a multistatus', () => {
   /** Radicale: default namespace for DAV, a prefix for CalDAV. */
   const radicale = `<?xml version='1.0' encoding='utf-8'?>
@@ -158,7 +162,7 @@ describe('parsing a multistatus', () => {
         label
       ).toEqual(['VEVENT', 'VTODO']);
       expect(
-        privileges(first?.props['current-user-privilege-set']).sort(),
+        privileges(first?.props['current-user-privilege-set']).toSorted(),
         label
       ).toEqual(['read', 'write']);
     }
@@ -229,6 +233,83 @@ describe('parsing a multistatus', () => {
     expect(({} as Record<string, unknown>).polluted).toBeUndefined();
   });
 
+  it('refuses the hostile names outright and renames the awkward ones', () => {
+    // The parser's own behaviour, pinned by name: `__proto__`, `constructor`
+    // and `prototype` as element names throw (with or without a prefix),
+    // and `hasOwnProperty` is renamed so it cannot shadow the method on the
+    // props object that `resourceTypeHas` calls.
+    for (const name of [
+      '__proto__',
+      'constructor',
+      'prototype',
+      'D:__proto__',
+      'D:constructor',
+    ]) {
+      const doc =
+        '<multistatus xmlns="DAV:"><response><href>/x</href><propstat><prop>' +
+        `<${name}><polluted>yes</polluted></${name}>` +
+        '</prop><status>HTTP/1.1 200 OK</status></propstat></response></multistatus>';
+      expect(() => parseMultiStatus(doc, 'a probe'), name).toThrow(
+        /parseable XML/
+      );
+    }
+    const renamed =
+      '<multistatus xmlns="DAV:"><response><href>/x</href><propstat><prop>' +
+      '<resourcetype><hasOwnProperty/><toString/></resourcetype>' +
+      '</prop><status>HTTP/1.1 200 OK</status></propstat></response></multistatus>';
+    const [first] = parseMultiStatus(renamed, 'a probe');
+    expect(resourceTypeHas(first?.props.resourcetype, 'hasOwnProperty')).toBe(
+      false
+    );
+    expect(resourceTypeHas(first?.props.resourcetype, 'toString')).toBe(false);
+    expect(resourceTypeHas(first?.props.resourcetype, 'calendar')).toBe(false);
+  });
+
+  it('reads the malformed shapes a server can send without throwing', () => {
+    // No responses at all.
+    expect(parseMultiStatus(wrap(''), 'a probe')).toEqual([]);
+    // A propstat whose status carries no three-digit code drops its props;
+    // a bare code is read, since the digits are what the check is about.
+    for (const status of ['HTTP/1.1 abc', '', 'OK 200OK', 'HTTP/1.1 2000 X']) {
+      const [first] = parseMultiStatus(
+        wrap(
+          `<response><href>/x</href><propstat><prop><displayname>X</displayname>` +
+            `</prop><status>${status}</status></propstat></response>`
+        ),
+        'a probe'
+      );
+      expect(first?.props.displayname, JSON.stringify(status)).toBeUndefined();
+    }
+    // A single comp or privilege element rather than a list.
+    const [single] = parseMultiStatus(
+      wrap(
+        '<response><href>/x</href><propstat><prop>' +
+          '<C:supported-calendar-component-set><C:comp name="VEVENT"/></C:supported-calendar-component-set>' +
+          '<current-user-privilege-set><privilege><read/></privilege></current-user-privilege-set>' +
+          '<C:calendar-home-set><href>/h/</href></C:calendar-home-set>' +
+          '</prop><status>HTTP/1.1 200 OK</status></propstat></response>'
+      ),
+      'a probe'
+    );
+    expect(
+      supportedComponents(single?.props['supported-calendar-component-set'])
+    ).toEqual(['VEVENT']);
+    expect(privileges(single?.props['current-user-privilege-set'])).toEqual([
+      'read',
+    ]);
+    expect(hrefsOf(single?.props['calendar-home-set'])).toEqual(['/h/']);
+    // The accessors on nothing, text and a number.
+    for (const value of [undefined, null, 'text', 42, [], {}]) {
+      expect(hrefsOf(value)).toEqual([]);
+      expect(supportedComponents(value)).toEqual([]);
+      expect(privileges(value)).toEqual([]);
+      expect(resourceTypeHas(value, 'calendar')).toBe(false);
+    }
+    expect(textOf({})).toBeUndefined();
+    expect(textOf('  ')).toBeUndefined();
+    expect(textOf(42)).toBe('42');
+  });
+
   it('reads several hrefs out of one property', () => {
     const document = `<?xml version="1.0"?>
 <multistatus xmlns="DAV:" xmlns:C="urn:ietf:params:xml:ns:caldav">
@@ -265,18 +346,18 @@ END:VCALENDAR</C:calendar-data>
   });
 });
 
-describe('the iCalendar document inside a multistatus', () => {
-  function dataOf(ics: string): string {
-    const xml =
-      `<?xml version="1.0"?><D:multistatus xmlns:D="DAV:" ` +
-      `xmlns:C="urn:ietf:params:xml:ns:caldav"><D:response>` +
-      `<D:href>/tester/work/a.ics</D:href><D:propstat>` +
-      `<D:status>HTTP/1.1 200 OK</D:status><D:prop>` +
-      `<C:calendar-data>${ics}</C:calendar-data>` +
-      `</D:prop></D:propstat></D:response></D:multistatus>`;
-    return String(parseMultiStatus(xml, 'test')[0]?.props['calendar-data']);
-  }
+function dataOf(ics: string): string {
+  const xml =
+    `<?xml version="1.0"?><D:multistatus xmlns:D="DAV:" ` +
+    `xmlns:C="urn:ietf:params:xml:ns:caldav"><D:response>` +
+    `<D:href>/tester/work/a.ics</D:href><D:propstat>` +
+    `<D:status>HTTP/1.1 200 OK</D:status><D:prop>` +
+    `<C:calendar-data>${ics}</C:calendar-data>` +
+    `</D:prop></D:propstat></D:response></D:multistatus>`;
+  return String(parseMultiStatus(xml, 'test')[0]?.props['calendar-data']);
+}
 
+describe('the iCalendar document inside a multistatus', () => {
   it('decodes the entities the parser was told to leave alone', () => {
     // `calendar-data` is a stop node and the one property read straight out of
     // `props` rather than through `textOf`, so it used to skip decoding
@@ -315,6 +396,23 @@ describe('reading a DAV error document', () => {
       precondition: 'supported-calendar-component',
       message: 'This calendar only supports VEVENT',
     });
+  });
+
+  it('answers nothing for an error element that is not an element', () => {
+    for (const body of [
+      '<?xml version="1.0"?><D:error xmlns:D="DAV:">just text</D:error>',
+      '<?xml version="1.0"?><D:error xmlns:D="DAV:"/>',
+      '<?xml version="1.0"?><D:error xmlns:D="DAV:"></D:error>',
+      '<?xml version="1.0"?><root><D:error xmlns:D="DAV:">x</D:error><D:error xmlns:D="DAV:">y</D:error></root>',
+      '<?xml version="1.0"?><D:error xmlns:D="DAV:"><D:error',
+    ]) {
+      expect(parseDavError(body), body).toBeUndefined();
+    }
+    expect(
+      parseDavError(
+        '<?xml version="1.0"?><D:error xmlns:D="DAV:"><D:need-privileges/></D:error>'
+      )
+    ).toEqual({ precondition: 'need-privileges' });
   });
 
   it('answers nothing for a body that is not one', () => {

@@ -119,7 +119,7 @@ describe('the connection', () => {
   it('lists only the allowed calendars, and says how many it withheld', async () => {
     const listing = await data(asking, 'list_calendars');
     const paths = (listing.calendars as { id: string }[]).map((c) => c.id);
-    expect(paths.sort()).toEqual([PRIVATE, WORK]);
+    expect(paths.toSorted()).toEqual([PRIVATE, WORK]);
     expect(listing.withheld).toBe(1);
     expect(listing.untrusted).toBe(true);
   });
@@ -202,7 +202,7 @@ describe('events', () => {
 
     // Merged across entries and sorted by start, not grouped per resource.
     const starts = events.map((event) => event.start.value);
-    expect([...starts].sort()).toEqual(starts);
+    expect(starts.toSorted()).toEqual(starts);
 
     const second = sync[1];
     expect(second).toBeDefined();
@@ -454,7 +454,7 @@ describe('events', () => {
       return (listing.events as ShapedEvent[])
         .filter((event) => event.summary === 'Offsite')
         .map((event) => event.start.value)
-        .sort();
+        .toSorted();
     };
     expect(await days()).toEqual(['2026-09-21', '2026-09-22', '2026-09-23']);
 

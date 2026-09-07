@@ -53,15 +53,15 @@ describe('zoneOffsetMinutes', () => {
   });
 });
 
-describe('wallClockToInstant', () => {
-  const wall = (
-    year: number,
-    month: number,
-    day: number,
-    hour: number,
-    minute = 0
-  ) => ({ year, month, day, hour, minute, second: 0 });
+const wall = (
+  year: number,
+  month: number,
+  day: number,
+  hour: number,
+  minute = 0
+) => ({ year, month, day, hour, minute, second: 0 });
 
+describe('wallClockToInstant', () => {
   it('resolves a summer wall clock against the summer offset', () => {
     expect(wallClockToInstant(BERLIN, wall(2026, 7, 15, 9)).toISOString()).toBe(
       '2026-07-15T07:00:00.000Z'

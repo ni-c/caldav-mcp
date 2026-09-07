@@ -1,4 +1,10 @@
-import { Client, InMemoryTransport } from '@modelcontextprotocol/client';
+import {
+  Client,
+  InMemoryTransport,
+  withInputRequired,
+} from '@modelcontextprotocol/client';
+import { CallToolResultSchema } from '@modelcontextprotocol/core';
+import { serveStdio } from '@modelcontextprotocol/server/stdio';
 import { expect, vi } from 'vitest';
 
 import type { Config } from '../src/config.js';
@@ -60,6 +66,53 @@ export interface FakeOptions {
    * be decided by document order.
    */
   duplicateReadOnly?: boolean;
+  /**
+   * Consulted before the fake answers anything. Returning a reply replaces the
+   * fake's own, which is how a test makes one request fail with a status and a
+   * body of its choosing — a proxy's 401 page, a 500, a precondition the
+   * server under test does not expect.
+   */
+  failWith?: (
+    method: string,
+    path: string
+  ) =>
+    | { status: number; body?: string; headers?: Record<string, string> }
+    | undefined;
+  /**
+   * What `/.well-known/caldav` answers. The default is the RFC 6764 shape: a
+   * 301 to the root. `status: 207` answers the principal there directly; a
+   * 3xx without a `location`, or one pointing at another host, is what the
+   * discovery code has to degrade past.
+   */
+  wellKnown?: { status: number; location?: string };
+  /**
+   * Where `current-user-principal` is answered: at the configured URL (the
+   * default), only at the origin root (a Baikal-style path prefix), or nowhere
+   * at all (a server that never reports one).
+   */
+  principalAt?: 'configured' | 'origin-root' | 'nowhere';
+  /** Answer the principal PROPFIND without a `calendar-home-set`. */
+  noHomeSet?: boolean;
+  /** The hrefs named as calendar home sets. Default: the user's own. */
+  homes?: string[];
+  /**
+   * Extra responses in the Depth:1 listing — a scheduling inbox, an address
+   * book, a collection on another host — so the filter that drops them runs.
+   * `types` are local names inside `resourcetype`, e.g. `schedule-inbox`.
+   */
+  extraCollections?: { href: string; types: string[]; displayName?: string }[];
+  /** The shape of the ETag on GET and PUT. Default: a strong, quoted one. */
+  etags?: 'strong' | 'weak' | 'absent' | 'malformed';
+  /** Declare this `content-length` on every reply, the way a lying proxy does. */
+  contentLength?: number;
+  /**
+   * Advance the (faked) clock by this much on every request. Needs
+   * `vi.useFakeTimers({ toFake: ['Date'] })` in the test — only the Date, since
+   * faking timers stalls the in-memory transport.
+   */
+  latencyMs?: number;
+  /** Serve DAV under a path prefix, the way Baikal serves `/dav.php`. */
+  basePath?: string;
 }
 
 export class FakeCalDav {
@@ -81,7 +134,7 @@ export class FakeCalDav {
       for (const [name, ics] of Object.entries(calendar.resources ?? {})) {
         resources.set(name, { ics, etag: this.nextEtag() });
       }
-      this.calendars.set(`/${USER}/${calendar.name}/`, {
+      this.calendars.set(pathOfCalendar(calendar.name), {
         entry: calendar,
         resources,
       });
@@ -95,21 +148,21 @@ export class FakeCalDav {
 
   /** Puts a resource in place without going through the server under test. */
   seed(calendar: string, name: string, ics: string): void {
-    const store = this.calendars.get(`/${USER}/${calendar}/`);
+    const store = this.calendars.get(pathOfCalendar(calendar));
     if (store === undefined) throw new Error(`no calendar ${calendar}`);
     store.resources.set(name, { ics, etag: this.nextEtag() });
   }
 
   /** Reads a resource back as stored. */
   stored(calendar: string, name: string): string | undefined {
-    return this.calendars.get(`/${USER}/${calendar}/`)?.resources.get(name)
+    return this.calendars.get(pathOfCalendar(calendar))?.resources.get(name)
       ?.ics;
   }
 
   /** Every resource name in a calendar. */
   names(calendar: string): string[] {
     return [
-      ...(this.calendars.get(`/${USER}/${calendar}/`)?.resources.keys() ?? []),
+      ...(this.calendars.get(pathOfCalendar(calendar))?.resources.keys() ?? []),
     ];
   }
 
@@ -166,9 +219,36 @@ export class FakeCalDav {
         'content-type': body.startsWith('<?xml')
           ? 'application/xml; charset=utf-8'
           : 'text/plain',
+        ...(this.options.contentLength === undefined
+          ? {}
+          : { 'content-length': String(this.options.contentLength) }),
         ...headers,
       },
     });
+  }
+
+  /** The ETag header for a stored resource, in the shape the options ask for. */
+  private etagHeaders(etag: string): Record<string, string> {
+    switch (this.options.etags ?? 'strong') {
+      case 'weak':
+        return { etag: `W/${etag}` };
+      case 'absent':
+        return {};
+      case 'malformed':
+        return { etag: `${etag}x"` };
+      default:
+        return { etag };
+    }
+  }
+
+  /** The hrefs a Depth:1 PROPFIND lists calendars under. */
+  private homePaths(): string[] {
+    const base = this.options.basePath ?? '';
+    return [
+      ...(this.options.homes ?? [`/${USER}/`]),
+      '/',
+      ...(base === '' ? [] : [`${base}/`]),
+    ];
   }
 
   private async handle(url: string, init: RequestInit): Promise<Response> {
@@ -183,6 +263,14 @@ export class FakeCalDav {
 
     if (new URL(url).origin !== ORIGIN) {
       throw new Error(`the fake was asked for ${url}, which is another origin`);
+    }
+
+    if (this.options.latencyMs !== undefined) {
+      vi.setSystemTime(Date.now() + this.options.latencyMs);
+    }
+    const forced = this.options.failWith?.(method, path);
+    if (forced !== undefined) {
+      return this.reply(forced.status, forced.body ?? '', forced.headers);
     }
 
     if (method === 'OPTIONS') {
@@ -205,18 +293,36 @@ export class FakeCalDav {
       (init.headers as Record<string, string> | undefined)?.Depth ?? '0'
     );
 
-    if (path === '/.well-known/caldav') {
-      return this.reply(301, '', { location: '/' });
-    }
-    if (path === '/' && body.includes('current-user-principal')) {
+    const base = this.options.basePath ?? '';
+    const principalAt = this.options.principalAt ?? 'configured';
+    const principalAnswer = (at: string): Response => {
       const cup = this.tag('D:current-user-principal');
       const h = this.tag('D:href');
       return this.reply(
         207,
         this.envelope(
-          this.response('/', `<${cup}><${h}>/${USER}/</${h}></${cup}>`)
+          this.response(at, `<${cup}><${h}>/${USER}/</${h}></${cup}>`)
         )
       );
+    };
+
+    if (path === '/.well-known/caldav') {
+      const wk = this.options.wellKnown ?? { status: 301, location: '/' };
+      if (wk.status === 207) return principalAnswer(path);
+      return this.reply(
+        wk.status,
+        '',
+        wk.location === undefined ? {} : { location: wk.location }
+      );
+    }
+    if (
+      body.includes('current-user-principal') &&
+      depth === '0' &&
+      principalAt !== 'nowhere' &&
+      ((path === `${base}/` && principalAt === 'configured') ||
+        (path === '/' && (principalAt === 'origin-root' || base === '')))
+    ) {
+      return principalAnswer(path);
     }
     if (path === `/${USER}/` && body.includes('calendar-home-set')) {
       const home =
@@ -231,18 +337,20 @@ export class FakeCalDav {
       const addresses = (this.options.addresses ?? [])
         .map((a) => `<${h}>mailto:${a}</${h}>`)
         .join('');
+      const homes =
+        this.options.noHomeSet === true
+          ? ''
+          : `<${home}>${(this.options.homes ?? [`/${USER}/`])
+              .map((href) => `<${h}>${href}</${h}>`)
+              .join('')}</${home}>`;
       return this.reply(
         207,
         this.envelope(
-          this.response(
-            `/${USER}/`,
-            `<${home}><${h}>/${USER}/</${h}></${home}>` +
-              `<${addr}>${addresses}</${addr}>`
-          )
+          this.response(`/${USER}/`, `${homes}<${addr}>${addresses}</${addr}>`)
         )
       );
     }
-    if (path === `/${USER}/` && depth === '1') {
+    if (this.homePaths().includes(path) && depth === '1') {
       const parts = [
         this.response(
           `/${USER}/`,
@@ -259,6 +367,22 @@ export class FakeCalDav {
             })
           );
         }
+      }
+      const cal = this.options.prefixes === 'sabre' ? 'cal' : 'C';
+      for (const extra of this.options.extraCollections ?? []) {
+        const rt = this.tag('D:resourcetype');
+        const dn = this.tag('D:displayname');
+        parts.push(
+          this.response(
+            extra.href,
+            `<${rt}><${this.tag('D:collection')}/>` +
+              extra.types.map((type) => `<${cal}:${type}/>`).join('') +
+              `</${rt}>` +
+              (extra.displayName === undefined
+                ? ''
+                : `<${dn}>${escapeXml(extra.displayName)}</${dn}>`)
+          )
+        );
       }
       return this.reply(207, this.envelope(parts.join('')));
     }
@@ -387,7 +511,7 @@ export class FakeCalDav {
     const resource = found?.store.get(found.name);
     if (resource === undefined) return this.reply(404, 'not found');
     return this.reply(200, resource.ics, {
-      etag: resource.etag,
+      ...this.etagHeaders(resource.etag),
       'content-type': 'text/calendar; charset=utf-8',
     });
   }
@@ -408,7 +532,11 @@ export class FakeCalDav {
     }
     const etag = this.nextEtag();
     found.store.set(found.name, { ics: body, etag });
-    return this.reply(existing === undefined ? 201 : 204, '', { etag });
+    return this.reply(
+      existing === undefined ? 201 : 204,
+      '',
+      this.etagHeaders(etag)
+    );
   }
 
   private del(path: string, init: RequestInit): Response {
@@ -427,6 +555,17 @@ export class FakeCalDav {
     found.store.delete(found.name);
     return this.reply(204);
   }
+}
+
+/**
+ * The pathname of a calendar, as a URL parser spells it.
+ *
+ * The fake keys its collections on the pathname a request arrives with, which
+ * the server under test built with `new URL()` — so a name with a space or a
+ * non-ASCII letter is keyed percent-encoded, exactly as it is addressed.
+ */
+function pathOfCalendar(name: string): string {
+  return new URL(`/${USER}/${name}/`, ORIGIN).pathname;
 }
 
 function escapeXml(value: string): string {
@@ -498,6 +637,12 @@ export async function connect(
     client.connect(clientTransport),
     server.connect(serverTransport),
   ]);
+  // A client that has loaded the tool list checks every success result
+  // against the tool's output schema. Listing here makes every `callTool` in
+  // every suite run that check, which is where a closed schema and a result
+  // that carries one field more than declared show up — on the success path
+  // only, which a test that calls without listing never sees.
+  await client.listTools();
 
   return {
     client,
@@ -505,6 +650,60 @@ export async function connect(
     close: async () => {
       await client.close();
       await server.close();
+    },
+  };
+}
+
+/** What a 2026-era `tools/call` answers: a result, or a question. */
+export interface ModernView {
+  resultType?: 'input_required';
+  requestState?: string;
+  isError?: boolean;
+  content?: { type: string; text?: string }[];
+  structuredContent?: unknown;
+  inputRequests?: unknown[];
+}
+
+/**
+ * A client on protocol revision `2026-07-28`, where the dialog is a *return
+ * value*: the server answers `input_required` with a sealed `requestState`,
+ * and the client calls again carrying the answer and the state. That round
+ * trip is invisible on the 2025 revision `connect()` speaks — the SDK's shim
+ * plays both halves inside the process — so a test about what happens when
+ * the same state comes back twice can only be written here.
+ */
+export async function connectModern(config: Partial<Config> = {}): Promise<{
+  call(
+    name: string,
+    args: Record<string, unknown>,
+    extra?: Record<string, unknown>
+  ): Promise<ModernView>;
+  close(): Promise<void>;
+}> {
+  const [clientTransport, serverTransport] =
+    InMemoryTransport.createLinkedPair();
+  const handle = serveStdio(() => createServer(testConfig(config)), {
+    transport: serverTransport,
+  });
+  const client = new Client(
+    { name: 'test', version: '0.0.0' },
+    {
+      capabilities: { elicitation: { form: {} } },
+      versionNegotiation: { mode: 'auto' },
+      inputRequired: { autoFulfill: false },
+    }
+  );
+  await client.connect(clientTransport);
+  return {
+    call: async (name, args, extra = {}) =>
+      (await client.request(
+        { method: 'tools/call', params: { name, arguments: args, ...extra } },
+        withInputRequired(CallToolResultSchema),
+        { allowInputRequired: true }
+      )) as ModernView,
+    close: async () => {
+      await client.close();
+      await handle.close();
     },
   };
 }

@@ -48,7 +48,11 @@ describe('what an allowlist entry may be', () => {
       '/tester/work',
       'work',
     ]) {
-      const registry = new CalendarRegistry(ALL, [entry]);
+      const registry = new CalendarRegistry(
+        ALL,
+        [entry],
+        'https://dav.example.net'
+      );
       expect(
         registry.allowed().map((c) => c.path),
         entry
@@ -67,13 +71,33 @@ describe('what an allowlist entry may be', () => {
   });
 
   it('matches nothing for a URL on another origin', () => {
-    const registry = new CalendarRegistry(ALL, [
-      'https://elsewhere.example/tester/work/',
-    ]);
-    // Compared on the pathname, so this happens to match — which is why the
-    // origin is enforced in `resolveHref` rather than here. Pinning the
-    // behaviour so a future change to either place is a deliberate one.
-    expect(registry.allowed().map((c) => c.path)).toEqual(['/tester/work/']);
+    // This used to match on the pathname alone, on the argument that the
+    // origin is enforced in `resolveHref`. It is — for requests. An
+    // allowlist entry is the operator's statement of which calendar they
+    // mean, and a URL says which host as well as which path; an entry for
+    // the wrong account silently granting the same path on the right one is
+    // the kind of match an allowlist must not make.
+    const elsewhere = 'https://elsewhere.example/tester/work/';
+    const registry = new CalendarRegistry(
+      ALL,
+      [elsewhere],
+      'https://dav.example.net'
+    );
+    expect(registry.allowed()).toHaveLength(0);
+    expect(registry.unmatched()).toEqual([elsewhere]);
+    expect(() => registry.resolve(elsewhere)).toThrow(/no calendar called/);
+  });
+
+  it('matches a URL on the configured origin, and none without one', () => {
+    const here = 'https://dav.example.net/tester/work/';
+    expect(
+      new CalendarRegistry(ALL, [here], 'https://dav.example.net')
+        .allowed()
+        .map((c) => c.path)
+    ).toEqual(['/tester/work/']);
+    // A registry built without an origin has nothing to compare a URL to,
+    // and fails closed rather than open.
+    expect(new CalendarRegistry(ALL, [here]).allowed()).toHaveLength(0);
   });
 });
 

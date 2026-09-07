@@ -186,8 +186,8 @@ describe('the tool surface', () => {
 
   it('registers exactly the catalogue', async () => {
     const { tools } = await session.client.listTools();
-    expect(tools.map((tool) => tool.name).sort()).toEqual(
-      [...ALL_TOOLS].sort()
+    expect(tools.map((tool) => tool.name).toSorted()).toEqual(
+      ALL_TOOLS.toSorted()
     );
   });
 
@@ -225,8 +225,8 @@ describe('the tool surface', () => {
             ?.readOnlyHint === true
       )
       .map((tool) => tool.name)
-      .sort();
-    expect(readOnly).toEqual([...READ_TOOLS].sort());
+      .toSorted();
+    expect(readOnly).toEqual(READ_TOOLS.toSorted());
   });
 
   it('opens the world nowhere', async () => {
@@ -252,7 +252,7 @@ describe('the tool surface', () => {
             ?.destructiveHint === true
       )
       .map((tool) => tool.name)
-      .sort();
+      .toSorted();
     // A CalDAV server keeps no history, so an update replaces writing with no
     // way back — the opposite answer to a wiki's update_page, and the reason
     // this list is pinned rather than derived.
@@ -279,7 +279,7 @@ describe('the untrusted marker', () => {
         return properties?.untrusted === undefined;
       })
       .map((tool) => tool.name)
-      .sort();
+      .toSorted();
     // get_server_info reports protocol tokens and this server's own probe
     // results; get_free_busy reports time periods and nothing anybody wrote;
     // the rest are confirmations of this server's own work. A marker on
@@ -317,7 +317,7 @@ describe('reading', () => {
     expect(listing.count).toBe(2);
     expect(listing.withheld).toBe(0);
     const names = (listing.calendars as { id: string }[]).map((c) => c.id);
-    expect(names.sort()).toEqual([PRIVATE, WORK]);
+    expect(names.toSorted()).toEqual([PRIVATE, WORK]);
   });
 
   it('reports the server capabilities it probed for', async () => {
@@ -1132,8 +1132,8 @@ describe('read-only mode', () => {
     await session.close();
     session = await connect({ readOnly: true });
     const { tools } = await session.client.listTools();
-    expect(tools.map((tool) => tool.name).sort()).toEqual(
-      [...READ_TOOLS].sort()
+    expect(tools.map((tool) => tool.name).toSorted()).toEqual(
+      READ_TOOLS.toSorted()
     );
   });
 

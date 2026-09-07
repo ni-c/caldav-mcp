@@ -306,3 +306,20 @@ describe('the entry limit', () => {
     );
   });
 });
+
+describe('what is kept of CALDAV_URL', () => {
+  it('stores the parsed origin and path, not the environment string', () => {
+    // The string as typed used to be kept, so the whitespace a copied line
+    // carries, or a host in capitals, was glued in front of every path.
+    const config = loadConfig({
+      CALDAV_URL: '  https://DAV.Example.NET/dav.php///  ',
+      CALDAV_USERNAME: 'u',
+      CALDAV_PASSWORD: 'p',
+    });
+    expect(config.url).toBe('https://dav.example.net/dav.php');
+    expect(
+      loadConfig({ CALDAV_URL: 'https://dav.example.net', CALDAV_TOKEN: 't' })
+        .url
+    ).toBe('https://dav.example.net');
+  });
+});

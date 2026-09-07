@@ -1,11 +1,13 @@
 import { z } from 'zod';
 import type { McpServer } from '@modelcontextprotocol/server';
 
+import { sanitizeText } from '../analyze.js';
+import { describeCalendarEntry } from '../config.js';
 import { freeBusyQueryBody, textMatchBody } from '../dav-xml.js';
-import type { ToolContext } from '../entries.js';
+import { selfAddressesOf, type ToolContext } from '../entries.js';
 import { notes, shapedCalendar, untrustedFields } from '../output-schema.js';
 import { ownWordsResult, run, untrustedResult } from '../result.js';
-import { shapeCalendar } from '../shape.js';
+import { calendarId, shapeCalendar } from '../shape.js';
 import { toUtcStamp } from '../time.js';
 import { READ_ONLY } from './annotations.js';
 
@@ -54,13 +56,14 @@ export function registerCalendarTools(
         const allowed = registry.allowed();
         const unmatched = registry.unmatched();
 
-        const collected = [...principal.notes];
+        const collected = [...principal.notes, ...registry.notes];
         if (unmatched.length > 0) {
           collected.push(
             `CALDAV_CALENDARS names ${unmatched.length} entr` +
               `${unmatched.length === 1 ? 'y' : 'ies'} that match no calendar: ` +
-              `${unmatched.join(', ')}. Check the spelling — an entry that ` +
-              'matches nothing narrows this server for no reason.'
+              `${unmatched.map(describeCalendarEntry).join(', ')}. Check the ` +
+              'spelling — an entry that matches nothing narrows this server ' +
+              'for no reason.'
           );
         }
 
@@ -179,10 +182,10 @@ export function registerCalendarTools(
           }
         }
 
-        const selfAddresses =
-          context.config.userEmail === undefined
-            ? [...principal.addresses]
-            : [context.config.userEmail, ...principal.addresses];
+        const selfAddresses = selfAddressesOf(
+          context.config,
+          principal.addresses
+        );
         if (selfAddresses.length === 0) {
           collected.push(
             'No address could be determined for this account, so ' +
@@ -192,16 +195,29 @@ export function registerCalendarTools(
           );
         }
 
+        // "This server's own words" — and yet the principal href, the home
+        // set hrefs, the compliance tokens and the calendar paths were all
+        // chosen by the DAV server. The display-only ones are cleaned; the
+        // calendar id has to round-trip and is validated instead, the same
+        // way `list_calendars` prints it, so the two tools agree.
         return ownWordsResult({
           url: context.api.url,
-          ...(principal.url === undefined ? {} : { principal: principal.url }),
-          calendar_homes: [...principal.homes],
-          dav: options.dav,
-          allowed_methods: options.allow,
+          ...(principal.url === undefined
+            ? {}
+            : { principal: sanitizeText(principal.url, 2048) }),
+          calendar_homes: principal.homes.map((home) =>
+            sanitizeText(home, 2048)
+          ),
+          dav: options.dav.map((token) => sanitizeText(token, 100)),
+          allowed_methods: options.allow.map((method) =>
+            sanitizeText(method, 50)
+          ),
           scheduling,
           calendars: allowed.map((calendar) => ({
-            id: calendar.path,
-            components: [...calendar.components],
+            id: calendarId(calendar.path),
+            components: calendar.components.map((name) =>
+              sanitizeText(name, 50)
+            ),
             read_only: calendar.readOnly,
           })),
           withheld: registry.withheld(),

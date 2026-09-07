@@ -35,10 +35,24 @@ export interface CalendarEntry {
   readOnly: boolean;
 }
 
-/** Normalises a collection path for comparison: exactly one trailing slash. */
+/**
+ * Normalises a collection path for comparison: exactly one trailing slash.
+ *
+ * A counted walk from the end rather than `replace(/\/+$/, '')`: a regex
+ * anchored at the end and starting with a repetition is tried from every
+ * position of a run and consumes the run each time, which is quadratic. Eighty
+ * thousand slashes followed by one other character cost two seconds, and a
+ * server chooses every href this is applied to.
+ */
 export function normalisePath(path: string): string {
-  const trimmed = path.replace(/\/+$/, '');
-  return `${trimmed}/`;
+  return `${stripTrailingSlashes(path)}/`;
+}
+
+/** `path` without its trailing slashes, in one pass. */
+export function stripTrailingSlashes(path: string): string {
+  let end = path.length;
+  while (end > 0 && path.charCodeAt(end - 1) === 0x2f) end -= 1;
+  return path.slice(0, end);
 }
 
 /**
@@ -52,13 +66,26 @@ export function normalisePath(path: string): string {
  * allowlist keyed on a mutable, externally-controlled string is not an
  * allowlist.
  */
-function matches(entry: string, calendar: CalendarEntry): boolean {
+function matches(
+  entry: string,
+  calendar: CalendarEntry,
+  origin: string
+): boolean {
   const candidate = entry.trim();
   if (candidate.length === 0) return false;
 
   if (/^https?:\/\//i.test(candidate)) {
+    // A URL names an origin as well as a path, and the origin is part of
+    // what the operator wrote. Comparing the path alone let an entry for
+    // another host stand in for a calendar on this one — an operator who
+    // pasted the URL of the wrong account got the calendar at that path on
+    // the right account, and no warning. With no origin known there is
+    // nothing to compare against, and a URL entry matches nothing.
     try {
-      return normalisePath(new URL(candidate).pathname) === calendar.path;
+      const url = new URL(candidate);
+      return (
+        url.origin === origin && normalisePath(url.pathname) === calendar.path
+      );
     } catch {
       return false;
     }
@@ -66,7 +93,7 @@ function matches(entry: string, calendar: CalendarEntry): boolean {
   if (candidate.startsWith('/')) {
     return normalisePath(candidate) === calendar.path;
   }
-  return finalSegment(calendar.path) === candidate.replace(/\/+$/, '');
+  return finalSegment(calendar.path) === stripTrailingSlashes(candidate);
 }
 
 function finalSegment(path: string): string {
@@ -120,7 +147,7 @@ export function resourceUrl(
   } catch {
     throw notInside();
   }
-  const parent = url.pathname.replace(/[^/]*$/, '');
+  const parent = url.pathname.slice(0, url.pathname.lastIndexOf('/') + 1);
   if (
     parent !== calendar.path ||
     url.pathname === calendar.path ||
@@ -145,15 +172,24 @@ export class CalendarRegistry implements CalendarLookup {
   private readonly all: readonly CalendarEntry[];
   private readonly permitted: readonly CalendarEntry[];
   private readonly allowlist: readonly string[];
+  /** The configured origin, which a URL-form allowlist entry must name. */
+  private readonly origin: string;
+  /** What discovery had to leave out, for `list_calendars` to say. */
+  readonly notes: string[] = [];
 
-  constructor(all: readonly CalendarEntry[], allowlist: readonly string[]) {
+  constructor(
+    all: readonly CalendarEntry[],
+    allowlist: readonly string[],
+    origin = ''
+  ) {
     this.all = all;
     this.allowlist = allowlist;
+    this.origin = origin;
     this.permitted =
       allowlist.length === 0
         ? all
         : all.filter((calendar) =>
-            allowlist.some((entry) => matches(entry, calendar))
+            allowlist.some((entry) => matches(entry, calendar, origin))
           );
   }
 
@@ -192,7 +228,8 @@ export class CalendarRegistry implements CalendarLookup {
    */
   unmatched(): string[] {
     return this.allowlist.filter(
-      (entry) => !this.all.some((calendar) => matches(entry, calendar))
+      (entry) =>
+        !this.all.some((calendar) => matches(entry, calendar, this.origin))
     );
   }
 
@@ -208,7 +245,7 @@ export class CalendarRegistry implements CalendarLookup {
       .map((entry) => ({
         entry,
         paths: this.all
-          .filter((calendar) => matches(entry, calendar))
+          .filter((calendar) => matches(entry, calendar, this.origin))
           .map((calendar) => calendar.path),
       }))
       .filter((result) => result.paths.length > 1);
@@ -230,7 +267,7 @@ export class CalendarRegistry implements CalendarLookup {
       );
     }
     const permitted = this.permitted.filter((calendar) =>
-      matches(wanted, calendar)
+      matches(wanted, calendar, this.origin)
     );
     if (permitted.length === 1) return permitted[0] as CalendarEntry;
     if (permitted.length > 1) {
@@ -240,7 +277,7 @@ export class CalendarRegistry implements CalendarLookup {
           'Name it by its full path, which list_calendars prints.'
       );
     }
-    if (this.all.some((calendar) => matches(wanted, calendar))) {
+    if (this.all.some((calendar) => matches(wanted, calendar, this.origin))) {
       throw new CalendarNotAllowedError(
         `caldav-mcp: "${quoted(reference)}" is a calendar this server was not ` +
           'given access to. CALDAV_CALENDARS names the calendars it may touch; ' +
