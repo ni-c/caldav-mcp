@@ -32,16 +32,41 @@ import { testConfig } from './harness.js';
  */
 
 const N = 80_000;
-const LIMIT_MS = 200;
 
+/**
+ * The band between the two answers, not a performance budget.
+ *
+ * Every case here is linear and lands in single-digit to low-hundred
+ * milliseconds. The quadratic shapes this file exists for cost, measured on
+ * this machine at the same input, 1794 ms (`/\/+$/` on 80k slashes) and
+ * 2031 ms (`/[^/]*$/` on a long segment) — and hours at the multistatus
+ * ceiling. A second sits between the two answers with room on both sides.
+ *
+ * It used to be 200 ms, which is inside the noise of a loaded shared runner:
+ * the release run for 0.1.3 measured 212 ms for a case that takes 30 ms here,
+ * and a red release on a busy machine says nothing about the code.
+ */
+const LIMIT_MS = 1_000;
+
+/**
+ * The fastest of three runs.
+ *
+ * Noise on a shared runner only ever adds time — a scheduler slice, a garbage
+ * collection, a neighbour — so the minimum is the closest reading to what the
+ * algorithm costs. A quadratic walk is slow in all three.
+ */
 function elapsed(fn: () => void): number {
-  const started = performance.now();
-  try {
-    fn();
-  } catch {
-    // A refusal is a fine answer; the time is what is measured.
+  let best = Number.POSITIVE_INFINITY;
+  for (let run = 0; run < 3; run += 1) {
+    const started = performance.now();
+    try {
+      fn();
+    } catch {
+      // A refusal is a fine answer; the time is what is measured.
+    }
+    best = Math.min(best, performance.now() - started);
   }
-  return performance.now() - started;
+  return best;
 }
 
 const api = new CalDavApi(testConfig());
