@@ -1,6 +1,10 @@
 import { z } from 'zod';
 import type { McpServer } from '@modelcontextprotocol/server';
-import { type Approver, type ConfirmationStore } from 'mcp-approval';
+import {
+  orderedResourceKey,
+  type Approver,
+  type ConfirmationStore,
+} from 'mcp-approval';
 
 import { escapeInvisible } from '../analyze.js';
 import { resourceUrl } from '../calendars.js';
@@ -40,7 +44,6 @@ import {
   commit,
   createEntry,
   loadForWrite,
-  orderedResourceKey,
 } from '../write.js';
 import { CREATE, DELETE, READ_ONLY, REPLACE } from './annotations.js';
 import { loadEntry, resolveWindow } from './common.js';

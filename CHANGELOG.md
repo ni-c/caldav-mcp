@@ -48,7 +48,8 @@ Trivy, and each ships with a test that asserts on the wire or on the result.
   sorts its parts, which is right for a set and wrong for (from, to): the key
   for moving `e.ics` from Work to Private was the key for moving the `e.ics`
   in Private to Work, so a token issued for the one authorised the other.
-  Every part now carries its position.
+  Every part now carries its position: the keys are built with
+  `orderedResourceKey`, which this release takes from mcp-approval 0.8.2.
 - **The status is decided before the body is read, and a `401` is remembered.**
   Every verb read the body under the success ceiling and only then looked at
   the status, so a reverse proxy answering `401` with a two-megabyte login

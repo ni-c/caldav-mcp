@@ -3,7 +3,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { setResourceKey } from 'mcp-approval';
 
 import { buildSeriesId } from '../src/entity-id.js';
-import { orderedResourceKey } from '../src/write.js';
+import { orderedResourceKey } from 'mcp-approval';
 import {
   connect,
   connectModern,

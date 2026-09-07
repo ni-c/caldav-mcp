@@ -1,7 +1,5 @@
 import { randomUUID } from 'node:crypto';
 
-import { setResourceKey } from 'mcp-approval';
-
 import { quoted } from './analyze.js';
 import { CalDavApiError } from './api.js';
 import { resourceUrl } from './calendars.js';
@@ -211,41 +209,15 @@ function hasThisAndFuture(overrides: readonly ICAL.Component[]): boolean {
   });
 }
 
+/** The furthest a relative reminder may sit from its entry: a year. */
+const MAX_TRIGGER_SECONDS = 366 * 24 * 60 * 60;
+
 /**
  * Properties that describe the *series* and must not travel into an override.
  *
  * An override is one instance; carrying the recurrence rule into it would make
  * that instance a series of its own.
  */
-/** The separator between a part's index and the part: a NUL, which no part can contain. */
-const NUL = String.fromCharCode(0);
-
-/**
- * A resource key for an operation on a *tuple* of parts.
- *
- * `setResourceKey` sorts its targets before hashing — it is written for sets,
- * where `["5","12"]` and `["12","5"]` are the same thing. Every key in this
- * server is a tuple, and sorting a tuple throws its positions away:
- * `move_event` put the source and the destination in one list, so an approval
- * to move an event from Work to Private also authorised moving an event of the
- * same name from Private to Work. Each part is prefixed with its index and a
- * NUL, which no part can contain (`schema.ts` refuses control characters on
- * the way in, and a path with a NUL never leaves `entity-id.ts`), so two
- * different tuples cannot sort into the same set.
- */
-export function orderedResourceKey(
-  operation: string,
-  parts: readonly string[]
-): string {
-  return setResourceKey(
-    operation,
-    parts.map((part, index) => `${index}${NUL}${part}`)
-  );
-}
-
-/** The furthest a relative reminder may sit from its entry: a year. */
-const MAX_TRIGGER_SECONDS = 366 * 24 * 60 * 60;
-
 const SERIES_ONLY = new Set([
   'rrule',
   'rdate',
