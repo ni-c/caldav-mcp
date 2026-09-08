@@ -13,7 +13,44 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-[Unreleased]: https://github.com/ni-c/caldav-mcp/compare/v0.1.3...HEAD
+[Unreleased]: https://github.com/ni-c/caldav-mcp/compare/v0.1.4...HEAD
+
+## [0.1.4] - 2026-09-08
+
+### Fixed
+
+- **A document wrapped in `<![CDATA[…]]>` is read instead of counted as
+  unreadable.** `calendar-data` is a `stopNodes` entry, so the parser hands back
+  its raw source rather than its text — and the XML packaging comes with it.
+  Open-Xchange wraps the payload that way, which in the sibling server
+  (carddav-mcp, against the same mailbox.org account) meant an address book of
+  79 cards listing as empty. CalDAV there happens to serve the payload
+  unwrapped, so this is the dialect this server has not met yet rather than one
+  it can rule out. The sections are now taken off and joined, including the
+  split a server has to make around a document containing `]]>`. Entity
+  references **inside** a section are left alone, because that is what a CDATA
+  section means.
+- **An indented response is read too.** `trimValues` does not reach a stop node,
+  so a server that pretty-prints its XML handed over
+  `\n        BEGIN:VCALENDAR…`, and an iCalendar document has to start at
+  `BEGIN:`.
+
+### Changed
+
+- **A CR or LF reference is decoded where a real newline follows it.** They used
+  to be refused everywhere in `calendar-data`, to stop
+  `SUMMARY:harmless&#13;&#10;ATTENDEE;PARTSTAT=ACCEPTED:mailto:x` becoming two
+  properties. That still holds — a reference smuggled into a value has no real
+  newline behind it and stays literal. What is new is the other shape: a server
+  that encodes its line endings writes the reference immediately before the
+  newline it stands for, because XML normalises a raw CR to LF on the way in and
+  escaping it is the only way to keep it. sabre/dav does exactly that, and
+  refusing it made every card unreadable in carddav-mcp until 0.1.0. The two
+  servers disagreed about this node and only one of them could have been right;
+  they now apply the same rule in the same words.
+- `mcp-tool-allowlist` 0.2.2, `oxlint` 1.82.
+
+[0.1.4]: https://github.com/ni-c/caldav-mcp/releases/tag/v0.1.4
 
 ## [0.1.3] - 2026-09-07
 

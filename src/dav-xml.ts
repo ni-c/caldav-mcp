@@ -102,15 +102,144 @@ export class XmlValueError extends Error {
  * character, a surrogate or an out-of-range code point is therefore emitted as
  * its literal source text instead of as a character: visible, inert, and
  * obviously wrong to a reader rather than silently effective.
+ *
+ * The one node this is *not* used on is `calendar-data`, whose content is a
+ * document rather than a value — see {@link decodeCalendarData}.
  */
 export function decodeXmlText(value: string): string {
+  return decode(value, 'refuse');
+}
+
+/**
+ * The same, for the one node whose content **is** a document.
+ *
+ * Two things happen here that happen nowhere else, and both come from the same
+ * property of `calendar-data`: it is a `stopNodes` entry, so the parser hands
+ * back its **raw source** rather than its text.
+ *
+ * **The packaging comes with it.** Raw source means the XML syntax that carried
+ * the document is still in the string — see {@link unwrapDocumentNode}, which
+ * takes it back off.
+ *
+ * **The entities come with it too**, and the rule for the two that matter is
+ * the shape they arrive in rather than the code point. A server that encodes
+ * its line endings emits the reference **immediately before the real newline it
+ * stands for** — XML normalises a raw CR to LF on the way in, so escaping it is
+ * the only way to keep it, and legitimate rather than suspicious. sabre/dav
+ * does exactly that in the sibling protocol, where every card was unreadable
+ * until the reader learned to tell this node apart from a value. A reference
+ * smuggled into a *value* has no real newline behind it:
+ * `SUMMARY:harmless&#13;&#10;ATTENDEE;PARTSTAT=ACCEPTED:mailto:x` stays literal
+ * and invents no second property. Same rule, same words, in carddav-mcp — the
+ * two servers used to disagree here, and both docblocks argued well for a rule
+ * that cannot be right in only one of them, since iCalendar and vCard separate
+ * their properties the same way.
+ *
+ * Everything else stays refused: other C0 characters, C1, surrogates and
+ * out-of-range references are emitted as their literal source text.
+ */
+export function decodeCalendarData(value: string): string {
+  return unwrapDocumentNode(value, (text) => decode(text, 'before-newline'));
+}
+
+/**
+ * How a CR or LF reference is treated.
+ *
+ * - `refuse` — left as its literal source text. Every value outside the
+ *   document node, where a decoded newline would end a line this server reads
+ *   as one.
+ * - `before-newline` — decoded only where a real newline follows it, the shape
+ *   a server produces when it encodes its line endings. The document node, and
+ *   nothing else.
+ *
+ * There is deliberately no third setting for "decode them wherever they are".
+ * A server that encoded *both* halves of every line ending would leave no real
+ * newline for the reference to sit in front of, and such a document would come
+ * back as one unreadable line — but no server is known to do that, and the
+ * relaxation that would cover it is exactly the one the smuggled-property test
+ * exists to refuse. If a listing is ever empty against a server whose payload
+ * is full of `&#13;&#10;`, this is the decision to revisit, with a test for
+ * that server rather than a general loosening.
+ */
+type LineEndingPolicy = 'refuse' | 'before-newline';
+
+const CDATA_OPEN = '<![CDATA[';
+const CDATA_CLOSE = ']]>';
+
+/**
+ * Takes the XML packaging back off the raw source of a `stopNodes` node.
+ *
+ * `stopNodes` means "do not interpret this as markup", which is right — an
+ * event description containing a `<` is a description, not an element. What it
+ * does not mean is "extract the text": the parser hands back the source between
+ * the tags verbatim, and everything XML allows as packaging comes along.
+ * Open-Xchange (mailbox.org) wraps the payload in `<![CDATA[…]]>` in the
+ * sibling protocol, where it meant an address book of 79 cards listing as
+ * empty. This server has not been seen to meet it in `calendar-data` — the same
+ * account serves that one unwrapped — but the node has the same shape and the
+ * same reader, and a dialect nobody has met yet is exactly what this cost the
+ * other server.
+ *
+ * Splitting rather than stripping, because a CDATA section is not just
+ * punctuation: **inside it, `&amp;` is five characters, not one.** A
+ * DESCRIPTION pasted out of an HTML editor says `&amp;` and means it. So the
+ * decoder runs on the segments *outside* the sections only, and what is inside
+ * is taken as it stands.
+ *
+ * More than one section is ordinary, not exotic: `]]>` cannot appear inside
+ * CDATA, so a server splits a document containing that sequence into
+ * `…a]]]]><![CDATA[>b…` and expects the reader to join it back up.
+ *
+ * The `trim` belongs to the same idea. `trimValues: true` never reaches a stop
+ * node (measured), so a server that indents its response hands over
+ * `\n        BEGIN:VCALENDAR…`, which fails to parse exactly as loudly and
+ * exactly as silently. Leading whitespace before `BEGIN:` is packaging too.
+ *
+ * **Not covered: XML comments.** They also survive into the raw source
+ * (measured), and no CalDAV server is known to write one inside
+ * `calendar-data`. If a listing is ever empty against a server this function
+ * already unwraps, that is the next thing to look at.
+ */
+function unwrapDocumentNode(
+  value: string,
+  decodeText: (text: string) => string
+): string {
+  let result = '';
+  let index = 0;
+  for (;;) {
+    // `indexOf`, never a pattern: this runs on a document a server chose the
+    // length of, and `test/linear-time.test.ts` holds the ceiling.
+    const start = value.indexOf(CDATA_OPEN, index);
+    if (start === -1) {
+      result += decodeText(value.slice(index));
+      break;
+    }
+    result += decodeText(value.slice(index, start));
+    const body = start + CDATA_OPEN.length;
+    const end = value.indexOf(CDATA_CLOSE, body);
+    if (end === -1) {
+      // Unterminated. The parser rejects the document before this point
+      // (measured), so this is the second belt: take the rest as it stands
+      // rather than decode something that announced itself as literal.
+      result += value.slice(body);
+      break;
+    }
+    result += value.slice(body, end);
+    index = end + CDATA_CLOSE.length;
+  }
+  return result.trim();
+}
+
+function decode(value: string, lineEndings: LineEndingPolicy): string {
   return value.replace(
     /&(?:(amp|lt|gt|quot|apos)|#(\d+)|#[xX]([0-9a-fA-F]+));/g,
     (
-      source,
+      source: string,
       named: string | undefined,
       dec: string | undefined,
-      hex: string | undefined
+      hex: string | undefined,
+      offset: number,
+      full: string
     ) => {
       if (named !== undefined) {
         return (
@@ -125,6 +254,15 @@ export function decodeXmlText(value: string): string {
       if (code > 0x10ffff) return source;
       // Surrogates are not characters; a reference to one is malformed.
       if (code >= 0xd800 && code <= 0xdfff) return source;
+      if (code === 0x0a || code === 0x0d) {
+        if (
+          lineEndings === 'before-newline' &&
+          full.charCodeAt(offset + source.length) === 0x0a
+        ) {
+          return String.fromCodePoint(code);
+        }
+        return source;
+      }
       // C0 and C1, tab excepted. This is the injection guard described above.
       if (code < 0x20 && code !== 0x09) return source;
       if (code >= 0x7f && code <= 0x9f) return source;
@@ -168,6 +306,12 @@ export function assertNoDoctype(xml: string, what: string): void {
  * `parseTagValue: false` because an ETag of `"00123"` must stay a string, and
  * `stopNodes` because `calendar-data` is a document in its own right that has no
  * business being interpreted as markup.
+ *
+ * The price of that last one is worth naming: a stop node is handed back as
+ * **source**, not as text, so the parser's own conveniences skip it. Entities
+ * arrive undecoded, CDATA sections arrive with their markers, and
+ * `trimValues: true` does not reach it. {@link unwrapDocumentNode} is where
+ * that is paid off.
  */
 const parser = new XMLParser({
   ignoreAttributes: false,
@@ -240,13 +384,13 @@ export function parseMultiStatus(xml: string, what: string): DavResponse[] {
     // decoded. So an event called `Tom & Jerry` reached the model as
     // `Tom &amp; Jerry`, and ical.js parsed the escaped form into the summary.
     //
-    // Decoding it here rather than at the reader is what keeps the guard in
-    // `decodeXmlText` on the path it was written for: that function's whole
-    // reason for refusing a numeric reference to a control character is this
-    // document, where a decoded `&#13;&#10;` would end one property and start
-    // another that nobody wrote.
+    // Through `decodeCalendarData` rather than `decodeXmlText`: this is the one
+    // node whose content is a document in its own right, so it needs the two
+    // things the parser skips for a stop node — its packaging taken off (CDATA
+    // markers, indentation) and its line endings read the way the server that
+    // encoded them meant them. See the docblock there.
     if (typeof props['calendar-data'] === 'string') {
-      props['calendar-data'] = decodeXmlText(props['calendar-data']);
+      props['calendar-data'] = decodeCalendarData(props['calendar-data']);
     }
     return {
       href,

@@ -320,6 +320,30 @@ describe('reading', () => {
     expect(names.toSorted()).toEqual([PRIVATE, WORK]);
   });
 
+  it('reads a server that wraps the payload in CDATA', async () => {
+    // The dialect the sibling server met against mailbox.org, from the backend
+    // to the tool result. `calendar-data` is a stop node, so the section
+    // markers used to be part of what reached the iCalendar parser — an empty
+    // listing, not an error. This account's CalDAV happens to serve the payload
+    // unwrapped; the next server's may not.
+    await session.close();
+    fake = new FakeCalDav({
+      addresses: ['me@example.net'],
+      calendarData: 'cdata',
+    });
+    fake.install();
+    seedAll();
+    session = await connect({ userEmail: 'me@example.net' }, 'accept');
+
+    const listing = await data('list_events', WINDOW);
+    expect((listing.events as unknown[]).length).toBeGreaterThan(0);
+    expect(
+      (listing.events as { summary?: string }[]).some(
+        (entry) => entry.summary === 'Weekly'
+      )
+    ).toBe(true);
+  });
+
   it('reports the server capabilities it probed for', async () => {
     const info = await data('get_server_info');
     expect(info.dav).toContain('calendar-access');

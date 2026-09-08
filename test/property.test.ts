@@ -9,6 +9,7 @@ import {
   seriesIdOf,
   type CalendarLookup,
 } from '../src/entity-id.js';
+import { decodeCalendarData } from '../src/dav-xml.js';
 import { CalendarNotAllowedError, ToolInputError } from '../src/errors.js';
 import type { Kind } from '../src/ical.js';
 import { normaliseEtag } from '../src/api.js';
@@ -564,6 +565,54 @@ describe('what goes back out on the wire', () => {
           `https://h${path.startsWith('/') ? '' : '/'}${path}`
         ).pathname;
         expect(calendarId(spelled)).toBe(spelled);
+      }),
+      RUNS
+    );
+  });
+});
+
+/** How a server has to write one; `]]>` cannot appear inside a section. */
+function wrapCdata(value: string): string {
+  return `<![CDATA[${value.replaceAll(']]>', ']]]]><![CDATA[>')}]]>`;
+}
+
+/**
+ * The property the Open-Xchange dialect broke in the sibling server.
+ *
+ * A CDATA section is a way of carrying text through XML unaltered, so
+ * unwrapping one has to give back exactly what the server put in — including
+ * the sequences that force it to split the section, which are the ones a
+ * hand-written example is least likely to try.
+ */
+describe('a CDATA section carries any text a server puts in it', () => {
+  it('unwraps to what was wrapped, whatever the document said', () => {
+    fc.assert(
+      fc.property(fc.string({ unit: 'binary' }), (text) => {
+        expect(decodeCalendarData(wrapCdata(text))).toBe(text.trim());
+      }),
+      RUNS
+    );
+  });
+
+  it('leaves entity references inside a section untouched', () => {
+    // Inside CDATA `&amp;` is five characters and the document means them.
+    fc.assert(
+      fc.property(
+        fc.constantFrom('&amp;', '&#13;', '&#0;', '&lt;', '&#x0A;'),
+        (entity) => {
+          expect(decodeCalendarData(wrapCdata(`SUMMARY:${entity}`))).toBe(
+            `SUMMARY:${entity}`
+          );
+        }
+      ),
+      RUNS
+    );
+  });
+
+  it('never throws, whatever a hostile server sends', () => {
+    fc.assert(
+      fc.property(fc.string({ unit: 'binary' }), (value) => {
+        expect(() => decodeCalendarData(value)).not.toThrow();
       }),
       RUNS
     );
