@@ -3,6 +3,7 @@ import { describe, expect, it } from 'vitest';
 import {
   assertNoDoctype,
   calendarQueryBody,
+  decodeCalendarData,
   decodeXmlText,
   escapeXmlText,
   freeBusyQueryBody,
@@ -382,6 +383,101 @@ describe('the iCalendar document inside a multistatus', () => {
 
   it('leaves a hex reference to a control character alone too', () => {
     expect(dataOf('SUMMARY:a&#x0D;&#x0A;b')).toBe('SUMMARY:a&#x0D;&#x0A;b');
+  });
+});
+
+describe('the line endings a server encodes', () => {
+  it('decodes a reference that a real newline follows', () => {
+    // What a server writes when it encodes a line ending: XML normalises a raw
+    // CR to LF on the way in, so escaping it is the only way to keep it. This
+    // is sabre/dav's shape, and refusing it made every card in the sibling
+    // server unreadable against Baikal.
+    const encoded = 'BEGIN:VCALENDAR&#13;\nSUMMARY:a&#13;\nEND:VCALENDAR';
+    expect(decodeCalendarData(encoded)).toBe(
+      'BEGIN:VCALENDAR\r\nSUMMARY:a\r\nEND:VCALENDAR'
+    );
+  });
+
+  it('refuses one that no real newline follows', () => {
+    // The forged RSVP, unchanged in outcome from before this rule existed: the
+    // reference sits inside a SUMMARY, with the document's own newlines raw
+    // around it, and invents no second property.
+    const forged =
+      'BEGIN:VCALENDAR\nSUMMARY:harmless&#13;&#10;ATTENDEE;PARTSTAT=ACCEPTED:mailto:x@y.z\nEND:VCALENDAR';
+    const decoded = decodeCalendarData(forged);
+    expect(decoded).toContain('&#13;&#10;');
+    expect(decoded.split('\n')).toHaveLength(3);
+  });
+
+  it('refuses both halves even where that leaves the document unreadable', () => {
+    // The boundary, written down rather than left to be discovered. A server
+    // that encoded both halves of every line ending would leave no real newline
+    // for the reference to sit in front of. Loosening the rule to cover it is
+    // exactly the loosening the test above refuses, and no such server is
+    // known — so the choice is to keep the guard and fail visibly.
+    expect(decodeCalendarData('BEGIN:VCALENDAR&#13;&#10;END:VCALENDAR')).toBe(
+      'BEGIN:VCALENDAR&#13;&#10;END:VCALENDAR'
+    );
+  });
+
+  it('still refuses every other control character', () => {
+    expect(decodeCalendarData('a&#0;b')).toBe('a&#0;b');
+    expect(decodeCalendarData('a&#x7f;b')).toBe('a&#x7f;b');
+    expect(decodeCalendarData('a&#xD800;b')).toBe('a&#xD800;b');
+  });
+
+  it('is not what the other nodes get', () => {
+    // A `displayname` is one line to this server, and there is no dialect that
+    // needs a newline in one — so that node keeps the strict rule.
+    expect(decodeXmlText('Work&#13;\nevil')).toBe('Work&#13;\nevil');
+  });
+});
+
+describe('the packaging around a stop node', () => {
+  it('unwraps a CDATA section', () => {
+    // Open-Xchange wraps the payload this way in the sibling protocol, where it
+    // meant an address book of 79 cards listing as empty. `stopNodes` hands
+    // back source, so the markers were part of what went to the parser.
+    expect(
+      decodeCalendarData('<![CDATA[BEGIN:VCALENDAR\nEND:VCALENDAR]]>')
+    ).toBe('BEGIN:VCALENDAR\nEND:VCALENDAR');
+  });
+
+  it('joins the sections a document containing "]]>" is split into', () => {
+    // Not exotic: `]]>` cannot appear inside CDATA, so a server that meets one
+    // ends the section and opens another, and expects the reader to join them.
+    expect(
+      decodeCalendarData('<![CDATA[DESCRIPTION:a]]]]><![CDATA[>b]]>')
+    ).toBe('DESCRIPTION:a]]>b');
+  });
+
+  it('leaves an entity inside a section alone and decodes one outside', () => {
+    // The reason this splits rather than strips. Inside CDATA `&amp;` is five
+    // characters and the document means them; outside it is one.
+    expect(
+      decodeCalendarData(
+        'SUMMARY:Tom &amp; Jerry\n<![CDATA[DESCRIPTION:a &amp; b]]>'
+      )
+    ).toBe('SUMMARY:Tom & Jerry\nDESCRIPTION:a &amp; b');
+  });
+
+  it('takes an indented response apart', () => {
+    // `trimValues: true` never reaches a stop node, so a server that pretty
+    // prints hands over leading whitespace — and `BEGIN:` has to be first.
+    expect(
+      decodeCalendarData('\n    <![CDATA[BEGIN:VCALENDAR\nEND:VCALENDAR]]>\n  ')
+    ).toBe('BEGIN:VCALENDAR\nEND:VCALENDAR');
+    expect(decodeCalendarData('\n  BEGIN:VCALENDAR\nEND:VCALENDAR\n  ')).toBe(
+      'BEGIN:VCALENDAR\nEND:VCALENDAR'
+    );
+  });
+
+  it('takes the rest as it stands when a section is never closed', () => {
+    // The parser rejects such a document before this function sees it. This is
+    // the second belt, and it does not decode what announced itself literal.
+    expect(decodeCalendarData('<![CDATA[SUMMARY:a &amp; b')).toBe(
+      'SUMMARY:a &amp; b'
+    );
   });
 });
 

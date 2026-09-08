@@ -49,6 +49,17 @@ export interface FakeOptions {
   addresses?: string[];
   /** Emit sabre/dav's lowercase prefixes instead of Radicale's default namespace. */
   prefixes?: 'radicale' | 'sabre';
+  /**
+   * How the iCalendar document is put inside `calendar-data`.
+   *
+   * A third dialect, after Radicale's raw line endings and sabre/dav's `&#13;`:
+   * Open-Xchange wraps the payload in a CDATA section. Both are legal XML and
+   * both reach the reader as *source*, because `calendar-data` is a stop node.
+   * mailbox.org serves CalDAV unwrapped and CardDAV wrapped, where it meant an
+   * address book of 79 cards listing as empty — so this is the dialect this
+   * server has not met yet rather than one it can rule out.
+   */
+  calendarData?: 'escaped' | 'cdata';
   /** Refuse a text-match query, as some builds do without a collation. */
   refuseCollation?: boolean;
   /** Refuse a free-busy query, so the computed fallback is exercised. */
@@ -485,7 +496,7 @@ export class FakeCalDav {
         this.response(
           this.options.forgeHrefs?.(path, name) ?? `${path}${name}`,
           `<${etag}>${resource.etag}</${etag}>` +
-            `<${cdata}>${escapeXml(resource.ics)}</${cdata}>`
+            `<${cdata}>${this.options.calendarData === 'cdata' ? wrapCdata(resource.ics) : escapeXml(resource.ics)}</${cdata}>`
         )
       );
     }
@@ -566,6 +577,17 @@ export class FakeCalDav {
  */
 function pathOfCalendar(name: string): string {
   return new URL(`/${USER}/${name}/`, ORIGIN).pathname;
+}
+
+/**
+ * A CDATA section, split the way a server has to split one.
+ *
+ * `]]>` cannot appear inside a section, so a document containing that sequence
+ * ends the section and opens another around it. Writing it correctly here is
+ * what makes the reader's joining rule testable rather than assumed.
+ */
+function wrapCdata(value: string): string {
+  return `<![CDATA[${value.replaceAll(']]>', ']]]]><![CDATA[>')}]]>`;
 }
 
 function escapeXml(value: string): string {

@@ -12,7 +12,7 @@ import {
   resourceUrl,
   stripTrailingSlashes,
 } from '../src/calendars.js';
-import { decodeXmlText } from '../src/dav-xml.js';
+import { decodeCalendarData, decodeXmlText } from '../src/dav-xml.js';
 import { resourceNameOf } from '../src/entries.js';
 import { parseEntityId } from '../src/entity-id.js';
 import { redactUrlCredentials } from '../src/redact.js';
@@ -120,6 +120,14 @@ describe('every string walk is linear at its ceiling', () => {
     [
       'decodeXmlText, an unterminated reference',
       () => decodeXmlText(`&#${'9'.repeat(N)}`),
+    ],
+    [
+      'decodeCalendarData, a document made of CDATA openings',
+      () => decodeCalendarData('<![CDATA['.repeat(N / 9)),
+    ],
+    [
+      'decodeCalendarData, many closed sections',
+      () => decodeCalendarData('<![CDATA[a]]>'.repeat(N / 13)),
     ],
     ['stripInvisible', () => stripInvisible('​'.repeat(N))],
     ['escapeInvisible', () => escapeInvisible('‮'.repeat(N))],
