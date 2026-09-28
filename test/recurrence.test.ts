@@ -322,18 +322,18 @@ describe('EXDATE', () => {
   });
 });
 
-describe('overrides', () => {
-  const series = (overrides: string[]) =>
-    calendar([
-      ...event([
-        'DTSTART;TZID=Europe/Berlin:20260907T090000',
-        'DTEND;TZID=Europe/Berlin:20260907T100000',
-        'RRULE:FREQ=WEEKLY;COUNT=3',
-        'SUMMARY:Weekly',
-      ]),
-      ...overrides,
-    ]);
+const series = (overrides: string[]) =>
+  calendar([
+    ...event([
+      'DTSTART;TZID=Europe/Berlin:20260907T090000',
+      'DTEND;TZID=Europe/Berlin:20260907T100000',
+      'RRULE:FREQ=WEEKLY;COUNT=3',
+      'SUMMARY:Weekly',
+    ]),
+    ...overrides,
+  ]);
 
+describe('overrides', () => {
   it('replaces the instance it names', () => {
     const result = expand(
       series([
@@ -531,15 +531,15 @@ describe('the cap', () => {
   });
 });
 
-describe('recurrence id spelling', () => {
-  const roundTrip = (ics: string) => {
-    const root = parseCalendar(ics, 'fixture');
-    const [component] = componentsOf(root, 'vevent');
-    const start = readTime(component as never, 'dtstart', BERLIN);
-    const spelling = spellRecurrenceId(start as never, BERLIN);
-    return { spelling, parsed: parseRecurrenceId(spelling, BERLIN) };
-  };
+const roundTrip = (ics: string) => {
+  const root = parseCalendar(ics, 'fixture');
+  const [component] = componentsOf(root, 'vevent');
+  const start = readTime(component as never, 'dtstart', BERLIN);
+  const spelling = spellRecurrenceId(start as never, BERLIN);
+  return { spelling, parsed: parseRecurrenceId(spelling, BERLIN) };
+};
 
+describe('recurrence id spelling', () => {
   it('round-trips a UTC value', () => {
     const { spelling, parsed } = roundTrip(
       calendar(event(['DTSTART:20260907T070000Z', 'DTEND:20260907T080000Z']))
