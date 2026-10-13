@@ -11,7 +11,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
      marker last in the file so the link definitions come along. -->
 <!-- #region changelog -->
 
-## [Unreleased]
+## [0.1.5] - 2026-10-13
 
 ### Fixed
 
@@ -21,7 +21,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   read as a busy period. A component carrying FREEBUSY properties is now read
   for those alone, and an empty one spanning exactly the window means free.
 
-[Unreleased]: https://github.com/ni-c/caldav-mcp/compare/v0.1.4...HEAD
+### Changed
+
+- The container image is built on newer digests of the same Node LTS base
+  image, and the dependencies baked into it are refreshed. The npm package's
+  declared dependency ranges are unchanged.
+
+### Documentation
+
+- The README's Socket badge uses Socket's current badge URL.
+
+[0.1.5]: https://github.com/ni-c/caldav-mcp/releases/tag/v0.1.5
 
 ## [0.1.4] - 2026-09-08
 
