@@ -19,6 +19,23 @@ import { connect, FakeCalDav, textOf, type Connected } from './harness.js';
 const WORK = '/tester/work/';
 const WINDOW = { from: '2026-09-01T00:00:00Z', to: '2026-10-15T00:00:00Z' };
 
+// RFC 4791 shape, which Radicale sends since 3.8.2: the component's
+// DTSTART/DTEND are the queried window, not a busy period.
+const RFC_WINDOW = { start: '20260909T000000Z', end: '20260910T000000Z' };
+const rfcAnswer = (...lines: string[]): string =>
+  [
+    'BEGIN:VCALENDAR',
+    'VERSION:2.0',
+    'BEGIN:VFREEBUSY',
+    'DTSTAMP:20261012T142100Z',
+    'DTSTART:20260909T000000Z',
+    'DTEND:20260910T000000Z',
+    ...lines,
+    'END:VFREEBUSY',
+    'END:VCALENDAR',
+    '',
+  ].join('\r\n');
+
 describe('reading a VFREEBUSY document', () => {
   it('reads one component per period, which is what Radicale sends', () => {
     const ics = [
@@ -66,6 +83,62 @@ describe('reading a VFREEBUSY document', () => {
     expect(periods).toHaveLength(2);
     expect(periods[1]?.start).toBe('2026-09-08T07:00:00Z');
     expect(periods[0]?.type).toBe('BUSY');
+  });
+
+  it('reads only the FREEBUSY periods of a component bounding the window', () => {
+    const ics = rfcAnswer(
+      'FREEBUSY;FBTYPE=BUSY:20260909T090000Z/20260909T100000Z',
+      'FREEBUSY;FBTYPE=BUSY-TENTATIVE:20260909T120000Z/PT30M'
+    );
+    expect(parseFreeBusy(ics, WORK, RFC_WINDOW)).toEqual([
+      {
+        start: '2026-09-09T09:00:00Z',
+        end: '2026-09-09T10:00:00Z',
+        type: 'BUSY',
+        calendar: WORK,
+      },
+      {
+        start: '2026-09-09T12:00:00Z',
+        end: '2026-09-09T12:30:00Z',
+        type: 'BUSY-TENTATIVE',
+        calendar: WORK,
+      },
+    ]);
+    // Without the window the FREEBUSY lines alone still decide.
+    expect(parseFreeBusy(ics, WORK)).toHaveLength(2);
+  });
+
+  it('answers with nothing for an empty component bounding the window', () => {
+    expect(parseFreeBusy(rfcAnswer(), WORK, RFC_WINDOW)).toEqual([]);
+  });
+
+  it('still reads a per-period component when a window is given', () => {
+    const ics = [
+      'BEGIN:VCALENDAR',
+      'BEGIN:VFREEBUSY',
+      'DTSTART:20260909T090000Z',
+      'DTEND:20260909T100000Z',
+      'END:VFREEBUSY',
+      'END:VCALENDAR',
+      '',
+    ].join('\r\n');
+    expect(parseFreeBusy(ics, WORK, RFC_WINDOW)).toEqual([
+      {
+        start: '2026-09-09T09:00:00Z',
+        end: '2026-09-09T10:00:00Z',
+        calendar: WORK,
+      },
+    ]);
+  });
+
+  it('reads an empty component that does not match the window as a period', () => {
+    // An older server's single period that merely overlaps the window edge.
+    expect(
+      parseFreeBusy(rfcAnswer(), WORK, {
+        start: '20260908T000000Z',
+        end: '20260910T000000Z',
+      })
+    ).toHaveLength(1);
   });
 
   it('unfolds a wrapped line before reading it', () => {

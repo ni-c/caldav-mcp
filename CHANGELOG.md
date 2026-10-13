@@ -13,6 +13,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- `get_free_busy` reported the whole queried window as busy, once per
+  calendar, against Radicale 3.8.2 and later and any server answering in the
+  RFC 4791 shape: the bounding DTSTART/DTEND of the VFREEBUSY component were
+  read as a busy period. A component carrying FREEBUSY properties is now read
+  for those alone, and an empty one spanning exactly the window means free.
+
 [Unreleased]: https://github.com/ni-c/caldav-mcp/compare/v0.1.4...HEAD
 
 ## [0.1.4] - 2026-09-08
