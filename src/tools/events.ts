@@ -268,7 +268,7 @@ export function registerEventReadTools(
               calendar.url,
               freeBusyQueryBody(range)
             );
-            collected.push(...parseFreeBusy(ics, calendar.path));
+            collected.push(...parseFreeBusy(ics, calendar.path, range));
           } catch {
             // The principal-level scheduling POST is deliberately not used as a
             // fallback: it aggregates every calendar the principal owns,
@@ -321,12 +321,16 @@ export function registerEventReadTools(
  * Deliberately a small hand parser rather than a trip through ical.js: the
  * answer is a flat list of `start/end` pairs and the only thing that can go
  * wrong is the shape, which a regex states more plainly than a component walk.
- * Radicale answers with one VFREEBUSY *component per period* rather than one
- * component carrying several FREEBUSY properties, so both are read.
+ * Radicale before 3.8.2 answers with one VFREEBUSY *component per period*;
+ * RFC 4791 and Radicale 3.8.2+ send one component whose DTSTART/DTEND bound the
+ * queried window and whose FREEBUSY properties carry the periods. A component
+ * with FREEBUSY properties is therefore read for those alone, and one without
+ * them that spans exactly `window` is an empty answer, not a busy period.
  */
 export function parseFreeBusy(
   ics: string,
-  calendarPath: string
+  calendarPath: string,
+  window?: { start: string; end: string }
 ): { start: string; end: string; type?: string; calendar: string }[] {
   const unfolded = ics.replace(/\r?\n[ \t]/g, '');
   const periods: {
@@ -344,7 +348,17 @@ export function parseFreeBusy(
     const type = /^FBTYPE[^:]*:(\S+)/m.exec(body)?.[1];
     const from = start === undefined ? undefined : isoOfStamp(start);
     const until = end === undefined ? undefined : isoOfStamp(end);
-    if (from !== undefined && until !== undefined) {
+    const hasPeriods = /^FREEBUSY[;:]/im.test(body);
+    const isEnvelope =
+      window !== undefined &&
+      from === isoOfStamp(window.start) &&
+      until === isoOfStamp(window.end);
+    if (
+      from !== undefined &&
+      until !== undefined &&
+      !hasPeriods &&
+      !isEnvelope
+    ) {
       periods.push({
         start: from,
         end: until,

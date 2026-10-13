@@ -9,7 +9,7 @@
 # be reachable from the network while it does.
 services:
   radicale:
-    image: ${RADICALE_IMAGE:-tomsquest/docker-radicale:3.8.0.0}
+    image: ${RADICALE_IMAGE:-tomsquest/docker-radicale:3.8.3.0}
     ports: ['127.0.0.1:5232:5232']
     volumes:
       - ./radicale/config:/etc/radicale/config:ro
