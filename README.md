@@ -74,7 +74,7 @@ delimiter the entry itself cannot forge.
 
 ## Requirements
 
-- Node.js 22 or newer, or Docker
+- Node.js 24 or newer, or Docker
 - A CalDAV server and an account on it
 
 Most hosted services want an **app-specific password** rather than the account

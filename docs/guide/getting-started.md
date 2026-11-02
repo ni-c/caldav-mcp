@@ -2,7 +2,7 @@
 
 ## Requirements
 
-- Node.js ≥ 22
+- Node.js ≥ 24
 - A CalDAV account — Nextcloud, Radicale, Baikal, SOGo, Fastmail, mailbox.org,
   iCloud, or anything else that speaks the standard
 - Its URL, your username, and a password. There is no token to obtain and no

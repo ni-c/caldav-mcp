@@ -6,8 +6,7 @@
   ],
   "badges": [
     "22 tools",
-    "MIT",
-    "Node ≥22"
+    "MIT"
   ],
   "title": "caldav-mcp"
 }
