@@ -75,6 +75,19 @@ export interface Occurrence {
   isOverride: boolean;
 }
 
+/**
+ * An entry that carries no date at all, so it has no instant to sort or filter
+ * by. Kept apart from {@link Occurrence}, whose `start` every windowed listing
+ * relies on, rather than made optional there.
+ */
+export interface UndatedOccurrence {
+  recurrenceId: undefined;
+  start: undefined;
+  end: undefined;
+  component: ICAL.Component;
+  isOverride: false;
+}
+
 export interface ExpansionResult {
   occurrences: Occurrence[];
   /** True when the entry carries an RRULE or RDATE. */
@@ -213,6 +226,33 @@ export function parseRecurrenceId(
  */
 function keyOf(time: RawTime): number {
   return time.instant.getTime();
+}
+
+/**
+ * The one occurrence of an entry that has no date at all: no DTSTART, no DUE
+ * and no rule or date list to generate one from.
+ *
+ * `expandSeries` answers a window, and such an entry is in no window, so it is
+ * left out there on purpose. Reading one back by id, and listing the ones a
+ * `time-range` query can never return, both come through here instead. An
+ * entry that carries any date is not undated, whatever else it lacks.
+ */
+export function undatedOccurrence(
+  components: readonly ICAL.Component[]
+): UndatedOccurrence | undefined {
+  const { master } = splitSeries([...components]);
+  if (master === undefined) return undefined;
+  const dated = ['dtstart', 'due', 'rrule', 'rdate'].some(
+    (name) => master.getFirstProperty(name) !== null
+  );
+  if (dated) return undefined;
+  return {
+    recurrenceId: undefined,
+    start: undefined,
+    end: undefined,
+    component: master,
+    isOverride: false,
+  };
 }
 
 /** Expands one calendar resource into the occurrences inside a window. */

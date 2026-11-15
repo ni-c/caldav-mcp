@@ -13,6 +13,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- `list_tasks` takes `undated: true` to list the tasks that have neither a
+  start nor a due date. A `time-range` query is matched against those two
+  properties, so such a task was in no window and could not be found at all.
+  `get_task` now reads one back by id. The option takes no time range and is
+  refused together with `from`, `to` or `timezone`; it asks the server for
+  every task in the calendars and keeps the ones without a date.
+
 ### Changed
 
 - Require Node.js 24 or newer. CI tests the latest 24 and 26 LTS releases; Node 22 is no longer supported.

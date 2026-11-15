@@ -8,7 +8,7 @@ import {
 
 import { escapeInvisible } from '../analyze.js';
 import { resourceUrl } from '../calendars.js';
-import { listEntries, type ToolContext } from '../entries.js';
+import { listEntries, listUndatedTasks, type ToolContext } from '../entries.js';
 import { buildSeriesId, parseEntityId } from '../entity-id.js';
 import { ToolInputError } from '../errors.js';
 import { ICAL, writeTime } from '../ical.js';
@@ -77,7 +77,8 @@ export function registerTaskReadTools(
         'Tasks with a start or due date inside a time range. Tasks with no ' +
         'date at all are not returned by a time-range query — the CalDAV ' +
         'specification defines the filter against the dates, and a task with ' +
-        'none of them matches no window.',
+        'none of them matches no window. Set `undated` to list exactly those ' +
+        'instead.',
       inputSchema: z.object({
         from: instantParam.optional(),
         to: instantParam.optional(),
@@ -87,6 +88,15 @@ export function registerTaskReadTools(
           .boolean()
           .optional()
           .describe('Defaults to false, which leaves completed tasks out.'),
+        undated: z
+          .boolean()
+          .optional()
+          .describe(
+            'List only the tasks that have neither a start nor a due date, ' +
+              'which no time range can return. Takes no time range: it cannot ' +
+              'be combined with `from`, `to` or `timezone`, and it reads every ' +
+              'task in the calendars rather than a window of them.'
+          ),
         limit: limitParam,
         after: afterParam,
       }),
@@ -95,7 +105,7 @@ export function registerTaskReadTools(
         ...untrustedFields,
         tasks: z.array(shapedTask),
         count: z.number().int(),
-        window: z.object({ from: z.string(), to: z.string() }),
+        window: z.object({ from: z.string(), to: z.string() }).optional(),
         notes,
         truncated,
       }),
@@ -103,15 +113,42 @@ export function registerTaskReadTools(
     async (args) =>
       run(async () => {
         const registry = await context.discovery.registry();
-        const window = resolveWindow(args, context.config);
-        const listing = await listEntries(context, {
-          kind: 'vtodo',
-          calendars: registry.resolveMany(args.calendars),
-          from: window.from,
-          to: window.to,
-          limit: args.limit ?? context.config.maxEntries,
-          after: args.after,
-        });
+        if (
+          args.undated === true &&
+          (args.from !== undefined ||
+            args.to !== undefined ||
+            args.timezone !== undefined)
+        ) {
+          // Refused rather than ignored: a `from` that quietly did nothing
+          // would read as "no tasks in that range" when it meant "no range".
+          throw new ToolInputError(
+            'caldav-mcp: `undated` lists tasks that have no date, so it takes ' +
+              'no time range. Leave out `from`, `to` and `timezone`, or leave ' +
+              'out `undated`.'
+          );
+        }
+        const window =
+          args.undated === true
+            ? undefined
+            : resolveWindow(args, context.config);
+        const calendars = registry.resolveMany(args.calendars);
+        const limit = args.limit ?? context.config.maxEntries;
+        const listing =
+          window === undefined
+            ? await listUndatedTasks(context, {
+                calendars,
+                limit,
+                after: args.after,
+                includeCompleted: args.include_completed === true,
+              })
+            : await listEntries(context, {
+                kind: 'vtodo',
+                calendars,
+                from: window.from,
+                to: window.to,
+                limit,
+                after: args.after,
+              });
         const entries =
           args.include_completed === true
             ? listing.entries
@@ -122,10 +159,14 @@ export function registerTaskReadTools(
         return untrustedResult({
           tasks: entries,
           count: entries.length,
-          window: {
-            from: window.from.toISOString(),
-            to: window.to.toISOString(),
-          },
+          ...(window === undefined
+            ? {}
+            : {
+                window: {
+                  from: window.from.toISOString(),
+                  to: window.to.toISOString(),
+                },
+              }),
           ...(listing.notes.length > 0 ? { notes: listing.notes } : {}),
           ...(listing.truncated === undefined
             ? {}

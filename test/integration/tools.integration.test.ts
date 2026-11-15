@@ -546,6 +546,46 @@ describe('tasks', () => {
     await asking.call('delete_task', { id: state.taskId });
     await asking.call('get_task', { id: state.taskId }, { expectError: true });
   });
+
+  it('finds a task that has no date, which no time range can return', async () => {
+    // A time-range filter is matched against DTSTART and DUE, so the server
+    // itself leaves such a task out. This is the one thing the unit suites
+    // cannot show: their fake answers a REPORT with every task regardless.
+    const created = await data(asking, 'create_task', {
+      calendar_id: WORK,
+      summary: 'Sort out the garage',
+    });
+    const id = created.id as string;
+    const inWindow = async (): Promise<boolean> => {
+      const listing = await data(asking, 'list_tasks', {
+        from: '2026-01-01T00:00:00Z',
+        to: '2026-12-31T00:00:00Z',
+      });
+      return (listing.tasks as { summary?: string }[]).some(
+        (task) => task.summary === 'Sort out the garage'
+      );
+    };
+    expect(await inWindow()).toBe(false);
+
+    const undated = await data(asking, 'list_tasks', { undated: true });
+    const found = (undated.tasks as { id: string; summary?: string }[]).find(
+      (task) => task.summary === 'Sort out the garage'
+    );
+    expect(found?.id).toBe(id);
+
+    const detail = await data(asking, 'get_task', { id });
+    expect((detail.task as { summary?: string }).summary).toBe(
+      'Sort out the garage'
+    );
+
+    await asking.call('delete_task', { id });
+    const after = await data(asking, 'list_tasks', { undated: true });
+    expect(
+      (after.tasks as { summary?: string }[]).some(
+        (task) => task.summary === 'Sort out the garage'
+      )
+    ).toBe(false);
+  });
 });
 
 describe('journals', () => {
