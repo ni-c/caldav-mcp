@@ -44,6 +44,43 @@ const MAX_ELAPSED_MS = 5_000;
  */
 const MAX_OVERRIDES = 2_000;
 
+/**
+ * Rule checks one series may cost in ical.js, across every step of its walk.
+ *
+ * `RecurIterator.next()` loops on `check_contracting_rules()` until a candidate
+ * passes, and only MONTHLY and YEARLY count their misses. A finer frequency
+ * with BY-parts that never match — `FREQ=MINUTELY;BYMONTH=2;BYMONTHDAY=30` —
+ * loops inside one `next()` for ever, out of reach of every check between
+ * steps: one invitation froze this single-threaded process. The check itself
+ * is wrapped, so the walk is stopped from inside.
+ */
+const MAX_RULE_CHECKS = 100_000;
+
+class RuleTooExpensive extends Error {}
+
+let ruleGuard: { left: number; deadline: number } | undefined;
+
+const checkContractingRules =
+  ICAL.RecurIterator.prototype.check_contracting_rules;
+ICAL.RecurIterator.prototype.check_contracting_rules = function (
+  this: ICAL.RecurIterator
+): boolean {
+  if (ruleGuard !== undefined) {
+    ruleGuard.left -= 1;
+    if (
+      ruleGuard.left < 0 ||
+      (ruleGuard.left % 1024 === 0 && Date.now() > ruleGuard.deadline)
+    ) {
+      throw new RuleTooExpensive();
+    }
+  }
+  return checkContractingRules.call(this);
+};
+
+const TOO_EXPENSIVE_NOTE =
+  'A recurrence rule in this window could not be walked within its budget — ' +
+  'its parts rarely or never match — so the series is incomplete.';
+
 const TOO_LONG_NOTE =
   'Expanding the recurring entries took too long, so the result is ' +
   'incomplete. Ask for a shorter range or fewer calendars.';
@@ -378,53 +415,62 @@ export function expandSeries(
   const occurrences: Occurrence[] = [];
   let truncated = false;
 
-  const expansion = new ICAL.RecurExpansion({
-    component: master,
-    dtstart: master.getFirstPropertyValue('dtstart') as ICAL.Time,
-  });
   const stopAfter = options.to.getTime() + WINDOW_SLACK_MS;
+  ruleGuard = { left: MAX_RULE_CHECKS, deadline };
+  try {
+    const expansion = new ICAL.RecurExpansion({
+      component: master,
+      dtstart: master.getFirstPropertyValue('dtstart') as ICAL.Time,
+    });
 
-  for (let steps = 0; ; steps += 1) {
-    if (steps >= MAX_ITERATIONS) {
-      bounded = true;
-      notes.push(
-        `This series generates more than ${MAX_ITERATIONS} occurrences in the ` +
-          'window asked for, so the walk was stopped. Ask for a shorter range.'
-      );
-      break;
+    for (let steps = 0; ; steps += 1) {
+      if (steps >= MAX_ITERATIONS) {
+        bounded = true;
+        notes.push(
+          `This series generates more than ${MAX_ITERATIONS} occurrences in the ` +
+            'window asked for, so the walk was stopped. Ask for a shorter range.'
+        );
+        break;
+      }
+      if (steps % 256 === 0 && Date.now() > deadline) {
+        bounded = true;
+        notes.push(TOO_LONG_NOTE);
+        break;
+      }
+
+      const next = expansion.next();
+      if (next === null || next === undefined) break;
+      const at = instantOfTime(next, masterStart.zone, options.fallbackZone);
+      if (at.instant.getTime() > stopAfter) break;
+
+      const key = keyOf(at);
+      if (exdates.has(key)) continue;
+
+      const override = overrideByKey.get(key);
+      const occurrence =
+        override === undefined
+          ? occurrenceFromMaster(master, at, masterStart, options.fallbackZone)
+          : toOccurrence(override, options.fallbackZone, true);
+      if (occurrence === undefined) continue;
+      emitted.add(key);
+
+      // The window is tested against the instance's own times, not against the
+      // point the rule generated: an override that moved this instance out of the
+      // window must not appear, even though its RECURRENCE-ID is inside it.
+      if (!overlaps(occurrence, options)) continue;
+
+      occurrences.push(occurrence);
+      if (occurrences.length >= options.cap) {
+        truncated = true;
+        break;
+      }
     }
-    if (steps % 256 === 0 && Date.now() > deadline) {
-      bounded = true;
-      notes.push(TOO_LONG_NOTE);
-      break;
-    }
-
-    const next = expansion.next();
-    if (next === null || next === undefined) break;
-    const at = instantOfTime(next, masterStart.zone, options.fallbackZone);
-    if (at.instant.getTime() > stopAfter) break;
-
-    const key = keyOf(at);
-    if (exdates.has(key)) continue;
-
-    const override = overrideByKey.get(key);
-    const occurrence =
-      override === undefined
-        ? occurrenceFromMaster(master, at, masterStart, options.fallbackZone)
-        : toOccurrence(override, options.fallbackZone, true);
-    if (occurrence === undefined) continue;
-    emitted.add(key);
-
-    // The window is tested against the instance's own times, not against the
-    // point the rule generated: an override that moved this instance out of the
-    // window must not appear, even though its RECURRENCE-ID is inside it.
-    if (!overlaps(occurrence, options)) continue;
-
-    occurrences.push(occurrence);
-    if (occurrences.length >= options.cap) {
-      truncated = true;
-      break;
-    }
+  } catch (error) {
+    if (!(error instanceof RuleTooExpensive)) throw error;
+    bounded = true;
+    notes.push(TOO_EXPENSIVE_NOTE);
+  } finally {
+    ruleGuard = undefined;
   }
 
   // Pass B — the overrides the rule walk could not reach. An instance moved a

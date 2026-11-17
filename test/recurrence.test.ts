@@ -118,6 +118,64 @@ describe('a rule that does not end', () => {
     expect(result.bounded).toBe(false);
   });
 
+  // ical.js loops inside one next() until a candidate passes the BY-parts, and
+  // only MONTHLY and YEARLY count their misses. These never match, so the walk
+  // ran for ever (MINUTELY), until a RangeError (DAILY), or for seconds.
+  it.each([
+    'FREQ=MINUTELY;BYMONTH=2;BYMONTHDAY=30',
+    'FREQ=HOURLY;BYMONTH=2;BYMONTHDAY=30',
+    'FREQ=DAILY;BYMONTH=2;BYMONTHDAY=30',
+    'FREQ=SECONDLY;BYMONTH=1;BYMONTHDAY=1;BYHOUR=0;BYMINUTE=0',
+  ])(
+    'stops a rule whose parts never match from inside ical.js: %s',
+    (rule) => {
+      const started = Date.now();
+      const result = expand(
+        calendar(
+          event([
+            'DTSTART:20260101T000000Z',
+            'DTEND:20260101T000100Z',
+            `RRULE:${rule}`,
+          ])
+        ),
+        { from: '2026-11-01T00:00:00Z', to: '2026-12-01T00:00:00Z', cap: 500 }
+      );
+      expect(Date.now() - started).toBeLessThan(3_000);
+      expect(result.bounded).toBe(true);
+      expect(result.occurrences).toEqual([]);
+      expect(result.notes.join(' ')).toContain(
+        'could not be walked within its budget'
+      );
+    },
+    20_000
+  );
+
+  it('leaves the guard off outside a walk, and a later walk unharmed', () => {
+    const impossible = expand(
+      calendar(
+        event([
+          'DTSTART:20260101T000000Z',
+          'DTEND:20260101T000100Z',
+          'RRULE:FREQ=MINUTELY;BYMONTH=2;BYMONTHDAY=30',
+        ])
+      ),
+      { from: '2026-11-01T00:00:00Z', to: '2026-12-01T00:00:00Z', cap: 500 }
+    );
+    expect(impossible.bounded).toBe(true);
+    const weekly = expand(
+      calendar(
+        event([
+          'DTSTART:20261102T090000Z',
+          'DTEND:20261102T100000Z',
+          'RRULE:FREQ=WEEKLY;BYDAY=MO',
+        ])
+      ),
+      { from: '2026-11-01T00:00:00Z', to: '2026-12-01T00:00:00Z', cap: 500 }
+    );
+    expect(weekly.occurrences).toHaveLength(5);
+    expect(weekly.bounded).toBe(false);
+  });
+
   it('stops on the iteration bound and says so, rather than running away', () => {
     // FREQ=SECONDLY over a month is millions of instances. The window filter
     // alone would not save the process; the iteration bound is what does.
