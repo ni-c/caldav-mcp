@@ -66,14 +66,29 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - The five seconds of expansion per call ran out while a slow server answered,
   so every series stopped at its first step.
 - `truncated_fields` named a field that had only lost invisible characters.
+- A spent expansion budget still gave every further series 256 steps.
+- A completed recurring task could fill the occurrence ceiling of a listing
+  that leaves it out.
+- Two occurrences with the same start and id made paging loop.
 
 ### Security
 
+- A recurrence rule whose parts never match, such as
+  `FREQ=MINUTELY;BYMONTH=2;BYMONTHDAY=30`, made ical.js loop for ever inside a
+  single step, out of reach of every deadline: one invitation froze the
+  server. A DAILY rule of the same kind ran for over a minute. The rule check
+  is now bounded from inside, and the series is reported as incomplete.
+- A note about an entry the parser refused quoted part of the refused line.
+  It now says only that the entry is not readable.
+- An image reference whose alt text was longer than 200 characters passed the
+  defusing untouched.
+- `get_free_busy` worked out from events joins overlapping and touching periods
+  and stays under the size ceiling; FBTYPE is kept only as a token.
 - Every Unicode format character and every other default-ignorable code point
   is removed from calendar text and escaped where the server quotes a value:
   the tag block (U+E0000–E007F), which spells ASCII invisibly, and the
   variation selectors, which carry a hidden byte each. The previous list of
-  ranges stopped at U+FEFF. U+FE0E and U+FE0F stay. Text is cut on code points,
+  ranges stopped at U+FEFF. U+FE0E and U+FE0F stay, once and only straight after an emoji. Text is cut on code points,
   so a cut no longer leaves half a surrogate pair.
 - A listing shaped every occurrence it collected, up to 5000, before cutting
   out a page, and each one cleaned its master's text again: one hourly series
