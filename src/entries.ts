@@ -329,16 +329,23 @@ export async function listEntries(
       continue;
     }
     for (const document of documents) {
+      // Checked per document, not only per calendar: one calendar of long
+      // series could otherwise collect without bound.
+      if (collected.length >= MAX_COLLECTED) {
+        stop = 'ceiling';
+        break;
+      }
       const result = expandOne(
         document,
         options,
+        MAX_COLLECTED - collected.length,
         deadline,
         context.config.timezone,
         notes
       );
       if (result === undefined) continue;
       notes.push(...result.notes);
-      if (result.bounded && result.uid !== undefined) {
+      if ((result.bounded || result.truncated) && result.uid !== undefined) {
         boundedSeries.push(result.uid);
       }
       if (
@@ -406,9 +413,10 @@ export async function listEntries(
             : stoppedReason(stop, asked, calendars.length),
           remaining > 0
             ? `${remaining} more entr${remaining === 1 ? 'y' : 'ies'} in this window.`
-            : series.length > 0
-              ? 'At least one recurring entry generated more occurrences than could be walked.'
-              : undefined,
+            : undefined,
+          series.length > 0
+            ? 'At least one recurring entry generated more occurrences than could be walked.'
+            : undefined,
           fitReason(page, kept)
         ),
         returned: kept,
@@ -421,7 +429,9 @@ export async function listEntries(
           stop !== undefined
             ? STOPPED_FOLLOW_UP
             : remaining > 0
-              ? 'Call again with `after` set to next_cursor, or narrow the window.'
+              ? series.length > 0
+                ? 'Call again with `after` set to next_cursor, or narrow the window; the entries named in bounded_series are the expensive ones.'
+                : 'Call again with `after` set to next_cursor, or narrow the window.'
               : 'Narrow the window; the entries named in bounded_series are the expensive ones.',
       };
     }
@@ -697,9 +707,14 @@ export async function searchEntries(
   const collected: { occurrence: Occurrence; document: ResourceDocument }[] =
     [];
   for (const document of documents) {
+    if (collected.length >= MAX_COLLECTED) {
+      stop = 'ceiling';
+      break;
+    }
     const result = expandOne(
       document,
       options,
+      MAX_COLLECTED - collected.length,
       deadline,
       context.config.timezone,
       notes
@@ -780,7 +795,8 @@ export async function searchEntries(
  */
 function expandOne(
   document: ResourceDocument,
-  options: { kind: Kind; from: Date; to: Date; limit: number },
+  options: { kind: Kind; from: Date; to: Date },
+  room: number,
   deadline: number,
   fallbackZone: string,
   notes: string[]
@@ -791,9 +807,10 @@ function expandOne(
     const expansion = expandSeries(components, {
       from: options.from,
       to: options.to,
-      // One entry may not exceed the whole answer, so the per-series cap is the
-      // request cap. It cannot spend more than that anyway.
-      cap: options.limit,
+      // The room left under the call's ceiling, not the page size: a series
+      // capped at `limit` lost every later occurrence on every page, because
+      // the next page expands the series again from the start of the window.
+      cap: Math.max(1, room),
       fallbackZone,
       deadline,
     });
