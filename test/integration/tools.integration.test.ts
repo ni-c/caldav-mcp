@@ -547,10 +547,11 @@ describe('tasks', () => {
     await asking.call('get_task', { id: state.taskId }, { expectError: true });
   });
 
-  it('finds a task that has no date, which no time range can return', async () => {
-    // A time-range filter is matched against DTSTART and DUE, so the server
-    // itself leaves such a task out. This is the one thing the unit suites
-    // cannot show: their fake answers a REPORT with every task regardless.
+  it('finds a task that has no date, which a windowed listing leaves out', async () => {
+    // Radicale does return such a task to a windowed query (RFC 4791 9.9
+    // matches it through CREATED); the listing cannot place it in time, so it
+    // only counts it. This is what the unit suites cannot show: their fake
+    // answers a REPORT with every task regardless of the filter.
     const created = await data(asking, 'create_task', {
       calendar_id: WORK,
       summary: 'Sort out the garage',

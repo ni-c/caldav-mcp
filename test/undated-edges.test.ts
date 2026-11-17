@@ -158,7 +158,7 @@ describe('the undated listing at its edges', () => {
     const truncated = (await undated({ limit: 2 })).truncated as {
       reason: string;
     };
-    expect(truncated.reason).toContain('5000 occurrences had been collected');
+    expect(truncated.reason).toContain('5000 tasks had been collected');
   });
 
   it('lets update_task change an undated task and read it back', async () => {

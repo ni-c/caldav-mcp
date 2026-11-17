@@ -131,7 +131,7 @@ export const afterParam = z
   .optional()
   .describe(
     'The `truncated.next_cursor` of a previous call, to continue where it ' +
-      'stopped. The window has to be the same one.'
+      'stopped. Pass the same arguments as the call that returned it.'
   );
 
 /** The two-call fallback for a client that cannot show a dialog. */

@@ -11,10 +11,11 @@ import {
 /**
  * `list_tasks` with `undated`.
  *
- * A `time-range` filter is matched against DTSTART and DUE, so a task that has
- * neither is in no window and no windowed listing can return it. These tests
- * pin the other half: that such a task can be listed, read back and completed,
- * and that asking for it does not change what a windowed listing returns.
+ * A task with neither DTSTART nor DUE has no place in a window, so a windowed
+ * listing leaves it out (the server may still return it: RFC 4791 9.9 matches
+ * it through CREATED or COMPLETED, or always). These tests pin the other half:
+ * that such a task can be listed, read back and completed, and that asking for
+ * it does not change what a windowed listing returns.
  */
 
 const WINDOW = { from: '2026-09-01', to: '2026-09-30' };

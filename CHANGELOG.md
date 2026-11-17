@@ -16,15 +16,56 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Added
 
 - `list_tasks` takes `undated: true` to list the tasks that have neither a
-  start nor a due date. A `time-range` query is matched against those two
-  properties, so such a task was in no window and could not be found at all.
-  `get_task` now reads one back by id. The option takes no time range and is
-  refused together with `from`, `to` or `timezone`; it asks the server for
-  every task in the calendars and keeps the ones without a date.
+  start nor a due date (#51). A windowed listing cannot place such a task in
+  time and leaves it out, although the server does return it there: RFC 4791
+  matches it through CREATED or COMPLETED, or always. The option asks the
+  server for exactly these tasks with `is-not-defined`, reads every task and
+  keeps the undated ones where a server refuses that filter, and is refused
+  together with `from`, `to` or `timezone`.
+- A windowed `list_tasks` says how many tasks without a date the server
+  returned, and how to list them.
+- `update_task` takes null for `due` and `start` to remove that date. Removing a
+  start that a recurrence rule, a date list or a duration depends on is refused
+  before anything is written.
 
 ### Changed
 
 - Require Node.js 24 or newer. CI tests the latest 24 and 26 LTS releases; Node 22 is no longer supported.
+- A listing is fitted to the size ceiling as it is emitted, indented, before it
+  is counted. Pages that reach the ceiling hold fewer entries than before, and
+  `count`, `truncated.returned` and `next_cursor` describe the page returned.
+- One calendar that refuses a request — any status but 401 and 429, or an
+  answer over the size ceiling — no longer fails `list_events`, `list_tasks`,
+  `list_journals`, `search_events` or `get_free_busy`: the other calendars are
+  listed and a note names the one that refused. When every calendar refuses,
+  the call is still an error.
+
+### Fixed
+
+- `get_task` failed on a task without a date, and `update_task` and
+  `complete_task` wrote the change and then reported an error (#51).
+- One task with an unreadable CREATED, LAST-MODIFIED or COMPLETED value made
+  every listing of its calendar fail. The field is now left out.
+- A task with an unreadable DTSTART or DUE, or with a recurrence rule but no
+  start or due date, vanished from the undated listing without a note.
+- A windowed `list_tasks` left completed tasks out after the page was cut, so a
+  page could hold fewer tasks than its limit while claiming more, and a STATUS
+  in fullwidth letters counted as open in one mode and done in the other.
+- Entries the size budget dropped were paged past for good.
+- A recurring series was expanded to at most `limit` occurrences, so its later
+  occurrences appeared on no page, with no note.
+
+### Security
+
+- Every Unicode format character is removed from calendar text and escaped
+  where the server quotes a value, the tag block (U+E0000–E007F) included:
+  it spells ASCII invisibly, and the previous list of ranges stopped at U+FEFF.
+- A note about an unreadable entry repeated the resource name uncut through the
+  parser's message. The name is now quoted once, cut and escaped.
+- `bounded_series` named UIDs taken raw from the iCalendar text. They are now
+  cleaned like every other field, and at most twenty are named.
+- Notes about individual entries are capped at twenty, so a calendar full of
+  broken entries cannot crowd the entries out of an answer.
 
 ## [0.1.5] - 2026-10-13
 

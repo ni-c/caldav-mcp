@@ -98,11 +98,10 @@ export function registerTaskReadTools(
     {
       title: 'List tasks',
       description:
-        'Tasks with a start or due date inside a time range. Tasks with no ' +
-        'date at all are not returned by a time-range query — the CalDAV ' +
-        'specification defines the filter against the dates, and a task with ' +
-        'none of them matches no window. Set `undated` to list exactly those ' +
-        'instead.',
+        'Tasks with a start or due date inside a time range. A task with ' +
+        'neither has no place in a window: the server may well return it, but ' +
+        'a windowed listing leaves it out and says how many it was given. Set ' +
+        '`undated` to list exactly those instead.',
       inputSchema: z.object({
         from: instantParam.optional(),
         to: instantParam.optional(),
@@ -117,9 +116,8 @@ export function registerTaskReadTools(
           .optional()
           .describe(
             'List only the tasks that have neither a start nor a due date, ' +
-              'which no time range can return. Takes no time range: it cannot ' +
-              'be combined with `from`, `to` or `timezone`, and it reads every ' +
-              'task in the calendars rather than a window of them.'
+              'which a windowed listing leaves out. Takes no time range: it ' +
+              'cannot be combined with `from`, `to` or `timezone`.'
           ),
         limit: limitParam,
         after: afterParam,

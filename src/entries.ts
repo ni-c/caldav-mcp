@@ -265,11 +265,16 @@ export const MAX_COLLECTED = 5_000;
 type Stop = 'time' | 'ceiling';
 
 /** The sentence a truncated answer carries about an early stop. */
-function stoppedReason(stop: Stop, asked: number, total: number): string {
+function stoppedReason(
+  stop: Stop,
+  asked: number,
+  total: number,
+  collected = 'occurrences'
+): string {
   const why =
     stop === 'time'
       ? `the call's ${CALL_BUDGET_MS / 1000}-second budget ran out`
-      : `${MAX_COLLECTED} occurrences had been collected`;
+      : `${MAX_COLLECTED} ${collected} had been collected`;
   return `Stopped after ${asked} of ${total} calendars: ${why}.`;
 }
 
@@ -457,13 +462,10 @@ export interface UndatedListOptions {
 /**
  * Lists the tasks that carry no date at all: no DTSTART and no DUE.
  *
- * A `time-range` filter is matched against those two properties, so such a
- * task is in no window and a windowed listing can never return it — it looks
- * exactly like a task that does not exist. The only way to see one is to ask
- * for every VTODO with no time filter and keep the ones that have no date,
- * which is what this does. That reads every task in the calendar rather than a
- * window of them, so it is a separate request from a windowed listing and not
- * what `list_tasks` does by default.
+ * A server does return such a task to a windowed query — RFC 4791 9.9 matches
+ * it through CREATED or COMPLETED, or always — but no window can place it, so
+ * the windowed listing leaves it out and only counts it. This asks the server
+ * for exactly these with `is-not-defined`, and every task is checked here too.
  *
  * Sorted by calendar and file name, since there is no time to sort by. The
  * cursor is the entry's id alone.
@@ -594,7 +596,7 @@ export async function listUndatedTasks(
         reason: sentences(
           stop === undefined
             ? undefined
-            : stoppedReason(stop, asked, calendars.length),
+            : stoppedReason(stop, asked, calendars.length, 'tasks'),
           remaining > 0
             ? `${remaining} more task${remaining === 1 ? '' : 's'} with no date.`
             : undefined,

@@ -52,7 +52,7 @@ Events between two points in time, from every calendar this server may see or fr
 | `timezone` | string | no | IANA zone for timestamps that carry no offset, e.g. "Europe/Berlin". Defaults to CALDAV_TIMEZONE. Refused together with a value that already carries an offset. |
 | `calendars` | string[] | no | Which calendars to look in. Leave it out for all of them. A calendar outside CALDAV_CALENDARS is refused rather than silently skipped. |
 | `limit` | integer | no | Entries to return, at most 500. Defaults to CALDAV_MAX_EVENTS. |
-| `after` | string | no | The `truncated.next_cursor` of a previous call, to continue where it stopped. The window has to be the same one. |
+| `after` | string | no | The `truncated.next_cursor` of a previous call, to continue where it stopped. Pass the same arguments as the call that returned it. |
 
 ### `get_event`
 
@@ -97,7 +97,7 @@ Busy periods in a time range — start and end only, no titles and no attendees.
 
 **List tasks** — read-only
 
-Tasks with a start or due date inside a time range. Tasks with no date at all are not returned by a time-range query - the CalDAV specification defines the filter against the dates, and a task with none of them matches no window. Set `undated` to list exactly those instead.
+Tasks with a start or due date inside a time range. A task with neither has no place in a window: the server may well return it, but a windowed listing leaves it out and says how many it was given. Set `undated` to list exactly those instead.
 
 | Parameter | Type | Required | Description |
 | --- | --- | --- | --- |
@@ -106,9 +106,9 @@ Tasks with a start or due date inside a time range. Tasks with no date at all ar
 | `timezone` | string | no | IANA zone for timestamps that carry no offset, e.g. "Europe/Berlin". Defaults to CALDAV_TIMEZONE. Refused together with a value that already carries an offset. |
 | `calendars` | string[] | no | Which calendars to look in. Leave it out for all of them. A calendar outside CALDAV_CALENDARS is refused rather than silently skipped. |
 | `include_completed` | boolean | no | Defaults to false, which leaves completed tasks out. |
-| `undated` | boolean | no | List only the tasks that have neither a start nor a due date, which no time range can return. Takes no time range: it cannot be combined with `from`, `to` or `timezone`, and it reads every task in the calendars rather than a window of them. |
+| `undated` | boolean | no | List only the tasks that have neither a start nor a due date, which a windowed listing leaves out. Takes no time range: it cannot be combined with `from`, `to` or `timezone`. |
 | `limit` | integer | no | Entries to return, at most 500. Defaults to CALDAV_MAX_EVENTS. |
-| `after` | string | no | The `truncated.next_cursor` of a previous call, to continue where it stopped. The window has to be the same one. |
+| `after` | string | no | The `truncated.next_cursor` of a previous call, to continue where it stopped. Pass the same arguments as the call that returned it. |
 
 ### `get_task`
 
@@ -133,7 +133,7 @@ Dated notes in a calendar, inside a time range. Most calendar clients hide these
 | `timezone` | string | no | IANA zone for timestamps that carry no offset, e.g. "Europe/Berlin". Defaults to CALDAV_TIMEZONE. Refused together with a value that already carries an offset. |
 | `calendars` | string[] | no | Which calendars to look in. Leave it out for all of them. A calendar outside CALDAV_CALENDARS is refused rather than silently skipped. |
 | `limit` | integer | no | Entries to return, at most 500. Defaults to CALDAV_MAX_EVENTS. |
-| `after` | string | no | The `truncated.next_cursor` of a previous call, to continue where it stopped. The window has to be the same one. |
+| `after` | string | no | The `truncated.next_cursor` of a previous call, to continue where it stopped. Pass the same arguments as the call that returned it. |
 
 ### `get_journal`
 
@@ -254,8 +254,8 @@ Changes the fields named and leaves everything else as it was. Pass null to clea
 | --- | --- | --- | --- |
 | `id` | string | yes | An id from a listing tool. Not meant to be built by hand. |
 | `summary` | string | no | The title. |
-| `due` | string | no | ISO 8601: "2026-09-07" for a whole day, "2026-09-07T09:00:00" in the timezone argument or CALDAV_TIMEZONE, or "2026-09-07T09:00:00+02:00". |
-| `start` | string | no | ISO 8601: "2026-09-07" for a whole day, "2026-09-07T09:00:00" in the timezone argument or CALDAV_TIMEZONE, or "2026-09-07T09:00:00+02:00". |
+| `due` | string | no | When it is due. ISO 8601: "2026-09-07" for a whole day, "2026-09-07T09:00:00" in the timezone argument or CALDAV_TIMEZONE, or "2026-09-07T09:00:00+02:00". Pass null to remove it, leave it out to keep it. |
+| `start` | string | no | When work on it can begin. ISO 8601: "2026-09-07" for a whole day, "2026-09-07T09:00:00" in the timezone argument or CALDAV_TIMEZONE, or "2026-09-07T09:00:00+02:00". Pass null to remove it, leave it out to keep it; refused while a recurrence rule or a duration depends on it. |
 | `timezone` | string | no | IANA zone for timestamps that carry no offset, e.g. "Europe/Berlin". Defaults to CALDAV_TIMEZONE. Refused together with a value that already carries an offset. |
 | `description` | unknown | no | Longer text. Pass null to remove it, leave it out to keep it. |
 | `priority` | integer | no |  |
