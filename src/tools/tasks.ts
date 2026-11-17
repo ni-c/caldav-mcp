@@ -66,6 +66,29 @@ import { loadEntry, resolveWindow } from './common.js';
  * has to describe both ends up with every field optional, which tells a model
  * nothing about what it may send.
  */
+/**
+ * The note a windowed task listing adds when the server returned tasks without
+ * a start or due date. RFC 4791 9.9 matches such a task through CREATED or
+ * COMPLETED, or always, so the server does return them; no window can place
+ * them, so they are not listed. The note says only what the server returned.
+ */
+function undatedHint(
+  count: number,
+  includeCompleted: boolean | undefined
+): string | undefined {
+  if (count === 0) return undefined;
+  const tasks = `${count}${includeCompleted === true ? '' : ' open'} task${count === 1 ? '' : 's'}`;
+  const flags =
+    includeCompleted === true
+      ? '`undated: true` and `include_completed: true`'
+      : '`undated: true`';
+  return (
+    `The server also returned ${tasks} without a start or due date. No time ` +
+    `range can place them, so they are not in \`tasks\`; call list_tasks ` +
+    `with ${flags} to list them.`
+  );
+}
+
 export function registerTaskReadTools(
   server: McpServer,
   context: ToolContext
@@ -151,6 +174,10 @@ export function registerTaskReadTools(
                 after: args.after,
                 includeCompleted: args.include_completed === true,
               });
+        const hint =
+          window === undefined
+            ? undefined
+            : undatedHint(listing.undatedTasks ?? 0, args.include_completed);
         return fittedListingResult(
           listing,
           (page) => ({
@@ -164,7 +191,11 @@ export function registerTaskReadTools(
                     to: window.to.toISOString(),
                   },
                 }),
-            ...(page.notes.length > 0 ? { notes: page.notes } : {}),
+            ...(hint === undefined && page.notes.length === 0
+              ? {}
+              : {
+                  notes: [...(hint === undefined ? [] : [hint]), ...page.notes],
+                }),
             ...(page.truncated === undefined
               ? {}
               : { truncated: page.truncated }),

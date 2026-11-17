@@ -275,6 +275,12 @@ describe('tasks without a date, where the filters differ', () => {
     expect(JSON.stringify(listing.notes ?? [])).not.toContain(
       'refused the filter'
     );
+    // Without CREATED or COMPLETED the task matches every time range on sabre
+    // (RFC 4791 9.9), so a windowed listing is given it and says so.
+    const windowed = await call('list_tasks', {});
+    expect(JSON.stringify(windowed.notes ?? [])).toContain(
+      'without a start or due date'
+    );
   });
 });
 

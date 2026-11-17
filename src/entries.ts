@@ -230,6 +230,12 @@ export interface Page {
  */
 export interface Listing extends Page {
   cut(kept: number): Page;
+  /**
+   * In a windowed task listing: how many tasks without a start or due date the
+   * server returned and the window could not place (RFC 4791 9.9 matches them
+   * through CREATED or COMPLETED, or always). Counted, never listed.
+   */
+  undatedTasks?: number;
 }
 
 /**
@@ -298,6 +304,7 @@ export async function listEntries(
   let asked = 0;
   let stop: Stop | undefined;
   const refusals: Refusal[] = [];
+  let undatedTasks = 0;
 
   for (const calendar of calendars) {
     if (Date.now() - started > CALL_BUDGET_MS) {
@@ -333,6 +340,12 @@ export async function listEntries(
       notes.push(...result.notes);
       if (result.bounded && result.uid !== undefined) {
         boundedSeries.push(result.uid);
+      }
+      if (
+        result.undated !== undefined &&
+        !leftOut(result.undated.component, options)
+      ) {
+        undatedTasks += 1;
       }
       for (const occurrence of result.occurrences) {
         if (leftOut(occurrence.component, options)) continue;
@@ -415,7 +428,11 @@ export async function listEntries(
     return result;
   };
 
-  return { ...pageOf(page.length), cut: pageOf };
+  return {
+    ...pageOf(page.length),
+    cut: pageOf,
+    ...(options.kind === 'vtodo' ? { undatedTasks } : {}),
+  };
 }
 
 export interface UndatedListOptions {
@@ -771,17 +788,22 @@ function expandOne(
   try {
     const root = parseCalendar(document.ics, 'the stored entry');
     const components = componentsOf(root, options.kind);
+    const expansion = expandSeries(components, {
+      from: options.from,
+      to: options.to,
+      // One entry may not exceed the whole answer, so the per-series cap is the
+      // request cap. It cannot spend more than that anyway.
+      cap: options.limit,
+      fallbackZone,
+      deadline,
+    });
     return {
-      ...expandSeries(components, {
-        from: options.from,
-        to: options.to,
-        // One entry may not exceed the whole answer, so the per-series cap is the
-        // request cap. It cannot spend more than that anyway.
-        cap: options.limit,
-        fallbackZone,
-        deadline,
-      }),
+      ...expansion,
       uid: cleanedUid(components),
+      undated:
+        options.kind === 'vtodo' && expansion.occurrences.length === 0
+          ? undatedOccurrence(components, fallbackZone)
+          : undefined,
     };
   } catch (error) {
     notes.push(skippedNote(document, error));

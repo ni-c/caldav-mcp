@@ -566,6 +566,12 @@ describe('tasks', () => {
       );
     };
     expect(await inWindow()).toBe(false);
+    // The default window (now, thirty days on) ends after this task's CREATED,
+    // so Radicale returns it there (RFC 4791 9.9) and the listing says so.
+    const windowed = await data(asking, 'list_tasks', {});
+    expect(JSON.stringify(windowed.notes ?? [])).toContain(
+      'without a start or due date'
+    );
 
     const undated = await data(asking, 'list_tasks', { undated: true });
     const found = (undated.tasks as { id: string; summary?: string }[]).find(
