@@ -71,6 +71,27 @@ export function fitPrefix<T extends Record<string, unknown>>(
 }
 
 /**
+ * How many leading entries could fit at all, measured one entry at a time.
+ *
+ * Each entry is serialised on its own and the sum stops at the first one past
+ * the ceiling, so a page of entries too large to serialise together — a series
+ * whose master carries thousands of attendees, repeated on every occurrence —
+ * is never serialised as a whole. Standalone, an entry is indented less than
+ * inside the answer, so the sum is a lower bound and the count an upper one.
+ */
+export function entriesThatCouldFit(
+  entries: readonly unknown[],
+  maxBytes = MAX_RESULT_BYTES
+): number {
+  let total = 0;
+  for (const [index, entry] of entries.entries()) {
+    total += JSON.stringify(entry, null, 2).length;
+    if (total > maxBytes) return index;
+  }
+  return entries.length;
+}
+
+/**
  * A listing's answer, fitted to the ceiling before it is counted.
  *
  * `answer` builds the tool's object from one page; the page that fits is the
@@ -82,8 +103,9 @@ export function fittedListingResult(
   answer: (page: Page) => Record<string, unknown>,
   followUp?: string
 ): CallToolResult {
-  const { answer: fitted } = fitPrefix(listing.entries.length, (kept) =>
-    answer(listing.cut(kept))
+  const { answer: fitted } = fitPrefix(
+    entriesThatCouldFit(listing.entries),
+    (kept) => answer(listing.cut(kept))
   );
   return untrustedResult(fitted, followUp);
 }

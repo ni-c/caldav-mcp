@@ -3,6 +3,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import {
   budget,
   emittedLength,
+  entriesThatCouldFit,
   fitPrefix,
   MAX_RESULT_BYTES,
 } from '../src/result.js';
@@ -38,6 +39,35 @@ describe('fitPrefix', () => {
     const atCeiling = emittedLength(answerFor(3));
     expect(fitPrefix(3, answerFor, atCeiling).kept).toBe(3);
     expect(fitPrefix(3, answerFor, atCeiling - 1).kept).toBe(2);
+  });
+});
+
+describe('entriesThatCouldFit', () => {
+  const entry = { text: 'x'.repeat(100) };
+  const size = JSON.stringify(entry, null, 2).length;
+
+  it('is 0 for no entries, and for one that is too large alone', () => {
+    expect(entriesThatCouldFit([])).toBe(0);
+    expect(entriesThatCouldFit([entry], size - 1)).toBe(0);
+  });
+
+  it('counts every entry exactly at the ceiling, and one fewer just under it', () => {
+    expect(entriesThatCouldFit([entry, entry, entry], 3 * size)).toBe(3);
+    expect(entriesThatCouldFit([entry, entry, entry], 3 * size - 1)).toBe(2);
+  });
+
+  it('stops at the first entry past the ceiling and never reads the rest', () => {
+    let read = 0;
+    const counted = {
+      toJSON: () => {
+        read += 1;
+        return entry;
+      },
+    };
+    expect(
+      entriesThatCouldFit([counted, counted, counted, counted], size)
+    ).toBe(1);
+    expect(read).toBe(2);
   });
 });
 

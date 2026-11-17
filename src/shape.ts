@@ -37,6 +37,8 @@ export interface ShapeOptions {
   detailed: boolean;
   /** The address `respond_to_event` would act as, for marking `is_self`. */
   selfAddresses?: readonly string[];
+  /** One per listing call; see {@link ShapeCache}. */
+  cache?: ShapeCache;
 }
 
 export interface Shaped {
@@ -48,12 +50,132 @@ export interface Shaped {
   warnings: string[];
 }
 
+/**
+ * Fields of a listing that depend on the component alone, cleaned once.
+ *
+ * Every occurrence of a series reads the same master, so shaping each one
+ * cleaned the same text and rebuilt the same attendee list again: one series
+ * with a long description and a few thousand attendees cost seconds and a
+ * gigabyte of heap for a page of one. A listing passes one cache per call.
+ */
+export type ShapeCache = WeakMap<ICAL.Component, ComponentFields>;
+
+export function newShapeCache(): ShapeCache {
+  return new WeakMap();
+}
+
+interface ComponentFields {
+  head: Record<string, unknown>;
+  tail: Record<string, unknown>;
+  hasRule: boolean;
+  kindFields: Record<string, unknown>;
+  truncatedFields: string[];
+  warnings: string[];
+  lookalikes: string[];
+  fenced: string;
+}
+
+/**
+ * The key a listing sorts, pages and resumes by, without shaping the entry:
+ * the start as reported, and the id. For a task with only a DUE that start is
+ * the due date, which is also what the listing sorts it by. A task with no
+ * date at all has none.
+ */
+export function occurrenceKey(
+  occurrence: Occurrence | UndatedOccurrence,
+  options: Pick<
+    ShapeOptions,
+    'kind' | 'calendar' | 'resourceName' | 'fallbackZone'
+  >
+): { id: string; start: string } {
+  return {
+    id: entryIdOf(occurrence, options),
+    start:
+      occurrence.start === undefined
+        ? ''
+        : String(timeField(occurrence.start, options.fallbackZone).value),
+  };
+}
+
+function entryIdOf(
+  occurrence: Occurrence | UndatedOccurrence,
+  options: Pick<ShapeOptions, 'kind' | 'calendar' | 'resourceName'>
+): string {
+  return occurrence.recurrenceId === undefined
+    ? buildSeriesId(options.kind, options.calendar.path, options.resourceName)
+    : buildOccurrenceId(
+        options.kind,
+        options.calendar.path,
+        options.resourceName,
+        occurrence.recurrenceId
+      );
+}
+
 /** Projects one occurrence into the shape its tool declares. */
 export function shapeEntry(
   occurrence: Occurrence | UndatedOccurrence,
   options: ShapeOptions
 ): Shaped {
   const component = occurrence.component;
+  let fields = options.cache?.get(component);
+  if (fields === undefined) {
+    fields = componentFields(component, options);
+    options.cache?.set(component, fields);
+  }
+
+  const seriesId = buildSeriesId(
+    options.kind,
+    options.calendar.path,
+    options.resourceName
+  );
+  const entry: Record<string, unknown> = {
+    id: entryIdOf(occurrence, options),
+    series_id: seriesId,
+    calendar: options.calendar.path,
+    ...fields.head,
+    recurring: occurrence.recurrenceId !== undefined || fields.hasRule,
+    ...(occurrence.recurrenceId === undefined
+      ? {}
+      : {
+          recurrence_id: timeField(occurrence.start, options.fallbackZone),
+          is_override: occurrence.isOverride,
+        }),
+    ...fields.tail,
+  };
+
+  // Kind-specific times.
+  if (options.kind === 'vevent') {
+    setTime(entry, 'start', occurrence.start, options.fallbackZone);
+    setTime(entry, 'end', occurrence.end, options.fallbackZone);
+  } else if (options.kind === 'vtodo') {
+    // A task with a deadline and no scheduled start is the ordinary shape, and
+    // the expansion fills `start` from DUE so such a task is visible at all.
+    // Reporting that back as a `start` the entry does not have would be a
+    // fabrication, so the component decides which fields appear.
+    if (component.getFirstProperty('dtstart') !== null) {
+      setTime(entry, 'start', occurrence.start, options.fallbackZone);
+    }
+    if (component.getFirstProperty('due') !== null) {
+      setTime(entry, 'due', occurrence.end, options.fallbackZone);
+    }
+  } else {
+    setTime(entry, 'start', occurrence.start, options.fallbackZone);
+  }
+  Object.assign(entry, fields.kindFields);
+
+  if (fields.truncatedFields.length > 0) {
+    entry.truncated_fields = fields.truncatedFields;
+  }
+  if (fields.warnings.length > 0) entry.warnings = fields.warnings;
+  if (fields.lookalikes.length > 0) entry.lookalike_words = fields.lookalikes;
+
+  return { entry, fenced: fields.fenced, warnings: fields.warnings };
+}
+
+function componentFields(
+  component: ICAL.Component,
+  options: ShapeOptions
+): ComponentFields {
   const limit = options.detailed ? DETAIL_TEXT_CHARS : LIST_TEXT_CHARS;
   const truncatedFields: string[] = [];
 
@@ -73,21 +195,6 @@ export function shapeEntry(
     sanitizeText(value, 200)
   );
 
-  const seriesId = buildSeriesId(
-    options.kind,
-    options.calendar.path,
-    options.resourceName
-  );
-  const id =
-    occurrence.recurrenceId === undefined
-      ? seriesId
-      : buildOccurrenceId(
-          options.kind,
-          options.calendar.path,
-          options.resourceName,
-          occurrence.recurrenceId
-        );
-
   const attendees = readAttendees(component, options.selfAddresses ?? []);
   const organizer = readOrganizer(component, options.selfAddresses ?? []);
   const alarms = readAlarms(component);
@@ -106,10 +213,7 @@ export function shapeEntry(
   const url = optional(readText(component, 'url'), 2000);
 
   const rrule = component.getFirstProperty('rrule');
-  const entry: Record<string, unknown> = {
-    id,
-    series_id: seriesId,
-    calendar: options.calendar.path,
+  const head: Record<string, unknown> = {
     ...maybe('uid', uid),
     ...maybe('summary', summary),
     ...maybe('description', description),
@@ -121,13 +225,8 @@ export function shapeEntry(
     ...maybe('created', isoOf(component, 'created')),
     ...maybe('last_modified', isoOf(component, 'last-modified')),
     ...maybe('sequence', readInt(component, 'sequence')),
-    recurring: occurrence.recurrenceId !== undefined || rrule !== null,
-    ...(occurrence.recurrenceId === undefined
-      ? {}
-      : {
-          recurrence_id: timeField(occurrence.start, options.fallbackZone),
-          is_override: occurrence.isOverride,
-        }),
+  };
+  const tail: Record<string, unknown> = {
     ...maybe(
       'recurrence_rule',
       rrule === null ? undefined : optional(ruleTextOf(rrule), 500)
@@ -138,42 +237,26 @@ export function shapeEntry(
     ...(attendees.length > 0 ? { attendees } : {}),
   };
 
-  // Kind-specific times.
+  const kindFields: Record<string, unknown> = {};
   if (options.kind === 'vevent') {
-    setTime(entry, 'start', occurrence.start, options.fallbackZone);
-    setTime(entry, 'end', occurrence.end, options.fallbackZone);
     const transparency = readText(component, 'transp');
     if (transparency !== undefined) {
-      entry.transparent = transparency.toUpperCase() === 'TRANSPARENT';
+      kindFields.transparent = transparency.toUpperCase() === 'TRANSPARENT';
     }
   } else if (options.kind === 'vtodo') {
-    // A task with a deadline and no scheduled start is the ordinary shape, and
-    // the expansion fills `start` from DUE so such a task is visible at all.
-    // Reporting that back as a `start` the entry does not have would be a
-    // fabrication, so the component decides which fields appear.
-    if (component.getFirstProperty('dtstart') !== null) {
-      setTime(entry, 'start', occurrence.start, options.fallbackZone);
-    }
-    if (component.getFirstProperty('due') !== null) {
-      setTime(entry, 'due', occurrence.end, options.fallbackZone);
-    }
     // COMPLETED is defined as UTC by RFC 5545, so it is reported as an instant
     // rather than through the zone machinery — and as ISO 8601 rather than as
     // the raw iCalendar stamp, which is what every other timestamp here does.
     const completed = component.getFirstProperty('completed');
     const completedAt = completed === null ? undefined : isoInstant(completed);
     if (completedAt !== undefined) {
-      entry.completed = { value: completedAt, all_day: false };
+      kindFields.completed = { value: completedAt, all_day: false };
     }
     const percent = readInt(component, 'percent-complete');
-    if (percent !== undefined) entry.percent_complete = percent;
+    if (percent !== undefined) kindFields.percent_complete = percent;
     const priority = readInt(component, 'priority');
-    if (priority !== undefined) entry.priority = priority;
-  } else {
-    setTime(entry, 'start', occurrence.start, options.fallbackZone);
+    if (priority !== undefined) kindFields.priority = priority;
   }
-
-  if (truncatedFields.length > 0) entry.truncated_fields = truncatedFields;
 
   // The signals run over every field somebody else could have written, joined,
   // so a phrase split across a summary and a location is still found.
@@ -188,8 +271,6 @@ export function shapeEntry(
       .filter((value): value is string => typeof value === 'string')
       .join(' ')
   );
-  if (warnings.length > 0) entry.warnings = warnings;
-  if (lookalikes.length > 0) entry.lookalike_words = lookalikes;
 
   const fenced = [
     summary === undefined ? undefined : `SUMMARY: ${summary}`,
@@ -200,7 +281,16 @@ export function shapeEntry(
     .filter((line): line is string => line !== undefined)
     .join('\n\n');
 
-  return { entry, fenced, warnings };
+  return {
+    head,
+    tail,
+    hasRule: rrule !== null,
+    kindFields,
+    truncatedFields,
+    warnings,
+    lookalikes,
+    fenced,
+  };
 }
 
 function maybe(key: string, value: unknown): Record<string, unknown> {

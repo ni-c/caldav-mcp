@@ -32,7 +32,12 @@ import {
   type Occurrence,
   type UndatedOccurrence,
 } from './recurrence.js';
-import { isCompleted, shapeEntry } from './shape.js';
+import {
+  isCompleted,
+  newShapeCache,
+  occurrenceKey,
+  shapeEntry,
+} from './shape.js';
 import { toUtcStamp } from './time.js';
 
 /**
@@ -378,27 +383,22 @@ export async function listEntries(
   const principal = await context.discovery.principal();
   const selfAddresses = selfAddressesOf(context.config, principal.addresses);
 
-  const shaped = collected.map(({ occurrence, document }) =>
-    shapeEntry(occurrence, {
-      kind: options.kind,
-      calendar: document.calendar,
-      resourceName: document.resourceName,
-      fallbackZone: context.config.timezone,
-      detailed: false,
-      selfAddresses,
-    })
-  );
-
+  const keyed = collected.map((item) => keyedOf(item, options.kind, context));
   const afterIndex =
-    options.after === undefined ? 0 : cursorIndex(shaped, options.after);
-  const page = shaped.slice(afterIndex, afterIndex + options.limit);
+    options.after === undefined ? 0 : cursorIndex(keyed, options.after);
+  const page = shapedPage(
+    keyed.slice(afterIndex, afterIndex + options.limit),
+    options.kind,
+    context,
+    selfAddresses
+  );
   const allNotes = [...callNotes, ...boundedNotes(dedupe(notes))];
   const series = dedupe(boundedSeries).slice(0, MAX_NAMED_SERIES);
 
   const pageOf = (kept: number): Page => {
     const shown = page.slice(0, kept);
     const consumed = kept + steppedPast(page.length, kept);
-    const remaining = shaped.length - (afterIndex + consumed);
+    const remaining = keyed.length - (afterIndex + consumed);
     const result: Page = {
       entries: shown.map((item) => item.entry),
       notes: allNotes,
@@ -410,7 +410,7 @@ export async function listEntries(
       kept < page.length
     ) {
       const last = shown[shown.length - 1];
-      const next = shaped[afterIndex + consumed];
+      const next = keyed[afterIndex + consumed];
       result.truncated = {
         reason: sentences(
           stop === undefined
@@ -425,10 +425,8 @@ export async function listEntries(
           fitReason(page, kept)
         ),
         returned: kept,
-        ...(last === undefined
-          ? {}
-          : { window_covered_until: startValueOf(last.entry) ?? '' }),
-        ...(next === undefined ? {} : { next_cursor: cursorOf(next.entry) }),
+        ...(last === undefined ? {} : { window_covered_until: last.start }),
+        ...(next === undefined ? {} : { next_cursor: next.cursor }),
         ...(series.length > 0 ? { bounded_series: series } : {}),
         follow_up:
           stop !== undefined
@@ -564,34 +562,27 @@ export async function listUndatedTasks(
   const principal = await context.discovery.principal();
   const selfAddresses = selfAddressesOf(context.config, principal.addresses);
 
-  const shaped = collected.map(({ occurrence, document }) =>
-    shapeEntry(occurrence, {
-      kind: 'vtodo',
-      calendar: document.calendar,
-      resourceName: document.resourceName,
-      fallbackZone: context.config.timezone,
-      detailed: false,
-      selfAddresses,
-    })
-  );
-
+  const keyed = collected.map((item) => keyedOf(item, 'vtodo', context));
   const afterIndex =
-    options.after === undefined
-      ? 0
-      : cursorIndex(shaped, options.after, 'call');
-  const page = shaped.slice(afterIndex, afterIndex + options.limit);
+    options.after === undefined ? 0 : cursorIndex(keyed, options.after, 'call');
+  const page = shapedPage(
+    keyed.slice(afterIndex, afterIndex + options.limit),
+    'vtodo',
+    context,
+    selfAddresses
+  );
   const allNotes = [...callNotes, ...boundedNotes(dedupe(notes))];
 
   const pageOf = (kept: number): Page => {
     const shown = page.slice(0, kept);
     const consumed = kept + steppedPast(page.length, kept);
-    const remaining = shaped.length - (afterIndex + consumed);
+    const remaining = keyed.length - (afterIndex + consumed);
     const result: Page = {
       entries: shown.map((item) => item.entry),
       notes: allNotes,
     };
     if (remaining > 0 || stop !== undefined || kept < page.length) {
-      const next = shaped[afterIndex + consumed];
+      const next = keyed[afterIndex + consumed];
       result.truncated = {
         reason: sentences(
           stop === undefined
@@ -603,7 +594,7 @@ export async function listUndatedTasks(
           fitReason(page, kept)
         ),
         returned: kept,
-        ...(next === undefined ? {} : { next_cursor: cursorOf(next.entry) }),
+        ...(next === undefined ? {} : { next_cursor: next.cursor }),
         follow_up:
           stop !== undefined
             ? 'Name fewer calendars in `calendars`.'
@@ -735,18 +726,12 @@ export async function searchEntries(
 
   const principal = await context.discovery.principal();
   const selfAddresses = selfAddressesOf(context.config, principal.addresses);
-  const page = collected
-    .slice(0, options.limit)
-    .map(({ occurrence, document }) =>
-      shapeEntry(occurrence, {
-        kind: options.kind,
-        calendar: document.calendar,
-        resourceName: document.resourceName,
-        fallbackZone: context.config.timezone,
-        detailed: false,
-        selfAddresses,
-      })
-    );
+  const page = shapedPage(
+    collected.slice(0, options.limit),
+    options.kind,
+    context,
+    selfAddresses
+  );
   const allNotes = [...callNotes, ...boundedNotes(dedupe(notes))];
 
   // No cursor here: a search answers its first `limit` matches and says how
@@ -913,29 +898,75 @@ function cleanedUid(components: readonly ICAL.Component[]): string | undefined {
   return uid === undefined ? undefined : sanitizeText(uid, 200);
 }
 
-function startValueOf(entry: Record<string, unknown>): string | undefined {
-  const start = entry.start as { value?: string } | undefined;
-  return start?.value;
+interface Keyed<O extends Occurrence | UndatedOccurrence> {
+  occurrence: O;
+  document: ResourceDocument;
+  /** The start as reported; empty for a task with no date. */
+  start: string;
+  /**
+   * The cursor for the next page: a start time and an id.
+   *
+   * Not an offset. An offset into an expansion is not stable between two calls
+   * — a new entry created in between shifts everything after it — and two
+   * occurrences sharing a start time would be dropped or duplicated at the
+   * page boundary if the id half were left out.
+   */
+  cursor: string;
+}
+
+function keyedOf<O extends Occurrence | UndatedOccurrence>(
+  item: { occurrence: O; document: ResourceDocument },
+  kind: Kind,
+  context: ToolContext
+): Keyed<O> {
+  const key = occurrenceKey(item.occurrence, {
+    kind,
+    calendar: item.document.calendar,
+    resourceName: item.document.resourceName,
+    fallbackZone: context.config.timezone,
+  });
+  return { ...item, start: key.start, cursor: `${key.start}|${key.id}` };
 }
 
 /**
- * The cursor for the next page: a start time and an id.
+ * Shapes the entries of one page, and only those.
  *
- * Not an offset. An offset into an expansion is not stable between two calls —
- * a new entry created in between shifts everything after it — and two
- * occurrences sharing a start time would be dropped or duplicated at the page
- * boundary if the id half were left out.
+ * Sorting and paging need the key alone; shaping everything collected — up to
+ * the call's ceiling — before cutting out a page of one cost seconds for one
+ * long series. Occurrences of one series share their cleaned fields.
  */
-function cursorOf(entry: Record<string, unknown>): string {
-  return `${startValueOf(entry) ?? ''}|${String(entry.id ?? '')}`;
+function shapedPage<
+  T extends {
+    occurrence: Occurrence | UndatedOccurrence;
+    document: ResourceDocument;
+  },
+>(
+  items: readonly T[],
+  kind: Kind,
+  context: ToolContext,
+  selfAddresses: readonly string[]
+): (T & { entry: Record<string, unknown> })[] {
+  const cache = newShapeCache();
+  return items.map((item) => ({
+    ...item,
+    entry: shapeEntry(item.occurrence, {
+      kind,
+      calendar: item.document.calendar,
+      resourceName: item.document.resourceName,
+      fallbackZone: context.config.timezone,
+      detailed: false,
+      selfAddresses,
+      cache,
+    }).entry,
+  }));
 }
 
 function cursorIndex(
-  shaped: readonly { entry: Record<string, unknown> }[],
+  keyed: readonly { cursor: string }[],
   cursor: string,
   scope: 'window' | 'call' = 'window'
 ): number {
-  const index = shaped.findIndex((item) => cursorOf(item.entry) === cursor);
+  const index = keyed.findIndex((item) => item.cursor === cursor);
   if (index === -1) {
     throw new ToolInputError(
       scope === 'window'
