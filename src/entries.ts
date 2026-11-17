@@ -233,6 +233,11 @@ export interface ListOptions {
    * kinds.
    */
   includeCompleted?: boolean | undefined;
+  /**
+   * The expansion budget to spend. get_free_busy lists each calendar on its
+   * own and passes one budget for the whole call.
+   */
+  expansion?: ExpansionBudget;
 }
 
 /** One page of a listing, as a tool answers it. */
@@ -352,19 +357,25 @@ class Earliest {
    * group, so "nothing from X on" holds exactly — unless that would leave
    * nothing at all.
    */
-  finish(): { items: Collected[]; cutoff: string | undefined } {
+  finish(): {
+    items: Collected[];
+    cutoff: string | undefined;
+    crowded: string | undefined;
+  } {
     this.compact();
-    if (!this.full) return { items: this.items, cutoff: undefined };
+    const none = { items: this.items, cutoff: undefined, crowded: undefined };
+    if (!this.full) return none;
     const last = this.items[this.items.length - 1];
-    if (last === undefined) return { items: this.items, cutoff: undefined };
+    if (last === undefined) return none;
     const instant = last.occurrence.start.instant;
+    const at = instant.toISOString().replace('.000Z', 'Z');
     const before = this.items.filter(
       (item) => item.occurrence.start.instant.getTime() < instant.getTime()
     );
-    return {
-      items: before.length > 0 ? before : this.items,
-      cutoff: instant.toISOString().replace('.000Z', 'Z'),
-    };
+    // Everything kept starts at one instant: "nothing from X on" would be
+    // false, and calling again from X answers the same page.
+    if (before.length === 0) return { ...none, crowded: at };
+    return { items: before, cutoff: at, crowded: undefined };
   }
 
   private compact(): void {
@@ -395,7 +406,7 @@ export async function listEntries(
   options: ListOptions
 ): Promise<Listing> {
   const notes: string[] = [];
-  const expansion = new ExpansionBudget();
+  const expansion = options.expansion ?? new ExpansionBudget();
   const boundedSeries: string[] = [];
   const earliest = new Earliest();
 
@@ -438,31 +449,39 @@ export async function listEntries(
       );
       if (result === undefined) continue;
       notes.push(...result.notes);
-      if (result.bounded && result.uid !== undefined) {
+      // A series cut at the ceiling skips its moved overrides, so one moved to
+      // before the cutoff could be missing: it is named like a bounded one.
+      if (
+        (result.bounded || (result.truncated && result.overrides)) &&
+        result.uid !== undefined
+      ) {
         boundedSeries.push(result.uid);
       }
-      if (result.truncated) earliest.overflowed();
       if (
         result.undated !== undefined &&
         !leftOut(result.undated.component, options)
       ) {
         undatedTasks += 1;
       }
-      earliest.add(
-        result.occurrences
-          .filter((occurrence) => !leftOut(occurrence.component, options))
-          .map((occurrence) => ({ occurrence, document }))
-      );
+      const kept = result.occurrences
+        .filter((occurrence) => !leftOut(occurrence.component, options))
+        .map((occurrence) => ({ occurrence, document }));
+      // Only what is kept can fill the ceiling: a completed recurring task
+      // left out of the listing must not cut the open ones short.
+      if (result.truncated && kept.length > 0) earliest.overflowed();
+      earliest.add(kept);
     }
   }
 
   const callNotes = refusalNotes(refusals, asked, WINDOW_SIZE_ADVICE);
-  const { items: collected, cutoff } = earliest.finish();
+  const { items: collected, cutoff, crowded } = earliest.finish();
 
   const principal = await context.discovery.principal();
   const selfAddresses = selfAddressesOf(context.config, principal.addresses);
 
-  const keyed = collected.map((item) => keyedOf(item, options.kind, context));
+  const keyed = uniqueCursors(
+    collected.map((item) => keyedOf(item, options.kind, context))
+  );
   const afterIndex =
     options.after === undefined ? 0 : cursorIndex(keyed, options.after);
   const page = shapedPage(
@@ -487,6 +506,7 @@ export async function listEntries(
       series.length > 0 ||
       stop !== undefined ||
       cutoff !== undefined ||
+      crowded !== undefined ||
       kept < page.length
     ) {
       const last = shown[shown.length - 1];
@@ -501,6 +521,10 @@ export async function listEntries(
             : `More than ${MAX_COLLECTED} occurrences fall in this window, so ` +
                 `only the earliest were collected; nothing from ${cutoff} on ` +
                 'is listed.',
+          crowded === undefined
+            ? undefined
+            : `More than ${MAX_COLLECTED} occurrences start at ${crowded}; ` +
+                `only ${MAX_COLLECTED} of them are listed.`,
           remaining > 0
             ? `${remaining} more entr${remaining === 1 ? 'y' : 'ies'} in this window.`
             : undefined,
@@ -519,12 +543,15 @@ export async function listEntries(
               ? undefined
               : `Call again with \`from\` set to ${cutoff} for the rest of the window.`
             : 'Call again with `after` set to next_cursor.',
-          stop === undefined ? undefined : STOPPED_FOLLOW_UP,
+          stop === undefined && crowded === undefined
+            ? undefined
+            : STOPPED_FOLLOW_UP,
           series.length > 0
             ? 'The entries named in bounded_series are the expensive ones; a narrower window walks them further.'
             : undefined,
           next === undefined &&
             cutoff === undefined &&
+            crowded === undefined &&
             stop === undefined &&
             series.length === 0
             ? 'Read the entry named in the reason on its own with its get tool.'
@@ -656,7 +683,9 @@ export async function listUndatedTasks(
   const principal = await context.discovery.principal();
   const selfAddresses = selfAddressesOf(context.config, principal.addresses);
 
-  const keyed = collected.map((item) => keyedOf(item, 'vtodo', context));
+  const keyed = uniqueCursors(
+    collected.map((item) => keyedOf(item, 'vtodo', context))
+  );
   const afterIndex =
     options.after === undefined ? 0 : cursorIndex(keyed, options.after, 'call');
   const page = shapedPage(
@@ -797,7 +826,7 @@ export async function searchEntries(
     );
   }
 
-  const expansion = new ExpansionBudget();
+  const expansion = options.expansion ?? new ExpansionBudget();
   const earliest = new Earliest();
   for (const document of documents) {
     const result = expandOne(
@@ -809,12 +838,14 @@ export async function searchEntries(
     );
     if (result === undefined) continue;
     notes.push(...result.notes);
-    if (result.truncated) earliest.overflowed();
+    if (result.truncated && result.occurrences.length > 0) {
+      earliest.overflowed();
+    }
     earliest.add(
       result.occurrences.map((occurrence) => ({ occurrence, document }))
     );
   }
-  const { items: collected, cutoff } = earliest.finish();
+  const { items: collected, cutoff, crowded } = earliest.finish();
 
   const principal = await context.discovery.principal();
   const selfAddresses = selfAddressesOf(context.config, principal.addresses);
@@ -834,16 +865,25 @@ export async function searchEntries(
       entries: page.slice(0, kept).map((item) => item.entry),
       notes: allNotes,
     };
-    if (more > 0 || stop !== undefined || cutoff !== undefined) {
+    if (
+      more > 0 ||
+      stop !== undefined ||
+      cutoff !== undefined ||
+      crowded !== undefined
+    ) {
       result.truncated = {
         reason: sentences(
           stop === undefined
             ? undefined
-            : stoppedReason(stop, asked, calendars.length),
+            : stoppedReason(stop, asked, calendars.length, 'matching entries'),
           cutoff === undefined
             ? undefined
             : `More than ${MAX_COLLECTED} occurrences matched, so only the ` +
                 `earliest were collected; nothing from ${cutoff} on is listed.`,
+          crowded === undefined
+            ? undefined
+            : `More than ${MAX_COLLECTED} matching occurrences start at ` +
+                `${crowded}; only ${MAX_COLLECTED} of them were collected.`,
           more > 0 ? `${more} more matches.` : undefined,
           fitReason(page, kept, 'counted')
         ),
@@ -900,6 +940,7 @@ function expandOne(
     return {
       ...expansion,
       uid: cleanedUid(components),
+      overrides: components.length > 1,
       undated:
         options.kind === 'vtodo' && expansion.occurrences.length === 0
           ? undatedOccurrence(components, fallbackZone)
@@ -920,11 +961,16 @@ function expandOne(
  * while the server answered: after five seconds of slow REPORTs every series
  * stopped at its first step and was reported as one that could not be walked.
  */
-class ExpansionBudget {
+export class ExpansionBudget {
   private left = 5_000;
 
+  /**
+   * Already past once the budget is spent, so a series stops at its first step
+   * rather than getting another slice of 256 for free: the deadline used to be
+   * "now", and a check for "later than now" in the same millisecond passes.
+   */
   deadline(): number {
-    return Date.now() + Math.max(0, this.left);
+    return this.left > 0 ? Date.now() + this.left : 0;
   }
 
   spend(ms: number): void {
@@ -1085,6 +1131,20 @@ function shapedPage<
       cache,
     }).entry,
   }));
+}
+
+/**
+ * Two occurrences can share a start and an id — a document of overrides with
+ * the same RECURRENCE-ID twice — and then the cursor named the first of them
+ * for ever. A repeat gets a counter.
+ */
+function uniqueCursors<T extends { cursor: string }>(items: readonly T[]): T[] {
+  const seen = new Map<string, number>();
+  return items.map((item) => {
+    const count = seen.get(item.cursor) ?? 0;
+    seen.set(item.cursor, count + 1);
+    return count === 0 ? item : { ...item, cursor: `${item.cursor}#${count}` };
+  });
 }
 
 function cursorIndex(

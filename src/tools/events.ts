@@ -5,6 +5,7 @@ import { quoted } from '../analyze.js';
 import { freeBusyQueryBody } from '../dav-xml.js';
 import {
   CALL_BUDGET_MS,
+  ExpansionBudget,
   isCalendarRefusal,
   listEntries,
   MAX_COLLECTED,
@@ -273,6 +274,7 @@ export function registerEventReadTools(
         const collectedNotes: string[] = [];
         const refusals: Refusal[] = [];
         let method: 'server' | 'computed' = 'server';
+        const expansion = new ExpansionBudget();
         const started = Date.now();
         let asked = 0;
 
@@ -303,6 +305,7 @@ export function registerEventReadTools(
                 from: window.from,
                 to: window.to,
                 limit: MAX_COLLECTED,
+                expansion,
               });
             } catch (error) {
               if (!isCalendarRefusal(error)) throw error;
@@ -318,12 +321,11 @@ export function registerEventReadTools(
               )
             );
             if (listing.truncated !== undefined) {
-              const until = listing.truncated.window_covered_until as
-                string | undefined;
+              // No instant: a series stopped early is missing occurrences
+              // anywhere in the window, not only after the last one read.
               collectedNotes.push(
-                `Not every event in "${quoted(calendar.path)}" could be read` +
-                  (until === undefined ? '' : ` past ${until}`) +
-                  ', so busy periods there may be missing. A shorter time ' +
+                `Not every event in "${quoted(calendar.path)}" could be read, ` +
+                  'so busy periods there may be missing. A shorter time ' +
                   'range reads it in full.'
               );
             }
@@ -380,6 +382,16 @@ export function registerEventReadTools(
 }
 
 /**
+ * FBTYPE as an RFC 5545 token, or nothing. The server copies it from stored
+ * entries a stranger can write, and this answer carries no untrusted marker.
+ */
+function fbType(value: string | undefined): string | undefined {
+  return value !== undefined && /^[A-Za-z-]{1,32}$/.test(value)
+    ? value
+    : undefined;
+}
+
+/**
  * Reads the periods out of a VFREEBUSY document.
  *
  * Deliberately a small hand parser rather than a trip through ical.js: the
@@ -409,7 +421,7 @@ export function parseFreeBusy(
     const body = block.split(/END:VFREEBUSY/i)[0] ?? '';
     const start = /^DTSTART[^:]*:(\S+)/m.exec(body)?.[1];
     const end = /^DTEND[^:]*:(\S+)/m.exec(body)?.[1];
-    const type = /^FBTYPE[^:]*:(\S+)/m.exec(body)?.[1];
+    const type = fbType(/^FBTYPE[^:]*:(\S+)/m.exec(body)?.[1]);
     const from = start === undefined ? undefined : isoOfStamp(start);
     const until = end === undefined ? undefined : isoOfStamp(end);
     const hasPeriods = /^FREEBUSY[;:]/im.test(body);
@@ -434,6 +446,7 @@ export function parseFreeBusy(
     for (const match of body.matchAll(
       /^FREEBUSY(?:;FBTYPE=([A-Z-]+))?[^:]*:(.+)$/gim
     )) {
+      const pairType = fbType(match[1]);
       for (const pair of (match[2] ?? '').split(',')) {
         const [rawStart, rawEnd] = pair.trim().split('/');
         if (rawStart === undefined || rawEnd === undefined) continue;
@@ -443,7 +456,7 @@ export function parseFreeBusy(
         periods.push({
           start: pairStart,
           end: pairEnd,
-          ...(match[1] === undefined ? {} : { type: match[1] }),
+          ...(pairType === undefined ? {} : { type: pairType }),
           calendar: calendarPath,
         });
       }

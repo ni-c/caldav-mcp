@@ -70,7 +70,7 @@ describe('get_free_busy worked out from the events', () => {
       })
     );
     expect((answer.notes as string[]).join(' ')).toMatch(
-      /Not every event in "\/tester\/work\/" could be read past .+, so busy periods there may be missing\./
+      /Not every event in "\/tester\/work\/" could be read, so busy periods there may be missing\./
     );
   });
 
