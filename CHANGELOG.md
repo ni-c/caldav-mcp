@@ -15,6 +15,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Subscribed calendars (#52). Open-Xchange, mailbox.org among them, lists a
+  subscription as `CS:subscribed` instead of a calendar, and it was not found.
+  It is now listed by `list_calendars` with `subscribed: true` and
+  `read_only: true`. Every write tool refuses it. A tool that names no
+  calendar leaves subscriptions out unless `CALDAV_CALENDARS` names them, or
+  `CALDAV_URL` points at one. The feed's own address is never asked for,
+  fetched or shown.
 - `list_tasks` takes `undated: true` to list the tasks that have neither a
   start nor a due date (#51). A windowed listing cannot place such a task in
   time and leaves it out, although the server does return it there: RFC 4791
@@ -33,6 +40,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - CI's `npm audit` checks the runtime dependencies only, the ones the package
   and the image ship. Advisories against development tools are still reported
   by Dependabot, but no longer block a merge.
+- A collection a server marks as both a calendar and a subscription was treated
+  as an own calendar. It is now read-only and read only when named.
+- Discovering subscriptions can make an existing `CALDAV_CALENDARS` entry given
+  as a final path segment match two collections. Discovery then refuses, as it
+  does for any ambiguous entry; name the calendar by its path.
 - Require Node.js 24 or newer. CI tests the latest 24 and 26 LTS releases; Node 22 is no longer supported.
 - A listing is fitted to the size ceiling as it is emitted, indented, before it
   is counted. Pages that reach the ceiling hold fewer entries than before, and
@@ -76,6 +88,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Security
 
+- A calendar the account can only read was protected only on create and as the
+  destination of a move. Updates, completions, responses, deletes, occurrence
+  exclusions and moves out of it reached the server, and the deletes and
+  `respond_to_event` asked for approval first. Every write tool now refuses it
+  before anything is sent or asked.
 - A recurrence rule whose parts never match, such as
   `FREQ=MINUTELY;BYMONTH=2;BYMONTHDAY=30`, made ical.js loop for ever inside a
   single step, out of reach of every deadline: one invitation froze the
