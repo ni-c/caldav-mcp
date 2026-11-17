@@ -320,7 +320,7 @@ export async function listEntries(
     }
   }
 
-  notes.push(...refusalNotes(refusals, asked, WINDOW_SIZE_ADVICE));
+  const callNotes = refusalNotes(refusals, asked, WINDOW_SIZE_ADVICE);
 
   collected.sort(
     (left, right) =>
@@ -350,7 +350,7 @@ export async function listEntries(
 
   const listing: Listing = {
     entries: page.map((item) => item.entry),
-    notes: dedupe(notes),
+    notes: [...callNotes, ...boundedNotes(dedupe(notes))],
   };
 
   if (remaining > 0 || boundedSeries.length > 0 || stop !== undefined) {
@@ -493,9 +493,9 @@ export async function listUndatedTasks(
     }
   }
 
-  notes.push(...refusalNotes(refusals, asked, ''));
+  const callNotes = refusalNotes(refusals, asked, '');
   if (unfiltered > 0) {
-    notes.push(
+    callNotes.push(
       `The server refused the filter for tasks without a date in ${unfiltered} ` +
         `calendar${unfiltered === 1 ? '' : 's'}, so every task there was read ` +
         'and the ones without a date were kept here.'
@@ -531,7 +531,7 @@ export async function listUndatedTasks(
 
   const listing: Listing = {
     entries: page.map((item) => item.entry),
-    notes: dedupe(notes),
+    notes: [...callNotes, ...boundedNotes(dedupe(notes))],
   };
 
   if (remaining > 0 || stop !== undefined) {
@@ -634,16 +634,14 @@ export async function searchEntries(
     }
     documents.push(...found);
   }
-  notes.push(
-    ...refusalNotes(
-      refusals,
-      asked,
-      ' A narrower query or a shorter time range would make it smaller.'
-    )
+  const callNotes = refusalNotes(
+    refusals,
+    asked,
+    ' A narrower query or a shorter time range would make it smaller.'
   );
 
   if (collation !== undefined) {
-    notes.push(
+    callNotes.push(
       'This server refused the default text collation, so the search ran with ' +
         'i;ascii-casemap. Matching outside ASCII may differ from what a ' +
         'calendar client shows.'
@@ -689,7 +687,7 @@ export async function searchEntries(
           selfAddresses,
         }).entry
     ),
-    notes: dedupe(notes),
+    notes: [...callNotes, ...boundedNotes(dedupe(notes))],
     ...(collected.length > page.length || stop !== undefined
       ? {
           truncated: {
@@ -841,6 +839,28 @@ export function selfAddressesOf(
       : [configured, ...discovered]
     ).map((address) => address.toLowerCase())
   );
+}
+
+/** At most this many notes about individual entries in one answer. */
+export const MAX_ENTRY_NOTES = 20;
+
+/**
+ * The notes about individual entries, capped.
+ *
+ * Every broken entry earns a note of a few hundred characters, and a calendar
+ * someone else writes to can hold thousands. Uncapped, they crowded the
+ * entries out of the size budget. Notes about the call itself — a calendar
+ * that refused, a filter the server would not apply — come first and are never
+ * cut, which is why the caller passes only the per-entry ones here.
+ */
+function boundedNotes(notes: readonly string[]): string[] {
+  if (notes.length <= MAX_ENTRY_NOTES) return [...notes];
+  const left = notes.length - MAX_ENTRY_NOTES;
+  return [
+    ...notes.slice(0, MAX_ENTRY_NOTES),
+    `${left} more note${left === 1 ? '' : 's'} about individual entries ` +
+      `${left === 1 ? 'was' : 'were'} left out.`,
+  ];
 }
 
 function dedupe(values: readonly string[]): string[] {
