@@ -349,8 +349,18 @@ export function registerTaskWriteTools(
       inputSchema: z.object({
         id: entityIdParam,
         summary: summaryParam.optional(),
-        due: instantParam.optional(),
-        start: instantParam.optional(),
+        due: instantParam
+          .nullish()
+          .describe(
+            'When it is due. Pass null to remove it, leave it out to keep it.'
+          ),
+        start: instantParam
+          .nullish()
+          .describe(
+            'When work on it can begin. Pass null to remove it, leave it out ' +
+              'to keep it; refused while a recurrence rule or a duration ' +
+              'depends on it.'
+          ),
         timezone: timezoneParam,
         description: textParam('Longer text.'),
         priority: z.number().int().min(0).max(9).optional(),
@@ -376,7 +386,24 @@ export function registerTaskWriteTools(
         const loaded = await loadForWrite(context, entity, 'entire_series');
         const target = loaded.target;
 
-        if (args.start !== undefined) {
+        if (args.start === null) {
+          // RFC 5545 anchors a rule at DTSTART and a DURATION needs one, so
+          // removing the start alone would leave either meaningless. Refused
+          // before anything is written.
+          if (
+            ['rrule', 'rdate', 'duration'].some(
+              (name) => target.getFirstProperty(name) !== null
+            )
+          ) {
+            throw new ToolInputError(
+              'caldav-mcp: this task has a recurrence rule or a duration that ' +
+                'depends on its start, so the start cannot be removed on its ' +
+                'own. Nothing was written. Change the start instead, or remove ' +
+                'the rule in a calendar client.'
+            );
+          }
+          target.removeAllProperties('dtstart');
+        } else if (args.start !== undefined) {
           const start = parseInstant(
             args.start,
             'start',
@@ -389,7 +416,9 @@ export function registerTaskWriteTools(
             allDay: start.allDay,
           });
         }
-        if (args.due !== undefined) {
+        if (args.due === null) {
+          target.removeAllProperties('due');
+        } else if (args.due !== undefined) {
           const due = parseInstant(
             args.due,
             'due',
