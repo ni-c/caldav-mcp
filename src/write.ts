@@ -111,7 +111,7 @@ export async function loadForWrite(
     );
   }
 
-  const root = parseCalendar(resource.ics, `the entry ${id.resourceName}`);
+  const root = parseCalendar(resource.ics, 'the stored entry');
   const components = componentsOf(root, id.kind);
   const { master, overrides } = splitSeries(components);
 

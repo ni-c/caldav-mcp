@@ -84,7 +84,7 @@ export async function loadEntry(
   }
   const url = resourceUrl(calendar, entity.resourceName);
   const resource = await context.api.get(url);
-  const root = parseCalendar(resource.ics, `the entry ${entity.resourceName}`);
+  const root = parseCalendar(resource.ics, 'the stored entry');
   const components = componentsOf(root, entity.kind);
   if (components.length === 0) {
     throw new ToolInputError(

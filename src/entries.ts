@@ -377,10 +377,7 @@ export async function listUndatedTasks(
     );
     for (const document of documents) {
       try {
-        const root = parseCalendar(
-          document.ics,
-          `the entry ${document.resourceName}`
-        );
+        const root = parseCalendar(document.ics, 'the stored entry');
         const occurrence = undatedOccurrence(componentsOf(root, 'vtodo'));
         if (
           occurrence !== undefined &&
@@ -612,10 +609,7 @@ function expandOne(
   notes: string[]
 ) {
   try {
-    const root = parseCalendar(
-      document.ics,
-      `the entry ${document.resourceName}`
-    );
+    const root = parseCalendar(document.ics, 'the stored entry');
     return expandSeries(componentsOf(root, options.kind), {
       from: options.from,
       to: options.to,
@@ -634,14 +628,15 @@ function expandOne(
 /**
  * The note for one stored entry a listing had to leave out.
  *
- * The name is a path segment the server chose, so it is escaped like any other
- * quoted value; the parser's message is already cut and escaped.
+ * The name is a path segment the server chose, so it is quoted once, here, cut
+ * and escaped. Callers give the parser a fixed context rather than the name: a
+ * name in that context came back uncut through the parser's own message.
  */
 function skippedNote(document: ResourceDocument, error: unknown): string {
   const reason =
     error instanceof ToolInputError
       ? error.message.replace(/^caldav-mcp: /, '')
-      : 'it could not be expanded';
+      : 'it could not be expanded.';
   return (
     `Skipped ${quoted(document.resourceName)} in ` +
     `${quoted(document.calendar.path)}: ` +

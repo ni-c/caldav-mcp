@@ -711,7 +711,7 @@ async function describeTarget(
       resourceUrl(calendar, entity.resourceName),
       true
     );
-    const root = parseCalendar(resource.ics, 'the entry');
+    const root = parseCalendar(resource.ics, 'the stored entry');
     const components = componentsOf(root, entity.kind);
     const { master, overrides } = splitSeries(components);
     // Two shapes hold more than one occurrence, and the dialog has to name
@@ -1026,7 +1026,7 @@ async function excludeOccurrence(
         'was deleted.'
     );
   }
-  const root = parseCalendar(resource.ics, `the entry ${entity.resourceName}`);
+  const root = parseCalendar(resource.ics, 'the stored entry');
   const { master, overrides } = splitSeries(componentsOf(root, entity.kind));
   if (master === undefined) {
     throw new ToolInputError(
