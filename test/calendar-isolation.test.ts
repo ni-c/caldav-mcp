@@ -116,6 +116,31 @@ describe('a calendar that refuses', () => {
     );
   });
 
+  it('names at most twenty refusing calendars and counts the rest', async () => {
+    const calendars = Array.from({ length: 30 }, (_, i) => ({
+      name: `c${String(i).padStart(2, '0')}`,
+    }));
+    const fake = new FakeCalDav({
+      calendars,
+      failWith: (method, path) =>
+        method === 'REPORT' && !path.endsWith('/c00/')
+          ? { status: 403 }
+          : undefined,
+    });
+    fake.install();
+    fake.seed('c00', 'a.ics', event('answered'));
+    session = await connect();
+    const listing = dataOf(await call('list_events', WINDOW));
+    const notes = listing.notes as string[];
+    expect(notes.filter((note) => note.includes('HTTP 403'))).toHaveLength(20);
+    expect(notes).toContain(
+      '9 more calendars refused the request or answered with too much, so ' +
+        'their entries are not listed either.'
+    );
+    expect(notes).toContain('1 of 30 calendars answered.');
+    expect(notes).toHaveLength(22);
+  });
+
   it('makes the call an error when every calendar refused', async () => {
     await start({
       failWith: (method) => (method === 'REPORT' ? { status: 403 } : undefined),

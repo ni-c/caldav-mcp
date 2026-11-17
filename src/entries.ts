@@ -187,17 +187,34 @@ export function refusalNotes(
   const first = refusals[0];
   if (first === undefined) return [];
   if (refusals.length >= asked) throw first.error;
+  const unnamed = refusals.length - MAX_NAMED_REFUSALS;
   return [
-    ...refusals.map(({ calendar, error }) =>
-      error instanceof ResponseTooLargeError
-        ? `${quoted(calendar.path)} answered with more than ${error.maxBytes} ` +
-          `bytes, so its entries are not listed.${sizeAdvice}`
-        : `${quoted(calendar.path)} refused the request with HTTP ` +
-          `${error.status}, so its entries are not listed.`
-    ),
+    ...refusals
+      .slice(0, MAX_NAMED_REFUSALS)
+      .map(({ calendar, error }) =>
+        error instanceof ResponseTooLargeError
+          ? `${quoted(calendar.path)} answered with more than ${error.maxBytes} ` +
+            `bytes, so its entries are not listed.${sizeAdvice}`
+          : `${quoted(calendar.path)} refused the request with HTTP ` +
+            `${error.status}, so its entries are not listed.`
+      ),
+    ...(unnamed > 0
+      ? [
+          `${unnamed} more calendar${unnamed === 1 ? '' : 's'} refused ` +
+            'the request or answered with too much, so ' +
+            `${unnamed === 1 ? 'its' : 'their'} entries are not listed either.`,
+        ]
+      : []),
     `${asked - refusals.length} of ${asked} calendars answered.`,
   ];
 }
+
+/**
+ * At most this many refusing calendars are named. A server can expose 256, each
+ * path a few hundred characters it chose, and the notes are paid for out of
+ * the same size budget as the entries.
+ */
+export const MAX_NAMED_REFUSALS = 20;
 
 const WINDOW_SIZE_ADVICE = ' A shorter time range would make it smaller.';
 
@@ -672,10 +689,17 @@ export async function listUndatedTasks(
         ),
         returned: kept,
         ...(next === undefined ? {} : { next_cursor: next.cursor }),
-        follow_up:
-          stop !== undefined
-            ? 'Name fewer calendars in `calendars`.'
+        follow_up: sentences(
+          next === undefined
+            ? undefined
             : 'Call again with `after` set to next_cursor.',
+          stop === undefined
+            ? undefined
+            : 'Name fewer calendars in `calendars`.',
+          next === undefined && stop === undefined
+            ? 'Read the task named in the reason on its own with get_task.'
+            : undefined
+        ),
       };
     }
     return result;
@@ -821,7 +845,7 @@ export async function searchEntries(
             : `More than ${MAX_COLLECTED} occurrences matched, so only the ` +
                 `earliest were collected; nothing from ${cutoff} on is listed.`,
           more > 0 ? `${more} more matches.` : undefined,
-          fitReason(page, kept)
+          fitReason(page, kept, 'counted')
         ),
         returned: kept,
         follow_up:
@@ -932,14 +956,18 @@ function steppedPast(pageLength: number, kept: number): number {
 /** Why a page holds fewer entries than it could have, or nothing. */
 function fitReason(
   page: readonly { entry: Record<string, unknown> }[],
-  kept: number
+  kept: number,
+  paging: 'stepped' | 'counted' = 'stepped'
 ): string | undefined {
   if (kept >= page.length) return undefined;
   if (kept === 0) {
+    // A search has no cursor, so nothing is stepped past there: the entry is
+    // counted with the other matches that were not returned.
     return (
       `The entry ${quoted(String(page[0]?.entry.id ?? ''))} does not fit ` +
-      'under the size ceiling even on its own, so it was stepped past; read ' +
-      'it on its own with its get tool.'
+      'under the size ceiling even on its own' +
+      (paging === 'stepped' ? ', so it was stepped past' : '') +
+      '; read it on its own with its get tool.'
     );
   }
   return `Only ${kept} of ${page.length} entries fitted under the size ceiling.`;

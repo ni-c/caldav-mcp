@@ -54,7 +54,16 @@ export function fitPrefix<T extends Record<string, unknown>>(
 ): { kept: number; answer: T } {
   const all = answerFor(candidates);
   if (emittedLength(all) <= maxBytes) return { kept: candidates, answer: all };
-  let best = { kept: 0, answer: answerFor(0) };
+  const floor = answerFor(0);
+  if (emittedLength(floor) > maxBytes) {
+    // Notes and markers do not shrink with the page. If they alone are past the
+    // ceiling, stepping past entries would count notes as entries; refuse.
+    throw new ResultTooLargeError(
+      `caldav-mcp: even an answer without entries exceeds ${maxBytes} ` +
+        'characters. Name fewer calendars in `calendars`.'
+    );
+  }
+  let best = { kept: 0, answer: floor };
   let low = 1;
   let high = candidates - 1;
   while (low <= high) {

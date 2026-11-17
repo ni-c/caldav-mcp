@@ -26,6 +26,11 @@ const oversized = (kept: number): Record<string, unknown> => ({
   items: Array.from({ length: kept }, () => 'x'.repeat(1000)),
 });
 
+const onlyNotes = (): Record<string, unknown> => ({
+  items: [],
+  notes: ['n'.repeat(1000)],
+});
+
 describe('fitPrefix', () => {
   it('keeps nothing when there is nothing', () => {
     expect(fitPrefix(0, answerFor).kept).toBe(0);
@@ -33,6 +38,12 @@ describe('fitPrefix', () => {
 
   it('keeps nothing when one candidate does not fit', () => {
     expect(fitPrefix(1, oversized, 500).kept).toBe(0);
+  });
+
+  it('refuses when even no entries do not fit, rather than stepping past one', () => {
+    expect(() => fitPrefix(1, onlyNotes, 500)).toThrow(
+      /even an answer without entries/
+    );
   });
 
   it('keeps everything exactly at the ceiling, one less one character under it', () => {
@@ -322,5 +333,89 @@ describe('bounded_series', () => {
       expect(uid).not.toContain('​');
       expect(uid.length).toBeLessThanOrEqual(300);
     }
+  });
+});
+
+function huge(kind: 'VEVENT' | 'VTODO', dates: string[]): string {
+  return [
+    'BEGIN:VCALENDAR',
+    'VERSION:2.0',
+    'PRODID:-//t//EN',
+    `BEGIN:${kind}`,
+    'UID:huge@example.net',
+    'DTSTAMP:20261101T000000Z',
+    ...dates,
+    'SUMMARY:huge',
+    ...Array.from(
+      { length: 6000 },
+      (_, i) =>
+        `ATTENDEE;CN=Attendee number ${i} with a long name:mailto:a${i}@example.net`
+    ),
+    `END:${kind}`,
+    'END:VCALENDAR',
+    '',
+  ].join('\r\n');
+}
+describe('the last entry of a listing, too large on its own', () => {
+  let session: Connected | undefined;
+
+  afterEach(async () => {
+    await session?.close();
+    session = undefined;
+    vi.unstubAllGlobals();
+  });
+
+  // When nothing comes after the stepped-past entry, a follow-up that names
+  // next_cursor or bounded_series points at a field the answer does not have.
+  it.each([
+    [
+      'list_events',
+      'VEVENT',
+      ['DTSTART:20261102T100000Z', 'DTEND:20261102T110000Z'],
+      WINDOW,
+      'Read the entry named in the reason on its own with its get tool.',
+    ],
+    [
+      'list_tasks',
+      'VTODO',
+      [],
+      { undated: true },
+      'Read the task named in the reason on its own with get_task.',
+    ],
+  ] as const)(
+    '%s names only what it carries',
+    async (tool, kind, dates, args, followUp) => {
+      const fake = new FakeCalDav();
+      fake.install();
+      fake.seed('work', 'huge.ics', huge(kind, [...dates]));
+      session = await connect();
+      const page = dataOf(
+        await session.client.callTool({ name: tool, arguments: args })
+      );
+      const truncated = page.truncated as Record<string, unknown>;
+      expect(truncated).not.toHaveProperty('next_cursor');
+      expect(truncated).not.toHaveProperty('bounded_series');
+      expect(truncated.follow_up).toBe(followUp);
+    }
+  );
+
+  it('is counted, not stepped past, by a search', async () => {
+    const fake = new FakeCalDav();
+    fake.install();
+    fake.seed(
+      'work',
+      'huge.ics',
+      huge('VEVENT', ['DTSTART:20261102T100000Z', 'DTEND:20261102T110000Z'])
+    );
+    session = await connect();
+    const page = dataOf(
+      await session.client.callTool({
+        name: 'search_events',
+        arguments: { query: 'huge', ...WINDOW },
+      })
+    );
+    const reason = (page.truncated as { reason: string }).reason;
+    expect(reason).toContain('1 more matches.');
+    expect(reason).not.toContain('stepped past');
   });
 });
