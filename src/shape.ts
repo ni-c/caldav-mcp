@@ -130,7 +130,7 @@ export function shapeEntry(
         }),
     ...maybe(
       'recurrence_rule',
-      rrule === null ? undefined : optional(String(rrule.getFirstValue()), 500)
+      rrule === null ? undefined : optional(ruleTextOf(rrule), 500)
     ),
     ...(alarms.length > 0 ? { alarms } : {}),
     ...(attachments.length > 0 ? { attachments } : {}),
@@ -161,12 +161,9 @@ export function shapeEntry(
     // rather than through the zone machinery — and as ISO 8601 rather than as
     // the raw iCalendar stamp, which is what every other timestamp here does.
     const completed = component.getFirstProperty('completed');
-    if (completed !== null) {
-      const value = completed.getFirstValue() as ICAL.Time;
-      entry.completed = {
-        value: value.toJSDate().toISOString(),
-        all_day: false,
-      };
+    const completedAt = completed === null ? undefined : isoInstant(completed);
+    if (completedAt !== undefined) {
+      entry.completed = { value: completedAt, all_day: false };
     }
     const percent = readInt(component, 'percent-complete');
     if (percent !== undefined) entry.percent_complete = percent;
@@ -255,11 +252,36 @@ function setTime(
 
 function isoOf(component: ICAL.Component, name: string): string | undefined {
   const property = component.getFirstProperty(name);
-  if (property === null) return undefined;
-  const value = property.getFirstValue() as ICAL.Time;
-  // CREATED and LAST-MODIFIED are defined as UTC, so the library's own
-  // conversion is trustworthy here — the one place in this server it is.
-  return value.toJSDate().toISOString();
+  return property === null ? undefined : isoInstant(property);
+}
+
+/**
+ * A UTC date-time property as ISO 8601, or nothing where it cannot be read.
+ *
+ * CREATED, LAST-MODIFIED and COMPLETED are defined as UTC, so the library's own
+ * conversion is trustworthy here. But ical.js parses a value when it is first
+ * read, after the per-entry guard of a listing: one unreadable stamp in one
+ * entry took the whole listing down. The field is left out instead — it
+ * promises ISO 8601, so the raw text has no place in it.
+ */
+function isoInstant(property: ICAL.Property): string | undefined {
+  try {
+    const value: unknown = property.getFirstValue();
+    if (!(value instanceof ICAL.Time)) return undefined;
+    return value.toJSDate().toISOString();
+  } catch {
+    return undefined;
+  }
+}
+
+/** An RRULE as text; where ical.js cannot read it, the raw text, as for a trigger. */
+function ruleTextOf(property: ICAL.Property): string | undefined {
+  try {
+    return String(property.getFirstValue());
+  } catch {
+    const raw = (property.jCal as unknown[] | undefined)?.[3];
+    return typeof raw === 'string' ? raw : undefined;
+  }
 }
 
 interface Participant {
