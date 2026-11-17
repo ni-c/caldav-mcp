@@ -2,7 +2,14 @@ import { z } from 'zod';
 import type { McpServer } from '@modelcontextprotocol/server';
 
 import { freeBusyQueryBody } from '../dav-xml.js';
-import { listEntries, searchEntries, type ToolContext } from '../entries.js';
+import {
+  isCalendarRefusal,
+  listEntries,
+  refusalNotes,
+  searchEntries,
+  type Refusal,
+  type ToolContext,
+} from '../entries.js';
 import { parseEntityId } from '../entity-id.js';
 import {
   notes,
@@ -260,6 +267,7 @@ export function registerEventReadTools(
           calendar: string;
         }[] = [];
         const collectedNotes: string[] = [];
+        const refusals: Refusal[] = [];
         let method: 'server' | 'computed' = 'server';
 
         for (const calendar of calendars) {
@@ -274,13 +282,20 @@ export function registerEventReadTools(
             // fallback: it aggregates every calendar the principal owns,
             // allowlist or not, which would be a way around CALDAV_CALENDARS.
             method = 'computed';
-            const listing = await listEntries(context, {
-              kind: 'vevent',
-              calendars: [calendar],
-              from: window.from,
-              to: window.to,
-              limit: context.config.maxEntries,
-            });
+            let listing;
+            try {
+              listing = await listEntries(context, {
+                kind: 'vevent',
+                calendars: [calendar],
+                from: window.from,
+                to: window.to,
+                limit: context.config.maxEntries,
+              });
+            } catch (error) {
+              if (!isCalendarRefusal(error)) throw error;
+              refusals.push({ calendar, error });
+              continue;
+            }
             collectedNotes.push(...listing.notes);
             for (const entry of listing.entries) {
               const busy = busyOf(entry, calendar.path);
@@ -288,6 +303,13 @@ export function registerEventReadTools(
             }
           }
         }
+        collectedNotes.push(
+          ...refusalNotes(
+            refusals,
+            calendars.length,
+            ' A shorter time range would make it smaller.'
+          )
+        );
 
         collected.sort((left, right) => left.start.localeCompare(right.start));
         if (method === 'computed') {

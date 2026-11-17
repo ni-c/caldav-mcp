@@ -65,6 +65,12 @@ export interface FakeOptions {
   /** Refuse a free-busy query, so the computed fallback is exercised. */
   refuseFreeBusy?: boolean;
   /**
+   * Refuse a query that uses `is-not-defined`, the way a server without that
+   * filter answers (RFC 4791: 403 with `supported-filter`). Otherwise the fake
+   * ignores the filter and returns every task, like any filter it is given.
+   */
+  refuseIsNotDefined?: boolean;
+  /**
    * Answer a REPORT with hrefs pointing somewhere else than the collection
    * that was asked, the way a hostile or broken server can.
    */
@@ -462,6 +468,16 @@ export class FakeCalDav {
         200,
         `BEGIN:VCALENDAR\r\nVERSION:2.0\r\n${blocks}\r\nEND:VCALENDAR\r\n`,
         { 'content-type': 'text/calendar; charset=utf-8' }
+      );
+    }
+
+    if (
+      this.options.refuseIsNotDefined === true &&
+      body.includes('is-not-defined')
+    ) {
+      return this.reply(
+        403,
+        '<?xml version="1.0"?><D:error xmlns:D="DAV:" xmlns:C="urn:ietf:params:xml:ns:caldav"><C:supported-filter/></D:error>'
       );
     }
 

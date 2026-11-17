@@ -572,6 +572,10 @@ describe('tasks', () => {
       (task) => task.summary === 'Sort out the garage'
     );
     expect(found?.id).toBe(id);
+    // Radicale applies `is-not-defined` itself, so nothing was read in full.
+    expect(JSON.stringify(undated.notes ?? [])).not.toContain(
+      'refused the filter'
+    );
 
     const detail = await data(asking, 'get_task', { id });
     expect((detail.task as { summary?: string }).summary).toBe(

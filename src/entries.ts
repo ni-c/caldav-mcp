@@ -1,10 +1,15 @@
 import { quoted } from './analyze.js';
-import type { CalDavApi } from './api.js';
+import {
+  CalDavApiError,
+  ResponseTooLargeError,
+  type CalDavApi,
+} from './api.js';
 import type { CalendarEntry } from './calendars.js';
 import type { Config } from './config.js';
 import {
   calendarQueryBody,
   textMatchBody,
+  undatedTaskQueryBody,
   textOf,
   type SearchField,
   type TimeRange,
@@ -134,6 +139,61 @@ function requestRange(from: Date, to: Date): TimeRange {
   };
 }
 
+/**
+ * True when one calendar refused in a way that says nothing about the others.
+ *
+ * A listing asks every calendar in turn, and one that answers 403, 404 or 501,
+ * or answers more than can be read, used to fail the call for all of them. Any
+ * status but 401 (the account) and 429 (the server) is about that collection,
+ * so the others are still listed and the answer says which one refused.
+ */
+export function isCalendarRefusal(
+  error: unknown
+): error is CalDavApiError | ResponseTooLargeError {
+  return (
+    error instanceof ResponseTooLargeError ||
+    (error instanceof CalDavApiError &&
+      error.status !== 401 &&
+      error.status !== 429)
+  );
+}
+
+/** One calendar left out of an answer because it refused. */
+export interface Refusal {
+  calendar: CalendarEntry;
+  error: CalDavApiError | ResponseTooLargeError;
+}
+
+/**
+ * The notes for the calendars that refused. When every calendar asked refused,
+ * that is the answer, so the first refusal is thrown rather than reported as an
+ * empty listing — which would read exactly like "nothing there".
+ *
+ * `sizeAdvice` follows the sentence about an answer that was too large; it is
+ * empty where no narrower request exists.
+ */
+export function refusalNotes(
+  refusals: readonly Refusal[],
+  asked: number,
+  sizeAdvice: string
+): string[] {
+  const first = refusals[0];
+  if (first === undefined) return [];
+  if (refusals.length >= asked) throw first.error;
+  return [
+    ...refusals.map(({ calendar, error }) =>
+      error instanceof ResponseTooLargeError
+        ? `${quoted(calendar.path)} answered with more than ${error.maxBytes} ` +
+          `bytes, so its entries are not listed.${sizeAdvice}`
+        : `${quoted(calendar.path)} refused the request with HTTP ` +
+          `${error.status}, so its entries are not listed.`
+    ),
+    `${asked - refusals.length} of ${asked} calendars answered.`,
+  ];
+}
+
+const WINDOW_SIZE_ADVICE = ' A shorter time range would make it smaller.';
+
 export interface ListOptions {
   kind: Kind;
   calendars: readonly CalendarEntry[];
@@ -216,6 +276,7 @@ export async function listEntries(
   const started = Date.now();
   let asked = 0;
   let stop: Stop | undefined;
+  const refusals: Refusal[] = [];
 
   for (const calendar of calendars) {
     if (Date.now() - started > CALL_BUDGET_MS) {
@@ -227,11 +288,18 @@ export async function listEntries(
       break;
     }
     asked += 1;
-    const documents = await queryCalendar(
-      context.api,
-      calendar,
-      calendarQueryBody(component, range)
-    );
+    let documents: ResourceDocument[];
+    try {
+      documents = await queryCalendar(
+        context.api,
+        calendar,
+        calendarQueryBody(component, range)
+      );
+    } catch (error) {
+      if (!isCalendarRefusal(error)) throw error;
+      refusals.push({ calendar, error });
+      continue;
+    }
     for (const document of documents) {
       const result = expandOne(
         document,
@@ -251,6 +319,8 @@ export async function listEntries(
       }
     }
   }
+
+  notes.push(...refusalNotes(refusals, asked, WINDOW_SIZE_ADVICE));
 
   collected.sort(
     (left, right) =>
@@ -360,6 +430,8 @@ export async function listUndatedTasks(
   const started = Date.now();
   let asked = 0;
   let stop: Stop | undefined;
+  const refusals: Refusal[] = [];
+  let unfiltered = 0;
 
   for (const calendar of calendars) {
     if (Date.now() - started > CALL_BUDGET_MS) {
@@ -371,11 +443,26 @@ export async function listUndatedTasks(
       break;
     }
     asked += 1;
-    const documents = await queryCalendar(
-      context.api,
-      calendar,
-      calendarQueryBody(component)
-    );
+    let documents: ResourceDocument[];
+    try {
+      documents = await queryCalendar(
+        context.api,
+        calendar,
+        undatedTaskQueryBody()
+      ).catch(async (error: unknown) => {
+        if (!isFilterRefusal(error)) throw error;
+        unfiltered += 1;
+        return queryCalendar(
+          context.api,
+          calendar,
+          calendarQueryBody(component)
+        );
+      });
+    } catch (error) {
+      if (!isCalendarRefusal(error)) throw error;
+      refusals.push({ calendar, error });
+      continue;
+    }
     for (const document of documents) {
       try {
         const root = parseCalendar(document.ics, 'the stored entry');
@@ -404,6 +491,15 @@ export async function listUndatedTasks(
         notes.push(skippedNote(document, error));
       }
     }
+  }
+
+  notes.push(...refusalNotes(refusals, asked, ''));
+  if (unfiltered > 0) {
+    notes.push(
+      `The server refused the filter for tasks without a date in ${unfiltered} ` +
+        `calendar${unfiltered === 1 ? '' : 's'}, so every task there was read ` +
+        'and the ones without a date were kept here.'
+    );
   }
 
   collected.sort(
@@ -480,6 +576,7 @@ export async function searchEntries(
   const started = Date.now();
   let asked = 0;
   let stop: Stop | undefined;
+  const refusals: Refusal[] = [];
   for (const calendar of calendars) {
     if (Date.now() - started > CALL_BUDGET_MS) {
       stop = 'time';
@@ -491,44 +588,59 @@ export async function searchEntries(
     }
     asked += 1;
     const seen = new Set<string>();
-    // One REPORT per field, unioned by resource: RFC 4791 combines sibling
-    // prop-filters with AND, so a single body asking for SUMMARY *and*
-    // DESCRIPTION matches only entries carrying the term in both.
-    for (const field of options.fields) {
-      if (Date.now() - started > CALL_BUDGET_MS) {
-        stop = 'time';
-        break;
+    const found: ResourceDocument[] = [];
+    try {
+      // One REPORT per field, unioned by resource: RFC 4791 combines sibling
+      // prop-filters with AND, so a single body asking for SUMMARY *and*
+      // DESCRIPTION matches only entries carrying the term in both.
+      for (const field of options.fields) {
+        if (Date.now() - started > CALL_BUDGET_MS) {
+          stop = 'time';
+          break;
+        }
+        let matched: ResourceDocument[];
+        try {
+          matched = await queryCalendar(
+            context.api,
+            calendar,
+            textMatchBody(component, field, options.query, { range })
+          );
+        } catch (error) {
+          // Some sabre/dav builds refuse the server default collation and want
+          // one named. Retried once, and the degradation is reported rather than
+          // hidden — a search that quietly became case-sensitive is worse than a
+          // search that says so.
+          if (!isCollationRefusal(error)) throw error;
+          collation = 'i;ascii-casemap';
+          matched = await queryCalendar(
+            context.api,
+            calendar,
+            textMatchBody(component, field, options.query, {
+              range,
+              collation,
+            })
+          );
+        }
+        for (const document of matched) {
+          if (seen.has(document.resourceName)) continue;
+          seen.add(document.resourceName);
+          found.push(document);
+        }
       }
-      let matched: ResourceDocument[];
-      try {
-        matched = await queryCalendar(
-          context.api,
-          calendar,
-          textMatchBody(component, field, options.query, { range })
-        );
-      } catch (error) {
-        // Some sabre/dav builds refuse the server default collation and want
-        // one named. Retried once, and the degradation is reported rather than
-        // hidden — a search that quietly became case-sensitive is worse than a
-        // search that says so.
-        if (!isCollationRefusal(error)) throw error;
-        collation = 'i;ascii-casemap';
-        matched = await queryCalendar(
-          context.api,
-          calendar,
-          textMatchBody(component, field, options.query, {
-            range,
-            collation,
-          })
-        );
-      }
-      for (const document of matched) {
-        if (seen.has(document.resourceName)) continue;
-        seen.add(document.resourceName);
-        documents.push(document);
-      }
+    } catch (error) {
+      if (!isCalendarRefusal(error)) throw error;
+      refusals.push({ calendar, error });
+      continue;
     }
+    documents.push(...found);
   }
+  notes.push(
+    ...refusalNotes(
+      refusals,
+      asked,
+      ' A narrower query or a shorter time range would make it smaller.'
+    )
+  );
 
   if (collation !== undefined) {
     notes.push(
@@ -733,6 +845,22 @@ export function selfAddressesOf(
 
 function dedupe(values: readonly string[]): string[] {
   return [...new Set(values)];
+}
+
+/**
+ * True when a server refused the `is-not-defined` filter itself.
+ *
+ * RFC 4791 answers an unsupported filter with 403 and `supported-filter`; some
+ * servers answer 400 or 501 instead. The caller then asks without it.
+ */
+function isFilterRefusal(error: unknown): boolean {
+  return (
+    error instanceof CalDavApiError &&
+    (error.status === 400 ||
+      error.status === 501 ||
+      (error.status === 403 &&
+        String(error.precondition ?? '').includes('supported-filter')))
+  );
 }
 
 function isCollationRefusal(error: unknown): boolean {

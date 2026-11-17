@@ -76,6 +76,22 @@ const UNAUTHORIZED_MEMORY_MS = 10_000;
 /** Longest href from a server this server will resolve. */
 const MAX_HREF_CHARS = 8 * 1024;
 
+/**
+ * An answer refused for its size before it was read in full.
+ *
+ * Typed so a caller can tell it from other failures without matching on the
+ * message: a listing reports it for the one calendar it came from.
+ */
+export class ResponseTooLargeError extends Error {
+  constructor(
+    message: string,
+    public readonly maxBytes: number
+  ) {
+    super(message);
+    this.name = 'ResponseTooLargeError';
+  }
+}
+
 export class CalDavApiError extends Error {
   constructor(
     public readonly status: number,
@@ -691,10 +707,11 @@ async function readBoundedBody(
   maxBytes: number
 ): Promise<Buffer> {
   const tooLarge = (): Error =>
-    new Error(
+    new ResponseTooLargeError(
       `the CalDAV server's answer for ${quoted(redactPath(url))} was larger than ` +
         `${maxBytes} bytes and was refused. Narrow the request — a shorter time ` +
-        'range, or fewer calendars.'
+        'range, or fewer calendars.',
+      maxBytes
     );
 
   const declared = Number(response.headers.get('content-length'));

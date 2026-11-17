@@ -239,6 +239,45 @@ describe('searching, where the collations differ', () => {
   });
 });
 
+describe('tasks without a date, where the filters differ', () => {
+  it('asks sabre for them with is-not-defined, and sabre applies it', async () => {
+    // RFC 4791 §9.7.4 lets a server refuse `is-not-defined`; the server under
+    // test would then read every task and filter here, and say so. sabre/dav
+    // implements it, so the answer must carry no such note.
+    const undatedTask = [
+      'BEGIN:VCALENDAR',
+      'VERSION:2.0',
+      'PRODID:-//t//EN',
+      'BEGIN:VTODO',
+      'UID:sabre-undated@example.net',
+      'DTSTAMP:20260901T120000Z',
+      'SUMMARY:Undated on sabre',
+      'END:VTODO',
+      'END:VCALENDAR',
+      '',
+    ].join('\r\n');
+    await putRawBaikal(sandbox, 'work', 'sabre-undated.ics', undatedTask);
+    await putRawBaikal(
+      sandbox,
+      'work',
+      'sabre-dated.ics',
+      undatedTask
+        .replace('sabre-undated@', 'sabre-dated@')
+        .replace('Undated on sabre', 'Dated on sabre')
+        .replace('SUMMARY:', 'DUE:20260910T100000Z\r\nSUMMARY:')
+    );
+    const listing = await call('list_tasks', { undated: true });
+    const summaries = (listing.tasks as { summary?: string }[]).map(
+      (task) => task.summary
+    );
+    expect(summaries).toContain('Undated on sabre');
+    expect(summaries).not.toContain('Dated on sabre');
+    expect(JSON.stringify(listing.notes ?? [])).not.toContain(
+      'refused the filter'
+    );
+  });
+});
+
 describe('free/busy, where the answer shape differs', () => {
   it('answers with periods, however this server got them', async () => {
     // Radicale expands a free-busy query itself. sabre answers with FREEBUSY
