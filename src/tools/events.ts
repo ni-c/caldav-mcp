@@ -1,10 +1,13 @@
 import { z } from 'zod';
 import type { McpServer } from '@modelcontextprotocol/server';
 
+import { quoted } from '../analyze.js';
 import { freeBusyQueryBody } from '../dav-xml.js';
 import {
+  CALL_BUDGET_MS,
   isCalendarRefusal,
   listEntries,
+  MAX_COLLECTED,
   refusalNotes,
   searchEntries,
   type Refusal,
@@ -269,8 +272,15 @@ export function registerEventReadTools(
         const collectedNotes: string[] = [];
         const refusals: Refusal[] = [];
         let method: 'server' | 'computed' = 'server';
+        const started = Date.now();
+        let asked = 0;
 
         for (const calendar of calendars) {
+          // The same clock every listing has. Without it, a server answering
+          // every calendar slowly and then with an error was walked to the
+          // end, two timeouts per calendar.
+          if (Date.now() - started > CALL_BUDGET_MS) break;
+          asked += 1;
           try {
             const ics = await context.api.freeBusy(
               calendar.url,
@@ -284,12 +294,14 @@ export function registerEventReadTools(
             method = 'computed';
             let listing;
             try {
+              // Every event in the window, not a page of them: an event this
+              // leaves out is a busy period reported as free.
               listing = await listEntries(context, {
                 kind: 'vevent',
                 calendars: [calendar],
                 from: window.from,
                 to: window.to,
-                limit: context.config.maxEntries,
+                limit: MAX_COLLECTED,
               });
             } catch (error) {
               if (!isCalendarRefusal(error)) throw error;
@@ -301,15 +313,32 @@ export function registerEventReadTools(
               const busy = busyOf(entry, calendar.path);
               if (busy !== undefined) collected.push(busy);
             }
+            if (listing.truncated !== undefined) {
+              const until = listing.truncated.window_covered_until as
+                string | undefined;
+              collectedNotes.push(
+                `Not every event in "${quoted(calendar.path)}" could be read` +
+                  (until === undefined ? '' : ` past ${until}`) +
+                  ', so busy periods there may be missing. A shorter time ' +
+                  'range reads it in full.'
+              );
+            }
           }
         }
         collectedNotes.push(
           ...refusalNotes(
             refusals,
-            calendars.length,
+            asked,
             ' A shorter time range would make it smaller.'
           )
         );
+        if (asked < calendars.length) {
+          collectedNotes.push(
+            `Stopped after ${asked} of ${calendars.length} calendars: the ` +
+              `call's ${CALL_BUDGET_MS / 1000}-second budget ran out, so the ` +
+              'others are not included. Name fewer calendars in `calendars`.'
+          );
+        }
 
         collected.sort((left, right) => left.start.localeCompare(right.start));
         if (method === 'computed') {
