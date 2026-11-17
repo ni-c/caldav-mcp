@@ -282,6 +282,9 @@ answer built from calendar content and deliberately absent from the rest — see
   `RELATED-TO` between them — and a half-correct implementation corrupts a
   calendar silently. Changing one occurrence and changing the whole series are
   both exact.
+- **A subscription's feed address.** A subscribed calendar is read through the
+  CalDAV server like any other, and only when named. The address of the feed
+  behind it is neither fetched nor shown: this server talks to one origin.
 - **The scheduling inbox and outbox.** They are filtered out of the calendar
   list, so on a server with scheduling enabled an invitation sits there unseen by
   this server until a real client processes it.

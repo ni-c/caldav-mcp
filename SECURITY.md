@@ -99,6 +99,17 @@ unbounded run and no anchor is quadratic and this process is single-threaded wit
 stdio as its transport — a scan that takes a second on a real input takes the whole
 server with it on a crafted one.
 
+**A subscription is somebody else's calendar outright.** A subscribed feed —
+holidays, a school, another family's calendar — is published by a third party, and
+over plain HTTP by whoever sits on the path to it. Its entries are content like any
+other, and three things more: every write tool refuses a subscription before it sends
+anything or asks anybody, so nothing can answer an invitation from a feed or copy its
+text into an own calendar; a tool that is not told which calendars to read leaves
+subscriptions out, so "what is on this week" never reads a feed nobody named; and
+`CALDAV_CALENDARS` keeps them out entirely, or names the ones to read by default.
+The feed's own address is never requested from the server, never fetched, and never
+shown.
+
 **Calendar names are content too**, and they reach the model through `list_calendars`
 long before anyone reads an event. Each entry's name is cleaned like any other text, and its id is the collection's path, printed byte for byte — validated rather than cleaned, because it has to come back as `calendar_id` and match what discovery resolved.
 
