@@ -68,15 +68,6 @@ export interface LoadedEntry {
 }
 
 /**
- * Fetches a resource for editing, resolving the occurrence the id addresses.
- *
- * The read uses the write-path ceiling, and that is the point: a resource this
- * server cannot read in full is one it must not write at all. A PUT assembled
- * from a truncated read would silently destroy whatever fell off the end —
- * most likely an inline attachment, which is the largest thing an entry
- * carries.
- */
-/**
  * Refuses a write to a calendar the account can only read, before anything is
  * sent or asked.
  *
@@ -111,6 +102,15 @@ export function writableCalendarOf(
   return calendar;
 }
 
+/**
+ * Fetches a resource for editing, resolving the occurrence the id addresses.
+ *
+ * The read uses the write-path ceiling, and that is the point: a resource this
+ * server cannot read in full is one it must not write at all. A PUT assembled
+ * from a truncated read would silently destroy whatever fell off the end —
+ * most likely an inline attachment, which is the largest thing an entry
+ * carries.
+ */
 export async function loadForWrite(
   context: ToolContext,
   id: EntityId,

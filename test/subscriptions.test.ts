@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
-import { buildSeriesId } from '../src/entity-id.js';
+import { buildOccurrenceId, buildSeriesId } from '../src/entity-id.js';
 import {
   connect,
   dataOf,
@@ -43,7 +43,7 @@ function event(uid: string): string {
 }
 
 function item(
-  kind: 'VTODO' | 'VJOURNAL',
+  kind: 'VEVENT' | 'VTODO' | 'VJOURNAL',
   uid: string,
   dates: string[]
 ): string {
@@ -107,6 +107,25 @@ describe('a subscribed calendar', () => {
         new URL(request.url).pathname.startsWith(FEED) &&
         request.method !== 'PROPFIND'
     );
+
+  function seedFeed(): void {
+    fake.seed('holidays', 'h.ics', event('feed entry'));
+    fake.seed(
+      'holidays',
+      's.ics',
+      item('VEVENT', 'feed series', [
+        'DTSTART:20261102T090000Z',
+        'DTEND:20261102T100000Z',
+        'RRULE:FREQ=DAILY;COUNT=5',
+      ])
+    );
+    fake.seed('holidays', 't.ics', item('VTODO', 'feed task', []));
+    fake.seed(
+      'holidays',
+      'j.ics',
+      item('VJOURNAL', 'feed note', ['DTSTART:20261110T100000Z'])
+    );
+  }
 
   describe('in list_calendars', () => {
     it('is listed read-only and marked, with a note', async () => {
@@ -262,6 +281,9 @@ describe('a subscribed calendar', () => {
 
   describe('written to', () => {
     const ID = buildSeriesId('vevent', FEED, 'h.ics');
+    const TASK = buildSeriesId('vtodo', FEED, 't.ics');
+    const JOURNAL = buildSeriesId('vjournal', FEED, 'j.ics');
+
     it.each([
       [
         'create_event',
@@ -271,11 +293,28 @@ describe('a subscribed calendar', () => {
       ['delete_event', { id: ID }],
       ['move_event', { id: ID, destination_calendar_id: '/tester/work/' }],
       ['respond_to_event', { id: ID, response: 'ACCEPTED' }],
+      [
+        'delete_event',
+        {
+          id: buildOccurrenceId('vevent', FEED, 's.ics', '20261103T090000Z'),
+          scope: 'this_occurrence',
+        },
+      ],
+      ['create_task', { calendar_id: FEED, summary: 'x' }],
+      ['update_task', { id: TASK, summary: 'changed' }],
+      ['complete_task', { id: TASK }],
+      ['delete_task', { id: TASK }],
+      [
+        'create_journal',
+        { calendar_id: FEED, summary: 'x', date: '2026-11-20' },
+      ],
+      ['update_journal', { id: JOURNAL, summary: 'changed' }],
+      ['delete_journal', { id: JOURNAL }],
     ] as const)(
       '%s is refused before anything is sent or asked',
       async (tool, args) => {
         await start(OWN_AND_FEED, { userEmail: 'tester@example.net' });
-        fake.seed('holidays', 'h.ics', event('feed entry'));
+        seedFeed();
         const before = fake.requests.length;
         const result = (await call(tool, args)) as { isError?: boolean };
         expect(result.isError).toBe(true);
@@ -288,6 +327,41 @@ describe('a subscribed calendar', () => {
         expect(session!.prompts).toEqual([]);
       }
     );
+  });
+
+  it('is refused as the destination of a move, before anything is sent or asked', async () => {
+    await start();
+    fake.seed('work', 'w.ics', event('own entry'));
+    const before = fake.requests.length;
+    const result = (await call('move_event', {
+      id: buildSeriesId('vevent', '/tester/work/', 'w.ics'),
+      destination_calendar_id: FEED,
+    })) as { isError?: boolean };
+    expect(result.isError).toBe(true);
+    expect(
+      fake.requests
+        .slice(before)
+        .filter((request) => WRITE_METHODS.has(request.method))
+    ).toEqual([]);
+    expect(session!.prompts).toEqual([]);
+  });
+
+  it('is the one calendar, read by default, when CALDAV_URL points at it', async () => {
+    // Open-Xchange marks it `subscribed` instead of `calendar`, and the check on
+    // a configured collection knew only `calendar`: the URL of one feed opened
+    // the whole account.
+    await start(OWN_AND_FEED, { url: `${ORIGIN}/tester/holidays` });
+    fake.seed('work', 'w.ics', event('own entry'));
+    fake.seed('holidays', 'h.ics', event('feed entry'));
+    const calendars = dataOf(await call('list_calendars'))
+      .calendars as Listed[];
+    expect(calendars).toEqual([
+      expect.objectContaining({ id: FEED, read_only: true, subscribed: true }),
+    ]);
+    const listing = dataOf(await call('list_events', WINDOW));
+    expect(
+      (listing.events as { summary: string }[]).map((e) => e.summary)
+    ).toEqual(['feed entry']);
   });
 
   it('probes one of the account’s own calendars in get_server_info', async () => {

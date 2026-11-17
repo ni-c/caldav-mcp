@@ -188,7 +188,9 @@ export class CalendarRegistry implements CalendarLookup {
   constructor(
     all: readonly CalendarEntry[],
     allowlist: readonly string[],
-    origin = ''
+    origin = '',
+    /** CALDAV_URL is the one collection, so the operator named it. */
+    private readonly configuredCollection = false
   ) {
     this.all = all;
     this.allowlist = allowlist;
@@ -342,11 +344,14 @@ export class CalendarRegistry implements CalendarLookup {
    * without subscriptions. A subscription is somebody else's feed — holidays,
    * a school, another family's calendar — and whoever publishes it writes
    * text this server would read on every "what is on this week". It is read
-   * when named, by the caller or by an explicit CALDAV_CALENDARS entry; every
-   * entry there names calendars explicitly, since none is a pattern.
+   * when named: by the caller, by an explicit CALDAV_CALENDARS entry — every
+   * entry there names calendars explicitly, since none is a pattern — or by
+   * CALDAV_URL pointing at it.
    */
   private defaults(): readonly CalendarEntry[] {
-    if (this.allowlist.length > 0) return this.permitted;
+    if (this.allowlist.length > 0 || this.configuredCollection) {
+      return this.permitted;
+    }
     return this.permitted.filter((calendar) => !calendar.subscribed);
   }
 

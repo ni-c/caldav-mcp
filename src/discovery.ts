@@ -9,6 +9,7 @@ import { describeCalendarEntry } from './config.js';
 import { AllowlistError } from './errors.js';
 import {
   hrefsOf,
+  isCalendarCollection,
   privileges,
   resourceTypeHas,
   supportedComponents,
@@ -191,10 +192,7 @@ export class Discovery {
     //    round trip.
     const first = await this.probe(root);
     const self = first[0];
-    if (
-      self !== undefined &&
-      resourceTypeHas(self.props.resourcetype, 'calendar')
-    ) {
+    if (self !== undefined && isCalendarCollection(self.props.resourcetype)) {
       return {
         url: undefined,
         homes: [],
@@ -345,7 +343,8 @@ export class Discovery {
     const registry = new CalendarRegistry(
       kept,
       this.allowlist,
-      this.api.origin
+      this.api.origin,
+      principal.singleCalendar
     );
     if (unique.length > MAX_CALENDARS) {
       registry.notes.push(
@@ -429,7 +428,7 @@ export class Discovery {
     // origin apply to it as to any calendar. Its feed URL (`CS:source`) is not
     // asked for: this server never fetches anything from another origin.
     const subscribed = resourceTypeHas(type, 'subscribed');
-    if (!resourceTypeHas(type, 'calendar') && !subscribed) return undefined;
+    if (!isCalendarCollection(type)) return undefined;
     if (
       resourceTypeHas(type, 'schedule-inbox') ||
       resourceTypeHas(type, 'schedule-outbox') ||
