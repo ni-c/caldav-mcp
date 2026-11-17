@@ -19,6 +19,7 @@ import {
 } from './ical.js';
 import {
   expandSeries,
+  hasUnanchoredRule,
   undatedOccurrence,
   WINDOW_SLACK_MS,
   type Occurrence,
@@ -378,7 +379,10 @@ export async function listUndatedTasks(
     for (const document of documents) {
       try {
         const root = parseCalendar(document.ics, 'the stored entry');
-        const occurrence = undatedOccurrence(componentsOf(root, 'vtodo'));
+        const occurrence = undatedOccurrence(
+          componentsOf(root, 'vtodo'),
+          context.config.timezone
+        );
         if (
           occurrence !== undefined &&
           (options.includeCompleted ||
@@ -387,6 +391,14 @@ export async function listUndatedTasks(
             ).toUpperCase() !== 'COMPLETED')
         ) {
           collected.push({ occurrence, document });
+          if (hasUnanchoredRule(occurrence.component)) {
+            notes.push(
+              `${quoted(document.resourceName)} in ` +
+                `${quoted(document.calendar.path)} has a recurrence rule but ` +
+                'no start or due date to anchor it, so the rule is ignored and ' +
+                'the task is listed as one without a date.'
+            );
+          }
         }
       } catch (error) {
         notes.push(skippedNote(document, error));

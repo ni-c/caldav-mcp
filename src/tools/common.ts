@@ -109,7 +109,7 @@ export async function loadEntry(
   const occurrence =
     pick(expansion.occurrences, entity.recurrenceId) ??
     (entity.kind === 'vtodo' && entity.recurrenceId === undefined
-      ? undatedOccurrence(components)
+      ? undatedOccurrence(components, context.config.timezone)
       : undefined);
   if (occurrence === undefined) {
     throw new ToolInputError(

@@ -229,23 +229,28 @@ function keyOf(time: RawTime): number {
 }
 
 /**
- * The one occurrence of an entry that has no date at all: no DTSTART, no DUE
- * and no rule or date list to generate one from.
+ * The one occurrence of an entry that has no date at all: no DTSTART and no DUE
+ * this server can read.
  *
- * `expandSeries` answers a window, and such an entry is in no window, so it is
- * left out there on purpose. Reading one back by id, and listing the ones a
- * `time-range` query can never return, both come through here instead. An
- * entry that carries any date is not undated, whatever else it lacks.
+ * `expandSeries` answers a window and drops such an entry, so reading one back
+ * by id, and listing the ones a windowed listing leaves out, both come through
+ * here. "No date" means no *readable* date: a DTSTART or DUE that is present but
+ * unreadable throws, so the caller reports a broken entry instead of passing it
+ * over in silence. An RRULE or RDATE without either date has nothing to anchor
+ * it, so it does not make the entry dated; the caller says the rule is ignored.
  */
 export function undatedOccurrence(
-  components: readonly ICAL.Component[]
+  components: readonly ICAL.Component[],
+  fallbackZone: string
 ): UndatedOccurrence | undefined {
   const { master } = splitSeries([...components]);
   if (master === undefined) return undefined;
-  const dated = ['dtstart', 'due', 'rrule', 'rdate'].some(
-    (name) => master.getFirstProperty(name) !== null
-  );
-  if (dated) return undefined;
+  if (
+    readTime(master, 'dtstart', fallbackZone) !== undefined ||
+    readTime(master, 'due', fallbackZone) !== undefined
+  ) {
+    return undefined;
+  }
   return {
     recurrenceId: undefined,
     start: undefined,
@@ -253,6 +258,14 @@ export function undatedOccurrence(
     component: master,
     isOverride: false,
   };
+}
+
+/** True when an undated entry carries a rule or date list nothing anchors. */
+export function hasUnanchoredRule(component: ICAL.Component): boolean {
+  return (
+    component.getFirstProperty('rrule') !== null ||
+    component.getFirstProperty('rdate') !== null
+  );
 }
 
 /** Expands one calendar resource into the occurrences inside a window. */
