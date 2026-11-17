@@ -20,6 +20,7 @@ import {
   COMPONENT_OF,
   componentsOf,
   parseCalendar,
+  type ICAL,
   type Kind,
 } from './ical.js';
 import {
@@ -30,7 +31,7 @@ import {
   type Occurrence,
   type UndatedOccurrence,
 } from './recurrence.js';
-import { shapeEntry } from './shape.js';
+import { isCompleted, shapeEntry } from './shape.js';
 import { toUtcStamp } from './time.js';
 
 /**
@@ -203,6 +204,12 @@ export interface ListOptions {
   limit: number;
   /** A cursor from a previous truncated answer. */
   after?: string | undefined;
+  /**
+   * For tasks: `false` leaves completed ones out *before* the page is cut, so a
+   * page is never short because done tasks took its slots. Ignored for other
+   * kinds.
+   */
+  includeCompleted?: boolean | undefined;
 }
 
 export interface Listing {
@@ -315,6 +322,7 @@ export async function listEntries(
         if (uid !== undefined) boundedSeries.push(uid);
       }
       for (const occurrence of result.occurrences) {
+        if (leftOut(occurrence.component, options)) continue;
         collected.push({ occurrence, document });
       }
     }
@@ -472,10 +480,7 @@ export async function listUndatedTasks(
         );
         if (
           occurrence !== undefined &&
-          (options.includeCompleted ||
-            String(
-              occurrence.component.getFirstPropertyValue('status') ?? ''
-            ).toUpperCase() !== 'COMPLETED')
+          (options.includeCompleted || !isCompleted(occurrence.component))
         ) {
           collected.push({ occurrence, document });
           if (hasUnanchoredRule(occurrence.component)) {
@@ -764,6 +769,18 @@ function skippedNote(document: ResourceDocument, error: unknown): string {
     `${quoted(document.calendar.path)}: ` +
     `${reason} This is a problem with that stored entry, not with the ` +
     'arguments of this call; the other entries are reported as usual.'
+  );
+}
+
+/** A completed task, in a task listing that asked to leave those out. */
+function leftOut(
+  component: ICAL.Component,
+  options: { kind: Kind; includeCompleted?: boolean | undefined }
+): boolean {
+  return (
+    options.kind === 'vtodo' &&
+    options.includeCompleted === false &&
+    isCompleted(component)
   );
 }
 

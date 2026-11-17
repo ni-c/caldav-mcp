@@ -102,7 +102,7 @@ export function shapeEntry(
   // accepted. All four are read by a model, so all four go through the same
   // cleaning as a summary; only the fenced body was covered before.
   const uid = optional(readText(component, 'uid'), 200);
-  const status = optional(readText(component, 'status'), 100);
+  const status = statusOf(component);
   const url = optional(readText(component, 'url'), 2000);
 
   const rrule = component.getFirstProperty('rrule');
@@ -205,6 +205,22 @@ export function shapeEntry(
 
 function maybe(key: string, value: unknown): Record<string, unknown> {
   return value === undefined ? {} : { [key]: value };
+}
+
+/** STATUS as it is reported: cleaned (NFKC, invisibles removed) and capped. */
+export function statusOf(component: ICAL.Component): string | undefined {
+  return optional(readText(component, 'status'), 100);
+}
+
+/**
+ * Whether a task is done, judged on the STATUS that is reported.
+ *
+ * One predicate for every listing: the windowed one compared the cleaned value,
+ * the undated one the raw property, so a STATUS written in fullwidth letters
+ * was done in one mode and open in the other.
+ */
+export function isCompleted(component: ICAL.Component): boolean {
+  return statusOf(component)?.toUpperCase() === 'COMPLETED';
 }
 
 /** `sanitizeText` for a value that may not be there, keeping it absent. */

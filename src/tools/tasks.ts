@@ -148,14 +148,9 @@ export function registerTaskReadTools(
                 to: window.to,
                 limit,
                 after: args.after,
+                includeCompleted: args.include_completed === true,
               });
-        const entries =
-          args.include_completed === true
-            ? listing.entries
-            : listing.entries.filter(
-                (entry) =>
-                  String(entry.status ?? '').toUpperCase() !== 'COMPLETED'
-              );
+        const entries = listing.entries;
         return untrustedResult({
           tasks: entries,
           count: entries.length,
