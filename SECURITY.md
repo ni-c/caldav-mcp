@@ -181,8 +181,9 @@ time computed afterwards; a known IANA zone always beats a definition carried by
 document, and the service is never written to.
 
 Recurrence is expanded in this process, never by asking the server to do it, and
-carries three independent bounds: the configured result limit, a per-series iteration
-cap, and a wall-clock ceiling over the whole pass. `FREQ=SECONDLY` with no `UNTIL` is
+carries three independent bounds: 5000 occurrences per call (the earliest are kept, and
+the answer names the instant from which nothing is listed), a per-series iteration cap,
+and five seconds of expansion per call, counted while expanding. `FREQ=SECONDLY` with no `UNTIL` is
 legal iCalendar and generates millions of occurrences. A window wider than 366 days
 is **refused** rather than silently shortened, because a truncated ten-year window
 looks exactly like "no further appointments".

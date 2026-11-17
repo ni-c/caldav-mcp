@@ -38,7 +38,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   answer over the size ceiling — no longer fails `list_events`, `list_tasks`,
   `list_journals`, `search_events` or `get_free_busy`: the other calendars are
   listed and a note names the one that refused. When every calendar refuses,
-  the call is still an error.
+  the call is still an error. At most twenty refusing calendars are named.
+- When a window holds more than 5000 occurrences, the earliest 5000 across all
+  entries and calendars are kept, and the answer names the instant from which
+  nothing is listed. The ceiling used to fill in the order the server sent the
+  entries and then stop asking further calendars. Every calendar is now asked.
+- `get_free_busy`, when it works the periods out from the events, reads every
+  event in the window rather than one page of them, keeps the 30-second call
+  budget, and says when a calendar held more than it could read.
 
 ### Fixed
 
@@ -54,12 +61,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Entries the size budget dropped were paged past for good.
 - A recurring series was expanded to at most `limit` occurrences, so its later
   occurrences appeared on no page, with no note.
+- `window_covered_until` was empty on a page that ended on a task with only a
+  due date.
+- The five seconds of expansion per call ran out while a slow server answered,
+  so every series stopped at its first step.
+- `truncated_fields` named a field that had only lost invisible characters.
 
 ### Security
 
-- Every Unicode format character is removed from calendar text and escaped
-  where the server quotes a value, the tag block (U+E0000–E007F) included:
-  it spells ASCII invisibly, and the previous list of ranges stopped at U+FEFF.
+- Every Unicode format character and every other default-ignorable code point
+  is removed from calendar text and escaped where the server quotes a value:
+  the tag block (U+E0000–E007F), which spells ASCII invisibly, and the
+  variation selectors, which carry a hidden byte each. The previous list of
+  ranges stopped at U+FEFF. U+FE0E and U+FE0F stay. Text is cut on code points,
+  so a cut no longer leaves half a surrogate pair.
+- A listing shaped every occurrence it collected, up to 5000, before cutting
+  out a page, and each one cleaned its master's text again: one hourly series
+  with a long description and many attendees took seconds and a gigabyte of
+  memory for `limit: 1`. Only the page is shaped now, occurrences of one
+  series share their cleaned fields, and a field's raw text is read only up to
+  four times its cap.
 - A note about an unreadable entry repeated the resource name uncut through the
   parser's message. The name is now quoted once, cut and escaped.
 - `bounded_series` named UIDs taken raw from the iCalendar text. They are now
