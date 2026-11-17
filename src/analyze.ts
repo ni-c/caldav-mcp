@@ -32,12 +32,12 @@ import { randomUUID } from 'node:crypto';
 export const MAX_TEXT_CHARS = 2_000;
 
 /**
- * Zero-width and directional-override characters. They are invisible to the
- * human reading the summary but not to the model, which makes them the cheapest
- * way to hide an instruction inside otherwise innocent text.
+ * Characters a human reader cannot see but the model can: every format
+ * character (zero-width, directional overrides and the Unicode tag block, which
+ * spells out ASCII invisibly), both line separators, and lone surrogate halves.
+ * A hand-written list of ranges missed the tag block, so the class is used.
  */
-const INVISIBLE_CHARS =
-  /[\u00ad\u180e\u200b-\u200f\u202a-\u202e\u2060-\u2064\u2066-\u2069\ufeff]/g;
+const INVISIBLE_CHARS = /[\p{Cf}\p{Cs}\p{Zl}\p{Zp}]/gu;
 
 /**
  * C0/C1 control characters, tab and newline excepted.
@@ -169,9 +169,11 @@ export function escapeInvisible(input: string): string {
     .replace(CONTROL_CHARS, escapeCodePoint);
 }
 
-/** One character as the `\uXXXX` a person can read. */
+/** One character as a readable `\uXXXX`, or `\u{XXXXX}` past the BMP. */
 function escapeCodePoint(match: string): string {
-  return `\\u${(match.codePointAt(0) as number).toString(16).padStart(4, '0')}`;
+  const code = match.codePointAt(0) as number;
+  const hex = code.toString(16);
+  return code > 0xffff ? `\\u{${hex}}` : `\\u${hex.padStart(4, '0')}`;
 }
 
 /**

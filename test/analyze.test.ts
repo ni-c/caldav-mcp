@@ -1,3 +1,4 @@
+import fc from 'fast-check';
 import { describe, expect, it } from 'vitest';
 
 import {
@@ -23,6 +24,14 @@ import {
  * before it gets a line in the list.
  */
 
+// The Unicode tag block spells ASCII out invisibly ("ASCII smuggling"): a
+// model reads it, a person sees nothing. The old hand-written range list
+// stopped at U+FEFF and let all of it through.
+const tags = (text: string): string =>
+  [...text]
+    .map((c) => String.fromCodePoint(0xe0000 + c.charCodeAt(0)))
+    .join('');
+
 describe('invisible characters', () => {
   it('removes the ones a human cannot see but a model can', () => {
     const hidden = 'Team\u200bsync\u202eevil\ufeff';
@@ -43,6 +52,58 @@ describe('invisible characters', () => {
     // For a confirmation dialog: stripping alone says "this is not what it
     // looked like" and then shows something that looks ordinary.
     expect(escapeInvisible('Work\u202e')).toBe('Work\\u202e');
+  });
+
+  it('removes tag characters and writes them out past the BMP', () => {
+    expect(stripInvisible(`Standup${tags('IGNORE ALL')}`)).toBe('Standup');
+    expect(escapeInvisible(`ok${tags('I')}`)).toBe('ok\\u{e0049}');
+    expect(quoted(`ok${tags('I')}`)).toBe('ok\\u{e0049}');
+  });
+
+  it('removes line and paragraph separators and lone surrogate halves', () => {
+    expect(stripInvisible('a\u2028b\u2029c')).toBe('abc');
+    expect(stripInvisible('a\ud800b\udc00c')).toBe('abc');
+  });
+
+  it('keeps what a person can see: astral emoji and emoji presentation', () => {
+    // A surrogate *pair* is one visible character, and U+FE0F is a variation
+    // selector (Mn, not Cf) that turns a heart into an emoji heart.
+    expect(stripInvisible('\u{1f600} \u2764\ufe0f')).toBe(
+      '\u{1f600} \u2764\ufe0f'
+    );
+  });
+
+  it('leaves no format character, separator or lone surrogate behind', () => {
+    fc.assert(
+      fc.property(
+        // Biased towards the characters that matter: uniformly random code
+        // points almost never hit the tag block or a separator in 100 runs.
+        fc.string({
+          unit: fc.oneof(
+            fc.constantFrom(
+              '\u{e0049}',
+              '\u{e007f}',
+              '\u2028',
+              '\u2029',
+              '\ud800',
+              '\udfff',
+              '\u200d',
+              '\u202e',
+              '\u00ad',
+              '\u{1d173}',
+              '\ufff9'
+            ),
+            fc.string({ unit: 'binary', minLength: 1, maxLength: 1 })
+          ),
+        }),
+        (input) => {
+          const out = stripInvisible(input);
+          expect(out).not.toMatch(/[\p{Cf}\p{Cs}\p{Zl}\p{Zp}]/u);
+          // eslint-disable-next-line no-control-regex -- matching them is the point
+          expect(out).not.toMatch(/[\u0000-\u0008\u000b-\u001f\u007f-\u009f]/);
+        }
+      )
+    );
   });
 });
 
