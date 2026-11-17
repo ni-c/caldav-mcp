@@ -41,7 +41,7 @@ describe('the expansion budget', () => {
 });
 
 describe('FBTYPE from a server', () => {
-  it('is kept as a token and dropped as anything else', () => {
+  it('is one of the four RFC values, and BUSY for anything else', () => {
     const ics = [
       'BEGIN:VCALENDAR',
       'BEGIN:VFREEBUSY',
@@ -58,8 +58,8 @@ describe('FBTYPE from a server', () => {
     const periods = parseFreeBusy(ics, '/tester/work/');
     expect(periods.map((period) => period.type)).toEqual([
       'BUSY-TENTATIVE',
-      undefined,
-      undefined,
+      'BUSY',
+      'BUSY',
     ]);
   });
 });

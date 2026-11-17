@@ -98,6 +98,15 @@ describe('invisible characters', () => {
     expect(escapeInvisible('\u2764\ufe0f')).toBe('\u2764\ufe0f');
   });
 
+  it('keeps no selector after a digit, and none behind an escape', () => {
+    // \p{Emoji} counts digits as emoji; an escape written for another
+    // character ends in a hex digit.
+    expect(stripInvisible('1\ufe0e2\ufe0f3\ufe0e')).toBe('123');
+    expect(escapeInvisible('a\u2060\ufe0f')).not.toMatch(/[\ufe0e\ufe0f]/u);
+    expect(stripInvisible('1\ufe0f\u20e3')).toBe('1\ufe0f\u20e3');
+    expect(stripInvisible('\u{1f600}\ufe0f')).toBe('\u{1f600}\ufe0f');
+  });
+
   it('removes the other default-ignorable fillers and joiners', () => {
     expect(stripInvisible('a\u034fb\u3164c\u180bd\u115fe\uffa0f')).toBe(
       'abcdef'

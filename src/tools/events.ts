@@ -382,14 +382,23 @@ export function registerEventReadTools(
 }
 
 /**
- * FBTYPE as an RFC 5545 token, or nothing. The server copies it from stored
+ * FBTYPE as one of the four RFC 5545 values. The server copies it from stored
  * entries a stranger can write, and this answer carries no untrusted marker.
  */
 function fbType(value: string | undefined): string | undefined {
-  return value !== undefined && /^[A-Za-z-]{1,32}$/.test(value)
-    ? value
-    : undefined;
+  if (value === undefined) return undefined;
+  const upper = value.toUpperCase();
+  // RFC 5545 reads an unknown type as BUSY, and reporting time as busy is
+  // the safe side of a mistake; a stranger's word is never repeated.
+  return FB_TYPES.has(upper) ? upper : 'BUSY';
 }
+
+const FB_TYPES = new Set([
+  'FREE',
+  'BUSY',
+  'BUSY-UNAVAILABLE',
+  'BUSY-TENTATIVE',
+]);
 
 /**
  * Reads the periods out of a VFREEBUSY document.
@@ -523,12 +532,24 @@ function mergedPeriods(
       from: Date.parse(period.start),
       until: Date.parse(period.end),
     }))
-    .toSorted((left, right) => left.from - right.from);
+    .toSorted(
+      (left, right) =>
+        (Number.isNaN(left.from) ? 0 : left.from) -
+        (Number.isNaN(right.from) ? 0 : right.from)
+    );
   const merged: { start: string; end: string; calendar: string }[] = [];
   let open:
     { start: string; end: string; calendar: string; until: number } | undefined;
   for (const { period, from, until } of timed) {
-    if (Number.isNaN(from) || Number.isNaN(until)) {
+    // An all-day value is a bare date, which Date.parse reads as UTC
+    // midnight, not midnight where the calendar is: joined with timed periods
+    // it swallowed the evening before it or the morning after. Kept apart.
+    if (
+      Number.isNaN(from) ||
+      Number.isNaN(until) ||
+      !period.start.includes('T') ||
+      !period.end.includes('T')
+    ) {
       merged.push(period);
       continue;
     }

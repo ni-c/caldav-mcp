@@ -114,4 +114,51 @@ describe('get_free_busy worked out from many events', () => {
     expect(answer.count).toBe((answer.busy as unknown[]).length);
     expect((answer.notes as string[]).join(' ')).toMatch(/left out/);
   });
+
+  it.each([
+    ['America/New_York', '20261117T010000Z', '20261117T020000Z'],
+    ['Europe/Berlin', '20261117T233000Z', '20261118T000000Z'],
+  ])(
+    'never lets an all-day period swallow a timed one next to it (%s)',
+    async (timezone, start, end) => {
+      const fake = new FakeCalDav({ refuseFreeBusy: true });
+      fake.install();
+      fake.seed(
+        'work',
+        'day.ics',
+        [
+          'BEGIN:VCALENDAR',
+          'VERSION:2.0',
+          'PRODID:-//t//EN',
+          'BEGIN:VEVENT',
+          'UID:day',
+          'DTSTAMP:20261101T000000Z',
+          'DTSTART;VALUE=DATE:20261117',
+          'DTEND;VALUE=DATE:20261118',
+          'SUMMARY:day',
+          'END:VEVENT',
+          'END:VCALENDAR',
+          '',
+        ].join('\r\n')
+      );
+      fake.seed('work', 'meeting.ics', event('meeting', start, end));
+      session = await connect({ timezone });
+      const answer = dataOf(
+        await session.client.callTool({
+          name: 'get_free_busy',
+          arguments: WINDOW,
+        })
+      );
+      const busy = answer.busy as { start: string; end: string }[];
+      expect(
+        busy.some(
+          (period) =>
+            Date.parse(period.start) ===
+            Date.parse(
+              `${start.slice(0, 4)}-${start.slice(4, 6)}-${start.slice(6, 8)}T${start.slice(9, 11)}:${start.slice(11, 13)}:00Z`
+            )
+        )
+      ).toBe(true);
+    }
+  );
 });

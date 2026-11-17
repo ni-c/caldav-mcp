@@ -48,11 +48,13 @@ const INVISIBLE_CHARS =
   /(?![\uFE0E\uFE0F])[\p{Cf}\p{Cs}\p{Zl}\p{Zp}\p{Default_Ignorable_Code_Point}]/gu;
 
 /**
- * U+FE0E and U+FE0F anywhere but straight after an emoji, or after another
- * selector. A run of them after any letter carries one hidden bit each.
- * Applied after the other passes, which can make two selectors adjacent.
+ * U+FE0E and U+FE0F anywhere but straight after a pictographic emoji or in
+ * front of a keycap mark. A run of them after any letter, or after a digit,
+ * which `\p{Emoji}` counts as an emoji, carries one hidden bit each. Stripping
+ * applies this after the other passes, which can make two selectors adjacent.
  */
-const STRAY_SELECTORS = /(?<!\p{Emoji})[\uFE0E\uFE0F]/gu;
+const STRAY_SELECTORS =
+  /(?<!\p{Extended_Pictographic})[\uFE0E\uFE0F](?!\u20E3)/gu;
 
 /**
  * C0/C1 control characters, tab and newline excepted.
@@ -182,10 +184,13 @@ export function stripInvisible(input: string): string {
  * `Work` they know.
  */
 export function escapeInvisible(input: string): string {
+  // Stray selectors first, on the original neighbours: an escape written by
+  // the other passes ends in a hex digit, and a selector after it must not
+  // read as one after a keycap digit.
   return input
+    .replace(STRAY_SELECTORS, escapeCodePoint)
     .replace(INVISIBLE_CHARS, escapeCodePoint)
-    .replace(CONTROL_CHARS, escapeCodePoint)
-    .replace(STRAY_SELECTORS, escapeCodePoint);
+    .replace(CONTROL_CHARS, escapeCodePoint);
 }
 
 /** One character as a readable `\uXXXX`, or `\u{XXXXX}` past the BMP. */
