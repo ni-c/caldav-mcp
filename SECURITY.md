@@ -177,8 +177,25 @@ The one genuinely free value this server writes into XML is the search string in
 
 `VTIMEZONE` definitions are not registered globally. ical.js keeps a process-wide
 timezone service, so one hostile entry could redefine `Europe/Berlin` and shift every
-time computed afterwards; a known IANA zone always beats a definition carried by a
-document, and the service is never written to.
+time computed afterwards; for the instants this server reports, a known IANA zone
+always beats a definition carried by a document, and the service is never written to.
+ical.js still evaluates the document's own definition whenever it compares two times
+in that zone, so a definition is held to the shape every real timezone rule has —
+once a year, in one month — and anything else refuses the entry.
+
+**ical.js has loops whose length a document chooses**, and one invitation used to be
+enough to freeze or crash this single-threaded process with them: a rule whose parts
+never match, an `INTERVAL` of fifteen digits, a period of a billion weeks, a YEARLY
+rule searching up to the year 20000, a timezone rule stepping every second. Two
+lines hold them. Before ical.js evaluates anything, a document is refused when it is
+past limits no real calendar comes near — more than four rules or 10,000 extra or
+excluded dates in one entry, more than 64 weekdays in a rule, a parameter section of a
+content line longer than 8 KiB, a timezone rule of any other shape. Behind that, the
+library's own primitives are bounded for the whole process: a rule step longer than
+four hundred years and a duration or normalisation longer than ten thousand are
+refused wherever they happen, rule work spends from a budget whether a series or a
+timezone is being expanded, and a timezone that ran out of budget is refused at once
+on its next use.
 
 Recurrence is expanded in this process, never by asking the server to do it, and
 carries three independent bounds: 5000 occurrences per call (the earliest are kept, and

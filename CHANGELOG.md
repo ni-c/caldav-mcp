@@ -84,6 +84,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   seconds per RRULE line. Each of these walks is now bounded from inside, and
   the series is reported as incomplete; a rule that repeats only every few
   hundred years is read as its first occurrence and refused when written.
+- More of the same kind, all in every released version: an RDATE period of a
+  billion weeks, and a VTIMEZONE whose own rule never matches, steps fifteen
+  digits of minutes or days, or runs every second, froze the server or crashed
+  it out of memory, because ical.js evaluates a zone's rules whenever it
+  compares two times in it. A document is now refused before ical.js evaluates
+  it when it is past limits no real calendar comes near: a timezone rule that is
+  not yearly in one month, more than four rules, 64 weekdays in a rule or
+  10,000 extra or excluded dates in one entry, or a content line with more than
+  100 parameters. Behind that, ical.js's own steps, durations, normalisations
+  and timezone expansions are bounded for the whole process.
 - A note about an entry the parser refused quoted part of the refused line.
   It now says only that the entry is not readable.
 - An image reference whose alt text was longer than 200 characters passed the
