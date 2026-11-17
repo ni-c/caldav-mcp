@@ -72,8 +72,9 @@ export const calendarsParam = z
   .max(64)
   .optional()
   .describe(
-    'Which calendars to look in. Leave it out for all of them. A calendar ' +
-      'outside CALDAV_CALENDARS is refused rather than silently skipped.'
+    'Which calendars to look in. Leave it out for every calendar except ' +
+      'subscriptions, which are read only when named. A calendar outside ' +
+      'CALDAV_CALENDARS is refused rather than silently skipped.'
   );
 
 /**

@@ -641,5 +641,6 @@ export function shapeCalendar(
       : { color: sanitizeText(calendar.color, 50) }),
     components: calendar.components.map((name) => sanitizeText(name, 50)),
     read_only: calendar.readOnly,
+    ...(calendar.subscribed ? { subscribed: true } : {}),
   };
 }

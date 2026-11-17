@@ -90,7 +90,7 @@ export interface LoadedEntry {
 export function assertWritable(calendar: CalendarEntry): void {
   if (calendar.readOnly) {
     throw new ToolInputError(
-      `caldav-mcp: the account can read ${quoted(calendar.path)} but not ` +
+      `caldav-mcp: the account can read "${quoted(calendar.path)}" but not ` +
         'write to it, so nothing was written.'
     );
   }

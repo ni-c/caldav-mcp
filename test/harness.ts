@@ -40,8 +40,17 @@ export interface FakeCalendar {
   displayName?: string;
   components?: string[];
   readOnly?: boolean;
+  /**
+   * A subscription. `only` is Open-Xchange's form (#52): `CS:subscribed`
+   * instead of `C:calendar`, no privilege set, and the feed's address in
+   * `CS:source`. `also` carries both types and grants write.
+   */
+  subscribed?: 'only' | 'also';
   resources?: Record<string, string>;
 }
+
+/** The feed address a subscription answers with; nothing may ever fetch it. */
+export const FEED_URL = 'https://feeds.example.org/holidays.ics';
 
 export interface FakeOptions {
   calendars?: FakeCalendar[];
@@ -433,12 +442,21 @@ export class FakeCalDav {
       entry.readOnly === true
         ? `<${priv}><${this.tag('D:read')}/></${priv}>`
         : `<${priv}><${this.tag('D:read')}/></${priv}><${priv}><${this.tag('D:write')}/></${priv}>`;
+    const cs = this.options.prefixes === 'sabre' ? 'cs' : 'CS';
+    const types =
+      entry.subscribed === 'only'
+        ? `<${cs}:subscribed/>`
+        : entry.subscribed === 'also'
+          ? `<${cal}/><${cs}:subscribed/>`
+          : `<${cal}/>`;
     return this.response(
       path,
-      `<${rt}><${coll}/><${cal}/></${rt}>` +
+      `<${rt}><${coll}/>${types}</${rt}>` +
         `<${dn}>${entry.displayName ?? entry.name}</${dn}>` +
         `<${comps}>${components.map((c) => `<${comp} name="${c}"/>`).join('')}</${comps}>` +
-        `<${privset}>${privileges}</${privset}>`
+        (entry.subscribed === 'only'
+          ? `<${cs}:source><${this.tag('D:href')}>${FEED_URL}</${this.tag('D:href')}></${cs}:source>`
+          : `<${privset}>${privileges}</${privset}>`)
     );
   }
 

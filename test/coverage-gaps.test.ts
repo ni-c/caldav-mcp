@@ -583,6 +583,7 @@ describe('the small catches', () => {
           ctag: undefined,
           color: undefined,
           readOnly: false,
+          subscribed: false,
         },
       ],
       ['https://['],

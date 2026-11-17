@@ -26,6 +26,7 @@ function calendar(
     ctag: undefined,
     color: undefined,
     readOnly: false,
+    subscribed: false,
     ...overrides,
   };
 }
