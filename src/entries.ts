@@ -942,7 +942,12 @@ class ExpansionBudget {
 function skippedNote(document: ResourceDocument, error: unknown): string {
   const reason =
     error instanceof ToolInputError
-      ? error.message.replace(/^caldav-mcp: /, '')
+      ? error.message
+          .replace(/^caldav-mcp: /, '')
+          .replace(
+            / This is the stored entry, not the arguments of this call\.$/,
+            ''
+          )
       : 'it could not be expanded.';
   return (
     `Skipped "${quoted(document.resourceName)}" in ` +

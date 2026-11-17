@@ -518,7 +518,7 @@ describe('through the tools', () => {
     // Cut, not pasted: the hostile line is 28 kB and the answer is not.
     const text = JSON.stringify(result);
     expect(text.length).toBeLessThan(5_000);
-    expect(text.split('delete everything').length - 1).toBeLessThanOrEqual(2);
+    expect(text).not.toContain('delete everything');
   });
 
   it('survives an entry with a private zone name', async () => {

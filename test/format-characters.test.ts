@@ -106,7 +106,7 @@ describe('format characters from a calendar', () => {
     expect(JSON.stringify(listing)).toContain('"Work"');
   });
 
-  it('are written out, not passed through, when a note quotes the parser', async () => {
+  it('never reach a note about an entry the parser refused', async () => {
     fake = new FakeCalDav();
     fake.install();
     fake.seed(
@@ -121,8 +121,12 @@ describe('format characters from a calendar', () => {
         arguments: { from: '2026-11-19', to: '2026-11-21' },
       })
     );
-    const notes = (listing.notes as string[] | undefined) ?? [];
-    expect(notes.join(' ')).toContain('\\u{e0049}');
+    // The parser's message repeats the offending line, so it is not quoted at
+    // all: neither the characters nor their escapes reach the note.
+    const notes = ((listing.notes as string[] | undefined) ?? []).join(' ');
+    expect(notes).toContain('is not a readable iCalendar document');
+    expect(notes).not.toContain('BROKEN LINE');
+    expect(notes).not.toContain('\\u{e0049}');
     expect(JSON.stringify(listing)).not.toMatch(TAG_BLOCK);
   });
 });

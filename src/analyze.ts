@@ -48,6 +48,13 @@ const INVISIBLE_CHARS =
   /(?![\uFE0E\uFE0F])[\p{Cf}\p{Cs}\p{Zl}\p{Zp}\p{Default_Ignorable_Code_Point}]/gu;
 
 /**
+ * U+FE0E and U+FE0F anywhere but straight after an emoji, or after another
+ * selector. A run of them after any letter carries one hidden bit each.
+ * Applied after the other passes, which can make two selectors adjacent.
+ */
+const STRAY_SELECTORS = /(?<!\p{Emoji})[\uFE0E\uFE0F]/gu;
+
+/**
  * C0/C1 control characters, tab and newline excepted.
  *
  * CR is included rather than excepted: {@link wrapUntrusted} splits on `\n`
@@ -158,7 +165,10 @@ export interface SecuritySignals {
  * `list_calendars` long before anybody opens an event in it.
  */
 export function stripInvisible(input: string): string {
-  return input.replace(INVISIBLE_CHARS, '').replace(CONTROL_CHARS, '');
+  return input
+    .replace(INVISIBLE_CHARS, '')
+    .replace(CONTROL_CHARS, '')
+    .replace(STRAY_SELECTORS, '');
 }
 
 /**
@@ -174,7 +184,8 @@ export function stripInvisible(input: string): string {
 export function escapeInvisible(input: string): string {
   return input
     .replace(INVISIBLE_CHARS, escapeCodePoint)
-    .replace(CONTROL_CHARS, escapeCodePoint);
+    .replace(CONTROL_CHARS, escapeCodePoint)
+    .replace(STRAY_SELECTORS, escapeCodePoint);
 }
 
 /** One character as a readable `\uXXXX`, or `\u{XXXXX}` past the BMP. */
@@ -255,6 +266,10 @@ export function defuseAutoFetch(text: string): string {
         (_match, alt: string) =>
           `[inline image removed — not fetched. alt="${alt}"]`
       )
+      // Whatever is left: an alt text past the bounds above, which CommonMark
+      // does not limit, still opens an image. The opener itself is broken,
+      // without a bound, so no length gets one through.
+      .replace(/!\[/g, '!\\[')
   );
 }
 
