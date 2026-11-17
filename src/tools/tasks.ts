@@ -21,6 +21,7 @@ import {
 import {
   errorResult,
   fencedUntrustedResult,
+  fittedListingResult,
   ownWordsResult,
   run,
   untrustedResult,
@@ -150,23 +151,28 @@ export function registerTaskReadTools(
                 after: args.after,
                 includeCompleted: args.include_completed === true,
               });
-        const entries = listing.entries;
-        return untrustedResult({
-          tasks: entries,
-          count: entries.length,
-          ...(window === undefined
-            ? {}
-            : {
-                window: {
-                  from: window.from.toISOString(),
-                  to: window.to.toISOString(),
-                },
-              }),
-          ...(listing.notes.length > 0 ? { notes: listing.notes } : {}),
-          ...(listing.truncated === undefined
-            ? {}
-            : { truncated: listing.truncated }),
-        });
+        return fittedListingResult(
+          listing,
+          (page) => ({
+            tasks: page.entries,
+            count: page.entries.length,
+            ...(window === undefined
+              ? {}
+              : {
+                  window: {
+                    from: window.from.toISOString(),
+                    to: window.to.toISOString(),
+                  },
+                }),
+            ...(page.notes.length > 0 ? { notes: page.notes } : {}),
+            ...(page.truncated === undefined
+              ? {}
+              : { truncated: page.truncated }),
+          }),
+          window === undefined
+            ? 'Name fewer calendars in `calendars`, or ask for a smaller `limit`.'
+            : undefined
+        );
       })
   );
 

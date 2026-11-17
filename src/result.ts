@@ -6,6 +6,7 @@ import type {
 import { CalDavApiError } from './api.js';
 import { quoted, sanitizeText, wrapUntrusted } from './analyze.js';
 import { parseDavError, XmlValueError } from './dav-xml.js';
+import type { Listing, Page } from './entries.js';
 import {
   AllowlistError,
   CalendarNotAllowedError,
@@ -24,6 +25,67 @@ export function textResult(text: string): CallToolResult {
 
 export function errorResult(text: string): CallToolResult {
   return { content: [{ type: 'text', text }], isError: true };
+}
+
+/**
+ * The length of the text block a payload is emitted as.
+ *
+ * Measured as emitted — indented, with the `untrusted` and `source` markers —
+ * because that is what a client reading only `content` receives. Measuring the
+ * compact form let an answer pass the ceiling by a third.
+ */
+export function emittedLength(data: Record<string, unknown>): number {
+  return JSON.stringify({ untrusted: true, source: 'caldav', ...data }, null, 2)
+    .length;
+}
+
+/**
+ * The longest prefix of `candidates` entries whose answer fits the ceiling.
+ *
+ * Everything is tried first, which is the usual case and costs one
+ * serialisation; otherwise a binary search keeps "this many fit". Sizes are
+ * only nearly monotone — a cursor's length differs from entry to entry — so the
+ * prefix found always fits but may not be the longest that would.
+ */
+export function fitPrefix<T extends Record<string, unknown>>(
+  candidates: number,
+  answerFor: (kept: number) => T,
+  maxBytes = MAX_RESULT_BYTES
+): { kept: number; answer: T } {
+  const all = answerFor(candidates);
+  if (emittedLength(all) <= maxBytes) return { kept: candidates, answer: all };
+  let best = { kept: 0, answer: answerFor(0) };
+  let low = 1;
+  let high = candidates - 1;
+  while (low <= high) {
+    const middle = Math.floor((low + high) / 2);
+    const answer = answerFor(middle);
+    if (emittedLength(answer) <= maxBytes) {
+      best = { kept: middle, answer };
+      low = middle + 1;
+    } else {
+      high = middle - 1;
+    }
+  }
+  return best;
+}
+
+/**
+ * A listing's answer, fitted to the ceiling before it is counted.
+ *
+ * `answer` builds the tool's object from one page; the page that fits is the
+ * one counted, so `count`, `truncated.returned` and the cursor describe what
+ * the caller receives. `budget()` still runs behind it as a safety net.
+ */
+export function fittedListingResult(
+  listing: Listing,
+  answer: (page: Page) => Record<string, unknown>,
+  followUp?: string
+): CallToolResult {
+  const { answer: fitted } = fitPrefix(listing.entries.length, (kept) =>
+    answer(listing.cut(kept))
+  );
+  return untrustedResult(fitted, followUp);
 }
 
 /**
@@ -47,7 +109,7 @@ export function budget(
   let current = data;
   let dropped = 0;
 
-  while (JSON.stringify(current).length > maxBytes) {
+  while (emittedLength(current) > maxBytes) {
     const path = largestArrayPath(current);
     if (path === undefined) break;
     const list = arrayAt(current, path);
@@ -57,7 +119,7 @@ export function budget(
     current = withArrayAt(current, path, list.slice(0, keep));
   }
 
-  if (JSON.stringify(current).length > maxBytes) {
+  if (emittedLength(current) > maxBytes) {
     // Nothing left to drop, and the remainder still does not fit. That is a
     // refusal, so it becomes an error result — not an envelope of a shape the
     // tool never declared.

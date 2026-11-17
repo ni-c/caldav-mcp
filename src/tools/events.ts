@@ -19,9 +19,9 @@ import {
 } from '../output-schema.js';
 import {
   fencedUntrustedResult,
+  fittedListingResult,
   ownWordsResult,
   run,
-  untrustedResult,
 } from '../result.js';
 import {
   afterParam,
@@ -83,18 +83,18 @@ export function registerEventReadTools(
           limit: args.limit ?? context.config.maxEntries,
           after: args.after,
         });
-        return untrustedResult({
-          events: listing.entries,
-          count: listing.entries.length,
+        return fittedListingResult(listing, (page) => ({
+          events: page.entries,
+          count: page.entries.length,
           window: {
             from: window.from.toISOString(),
             to: window.to.toISOString(),
           },
-          ...(listing.notes.length > 0 ? { notes: listing.notes } : {}),
-          ...(listing.truncated === undefined
+          ...(page.notes.length > 0 ? { notes: page.notes } : {}),
+          ...(page.truncated === undefined
             ? {}
-            : { truncated: listing.truncated }),
-        });
+            : { truncated: page.truncated }),
+        }));
       })
   );
 
@@ -192,9 +192,9 @@ export function registerEventReadTools(
           query: args.query,
           fields: args.fields ?? ['SUMMARY', 'DESCRIPTION', 'LOCATION'],
         });
-        return untrustedResult({
-          events: result.entries,
-          count: result.entries.length,
+        return fittedListingResult(result, (page) => ({
+          events: page.entries,
+          count: page.entries.length,
           window: {
             from: window.from.toISOString(),
             to: window.to.toISOString(),
@@ -202,11 +202,11 @@ export function registerEventReadTools(
           ...(result.collation === undefined
             ? {}
             : { collation: result.collation }),
-          ...(result.notes.length > 0 ? { notes: result.notes } : {}),
-          ...(result.truncated === undefined
+          ...(page.notes.length > 0 ? { notes: page.notes } : {}),
+          ...(page.truncated === undefined
             ? {}
-            : { truncated: result.truncated }),
-        });
+            : { truncated: page.truncated }),
+        }));
       })
   );
 

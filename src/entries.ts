@@ -1,4 +1,4 @@
-import { quoted } from './analyze.js';
+import { quoted, sanitizeText } from './analyze.js';
 import {
   CalDavApiError,
   ResponseTooLargeError,
@@ -20,6 +20,7 @@ import {
   COMPONENT_OF,
   componentsOf,
   parseCalendar,
+  readText,
   type ICAL,
   type Kind,
 } from './ical.js';
@@ -212,10 +213,23 @@ export interface ListOptions {
   includeCompleted?: boolean | undefined;
 }
 
-export interface Listing {
+/** One page of a listing, as a tool answers it. */
+export interface Page {
   entries: Record<string, unknown>[];
   notes: string[];
   truncated?: Record<string, unknown>;
+}
+
+/**
+ * A page, and the same page cut to its first `kept` entries.
+ *
+ * The answer is fitted to the size ceiling *before* it is counted: `cut` gives
+ * the page that survives, with `returned`, the remaining count and the cursor
+ * describing exactly that page. Counting first and letting the budget drop
+ * entries afterwards paged past the dropped ones for good (checklist 3.13).
+ */
+export interface Listing extends Page {
+  cut(kept: number): Page;
 }
 
 /**
@@ -317,9 +331,8 @@ export async function listEntries(
       );
       if (result === undefined) continue;
       notes.push(...result.notes);
-      if (result.bounded) {
-        const uid = uidOf(document);
-        if (uid !== undefined) boundedSeries.push(uid);
+      if (result.bounded && result.uid !== undefined) {
+        boundedSeries.push(result.uid);
       }
       for (const occurrence of result.occurrences) {
         if (leftOut(occurrence.component, options)) continue;
@@ -354,49 +367,55 @@ export async function listEntries(
   const afterIndex =
     options.after === undefined ? 0 : cursorIndex(shaped, options.after);
   const page = shaped.slice(afterIndex, afterIndex + options.limit);
-  const remaining = shaped.length - (afterIndex + page.length);
+  const allNotes = [...callNotes, ...boundedNotes(dedupe(notes))];
+  const series = dedupe(boundedSeries).slice(0, MAX_NAMED_SERIES);
 
-  const listing: Listing = {
-    entries: page.map((item) => item.entry),
-    notes: [...callNotes, ...boundedNotes(dedupe(notes))],
+  const pageOf = (kept: number): Page => {
+    const shown = page.slice(0, kept);
+    const consumed = kept + steppedPast(page.length, kept);
+    const remaining = shaped.length - (afterIndex + consumed);
+    const result: Page = {
+      entries: shown.map((item) => item.entry),
+      notes: allNotes,
+    };
+    if (
+      remaining > 0 ||
+      series.length > 0 ||
+      stop !== undefined ||
+      kept < page.length
+    ) {
+      const last = shown[shown.length - 1];
+      const next = shaped[afterIndex + consumed];
+      result.truncated = {
+        reason: sentences(
+          stop === undefined
+            ? undefined
+            : stoppedReason(stop, asked, calendars.length),
+          remaining > 0
+            ? `${remaining} more entr${remaining === 1 ? 'y' : 'ies'} in this window.`
+            : series.length > 0
+              ? 'At least one recurring entry generated more occurrences than could be walked.'
+              : undefined,
+          fitReason(page, kept)
+        ),
+        returned: kept,
+        ...(last === undefined
+          ? {}
+          : { window_covered_until: startValueOf(last.entry) ?? '' }),
+        ...(next === undefined ? {} : { next_cursor: cursorOf(next.entry) }),
+        ...(series.length > 0 ? { bounded_series: series } : {}),
+        follow_up:
+          stop !== undefined
+            ? STOPPED_FOLLOW_UP
+            : remaining > 0
+              ? 'Call again with `after` set to next_cursor, or narrow the window.'
+              : 'Narrow the window; the entries named in bounded_series are the expensive ones.',
+      };
+    }
+    return result;
   };
 
-  if (remaining > 0 || boundedSeries.length > 0 || stop !== undefined) {
-    const last = page[page.length - 1];
-    const nextStart = shaped[afterIndex + page.length];
-    const reason =
-      remaining > 0
-        ? `${remaining} more entr${remaining === 1 ? 'y' : 'ies'} in this window.`
-        : boundedSeries.length > 0
-          ? 'At least one recurring entry generated more occurrences than could be walked.'
-          : '';
-    listing.truncated = {
-      reason:
-        stop === undefined
-          ? reason
-          : `${stoppedReason(stop, asked, calendars.length)}${reason === '' ? '' : ` ${reason}`}`,
-      returned: page.length,
-      ...(last === undefined
-        ? {}
-        : {
-            window_covered_until: startValueOf(last.entry) ?? '',
-          }),
-      ...(nextStart === undefined
-        ? {}
-        : { next_cursor: cursorOf(nextStart.entry) }),
-      ...(boundedSeries.length > 0
-        ? { bounded_series: dedupe(boundedSeries) }
-        : {}),
-      follow_up:
-        stop !== undefined
-          ? STOPPED_FOLLOW_UP
-          : remaining > 0
-            ? 'Call again with `after` set to next_cursor, or narrow the window.'
-            : 'Narrow the window; the entries named in bounded_series are the expensive ones.',
-    };
-  }
-
-  return listing;
+  return { ...pageOf(page.length), cut: pageOf };
 }
 
 export interface UndatedListOptions {
@@ -532,36 +551,40 @@ export async function listUndatedTasks(
       ? 0
       : cursorIndex(shaped, options.after, 'call');
   const page = shaped.slice(afterIndex, afterIndex + options.limit);
-  const remaining = shaped.length - (afterIndex + page.length);
+  const allNotes = [...callNotes, ...boundedNotes(dedupe(notes))];
 
-  const listing: Listing = {
-    entries: page.map((item) => item.entry),
-    notes: [...callNotes, ...boundedNotes(dedupe(notes))],
+  const pageOf = (kept: number): Page => {
+    const shown = page.slice(0, kept);
+    const consumed = kept + steppedPast(page.length, kept);
+    const remaining = shaped.length - (afterIndex + consumed);
+    const result: Page = {
+      entries: shown.map((item) => item.entry),
+      notes: allNotes,
+    };
+    if (remaining > 0 || stop !== undefined || kept < page.length) {
+      const next = shaped[afterIndex + consumed];
+      result.truncated = {
+        reason: sentences(
+          stop === undefined
+            ? undefined
+            : stoppedReason(stop, asked, calendars.length),
+          remaining > 0
+            ? `${remaining} more task${remaining === 1 ? '' : 's'} with no date.`
+            : undefined,
+          fitReason(page, kept)
+        ),
+        returned: kept,
+        ...(next === undefined ? {} : { next_cursor: cursorOf(next.entry) }),
+        follow_up:
+          stop !== undefined
+            ? 'Name fewer calendars in `calendars`.'
+            : 'Call again with `after` set to next_cursor.',
+      };
+    }
+    return result;
   };
 
-  if (remaining > 0 || stop !== undefined) {
-    const nextEntry = shaped[afterIndex + page.length];
-    const more =
-      remaining > 0
-        ? `${remaining} more task${remaining === 1 ? '' : 's'} with no date.`
-        : '';
-    listing.truncated = {
-      reason:
-        stop === undefined
-          ? more
-          : `${stoppedReason(stop, asked, calendars.length)}${more === '' ? '' : ` ${more}`}`,
-      returned: page.length,
-      ...(nextEntry === undefined
-        ? {}
-        : { next_cursor: cursorOf(nextEntry.entry) }),
-      follow_up:
-        stop !== undefined
-          ? 'Name fewer calendars in `calendars`.'
-          : 'Call again with `after` set to next_cursor.',
-    };
-  }
-
-  return listing;
+  return { ...pageOf(page.length), cut: pageOf };
 }
 
 /** Searches one field across calendars and returns whole matching entries. */
@@ -678,40 +701,50 @@ export async function searchEntries(
 
   const principal = await context.discovery.principal();
   const selfAddresses = selfAddressesOf(context.config, principal.addresses);
-  const page = collected.slice(0, options.limit);
+  const page = collected
+    .slice(0, options.limit)
+    .map(({ occurrence, document }) =>
+      shapeEntry(occurrence, {
+        kind: options.kind,
+        calendar: document.calendar,
+        resourceName: document.resourceName,
+        fallbackZone: context.config.timezone,
+        detailed: false,
+        selfAddresses,
+      })
+    );
+  const allNotes = [...callNotes, ...boundedNotes(dedupe(notes))];
+
+  // No cursor here: a search answers its first `limit` matches and says how
+  // many more there are, so a match that does not fit is counted, not paged.
+  const pageOf = (kept: number): Page => {
+    const more = collected.length - kept;
+    const result: Page = {
+      entries: page.slice(0, kept).map((item) => item.entry),
+      notes: allNotes,
+    };
+    if (more > 0 || stop !== undefined) {
+      result.truncated = {
+        reason: sentences(
+          stop === undefined
+            ? undefined
+            : stoppedReason(stop, asked, calendars.length),
+          more > 0 ? `${more} more matches.` : undefined,
+          fitReason(page, kept)
+        ),
+        returned: kept,
+        follow_up:
+          stop === undefined
+            ? 'Narrow the query or the time range.'
+            : STOPPED_FOLLOW_UP,
+      };
+    }
+    return result;
+  };
 
   return {
-    entries: page.map(
-      ({ occurrence, document }) =>
-        shapeEntry(occurrence, {
-          kind: options.kind,
-          calendar: document.calendar,
-          resourceName: document.resourceName,
-          fallbackZone: context.config.timezone,
-          detailed: false,
-          selfAddresses,
-        }).entry
-    ),
-    notes: [...callNotes, ...boundedNotes(dedupe(notes))],
-    ...(collected.length > page.length || stop !== undefined
-      ? {
-          truncated: {
-            reason: [
-              ...(stop === undefined
-                ? []
-                : [stoppedReason(stop, asked, calendars.length)]),
-              ...(collected.length > page.length
-                ? [`${collected.length - page.length} more matches.`]
-                : []),
-            ].join(' '),
-            returned: page.length,
-            follow_up:
-              stop === undefined
-                ? 'Narrow the query or the time range.'
-                : STOPPED_FOLLOW_UP,
-          },
-        }
-      : {}),
+    ...pageOf(page.length),
+    cut: pageOf,
     ...(collation === undefined ? {} : { collation }),
   };
 }
@@ -737,15 +770,19 @@ function expandOne(
 ) {
   try {
     const root = parseCalendar(document.ics, 'the stored entry');
-    return expandSeries(componentsOf(root, options.kind), {
-      from: options.from,
-      to: options.to,
-      // One entry may not exceed the whole answer, so the per-series cap is the
-      // request cap. It cannot spend more than that anyway.
-      cap: options.limit,
-      fallbackZone,
-      deadline,
-    });
+    const components = componentsOf(root, options.kind);
+    return {
+      ...expandSeries(components, {
+        from: options.from,
+        to: options.to,
+        // One entry may not exceed the whole answer, so the per-series cap is the
+        // request cap. It cannot spend more than that anyway.
+        cap: options.limit,
+        fallbackZone,
+        deadline,
+      }),
+      uid: cleanedUid(components),
+    };
   } catch (error) {
     notes.push(skippedNote(document, error));
     return undefined;
@@ -784,15 +821,55 @@ function leftOut(
   );
 }
 
+/** At most this many series are named in `bounded_series`. */
+const MAX_NAMED_SERIES = 20;
+
+/**
+ * 1 when the first entry of a page did not fit even on its own: it is stepped
+ * past, so the next call does not answer the same empty page forever.
+ */
+function steppedPast(pageLength: number, kept: number): number {
+  return kept === 0 && pageLength > 0 ? 1 : 0;
+}
+
+/** Why a page holds fewer entries than it could have, or nothing. */
+function fitReason(
+  page: readonly { entry: Record<string, unknown> }[],
+  kept: number
+): string | undefined {
+  if (kept >= page.length) return undefined;
+  if (kept === 0) {
+    return (
+      `The entry ${quoted(String(page[0]?.entry.id ?? ''))} does not fit ` +
+      'under the size ceiling even on its own, so it was stepped past; read ' +
+      'it on its own with its get tool.'
+    );
+  }
+  return `Only ${kept} of ${page.length} entries fitted under the size ceiling.`;
+}
+
+/** The non-empty parts, as one paragraph. */
+function sentences(...parts: (string | undefined)[]): string {
+  return parts.filter((part) => part !== undefined && part !== '').join(' ');
+}
+
 function accepts(calendar: CalendarEntry, component: string): boolean {
   return (
     calendar.components.length === 0 || calendar.components.includes(component)
   );
 }
 
-function uidOf(document: ResourceDocument): string | undefined {
-  const match = /^UID:(.+)$/m.exec(document.ics);
-  return match?.[1]?.trim();
+/**
+ * The UID a truncated answer names, cleaned like every other field.
+ *
+ * It used to be cut out of the raw text with a regex, so whatever an invitation
+ * put on its UID line — invisible characters, an instruction, kilobytes of it —
+ * reached the model unfiltered in `bounded_series`.
+ */
+function cleanedUid(components: readonly ICAL.Component[]): string | undefined {
+  const first = components[0];
+  const uid = first === undefined ? undefined : readText(first, 'uid');
+  return uid === undefined ? undefined : sanitizeText(uid, 200);
 }
 
 function startValueOf(entry: Record<string, unknown>): string | undefined {
