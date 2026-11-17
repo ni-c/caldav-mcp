@@ -1,4 +1,5 @@
 import {
+  cleanText,
   detectScriptMix,
   detectSuspicious,
   sanitizeText,
@@ -182,9 +183,11 @@ function componentFields(
   const text = (name: string): string | undefined => {
     const raw = readText(component, name);
     if (raw === undefined) return undefined;
-    const clean = sanitizeText(raw, limit);
-    if (clean.length < raw.length) truncatedFields.push(name.toLowerCase());
-    return clean;
+    // Marked when the text was cut, not when it only lost invisible
+    // characters, which made a short summary look shortened.
+    const clean = cleanText(raw, limit);
+    if (clean.cut) truncatedFields.push(name.toLowerCase());
+    return clean.text;
   };
 
   const summary = text('summary');

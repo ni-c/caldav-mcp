@@ -193,9 +193,9 @@ export function refusalNotes(
       .slice(0, MAX_NAMED_REFUSALS)
       .map(({ calendar, error }) =>
         error instanceof ResponseTooLargeError
-          ? `${quoted(calendar.path)} answered with more than ${error.maxBytes} ` +
+          ? `"${quoted(calendar.path)}" answered with more than ${error.maxBytes} ` +
             `bytes, so its entries are not listed.${sizeAdvice}`
-          : `${quoted(calendar.path)} refused the request with HTTP ` +
+          : `"${quoted(calendar.path)}" refused the request with HTTP ` +
             `${error.status}, so its entries are not listed.`
       ),
     ...(unnamed > 0
@@ -625,8 +625,8 @@ export async function listUndatedTasks(
           collected.push({ occurrence, document });
           if (hasUnanchoredRule(occurrence.component)) {
             notes.push(
-              `${quoted(document.resourceName)} in ` +
-                `${quoted(document.calendar.path)} has a recurrence rule but ` +
+              `"${quoted(document.resourceName)}" in ` +
+                `"${quoted(document.calendar.path)}" has a recurrence rule but ` +
                 'no start or due date to anchor it, so the rule is ignored and ' +
                 'the task is listed as one without a date.'
             );
@@ -923,8 +923,8 @@ function skippedNote(document: ResourceDocument, error: unknown): string {
       ? error.message.replace(/^caldav-mcp: /, '')
       : 'it could not be expanded.';
   return (
-    `Skipped ${quoted(document.resourceName)} in ` +
-    `${quoted(document.calendar.path)}: ` +
+    `Skipped "${quoted(document.resourceName)}" in ` +
+    `"${quoted(document.calendar.path)}": ` +
     `${reason} This is a problem with that stored entry, not with the ` +
     'arguments of this call; the other entries are reported as usual.'
   );
@@ -964,7 +964,7 @@ function fitReason(
     // A search has no cursor, so nothing is stepped past there: the entry is
     // counted with the other matches that were not returned.
     return (
-      `The entry ${quoted(String(page[0]?.entry.id ?? ''))} does not fit ` +
+      `The entry "${quoted(String(page[0]?.entry.id ?? ''))}" does not fit ` +
       'under the size ceiling even on its own' +
       (paging === 'stepped' ? ', so it was stepped past' : '') +
       '; read it on its own with its get tool.'

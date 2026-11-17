@@ -513,7 +513,7 @@ describe('through the tools', () => {
       'Good',
     ]);
     const notes = (result.structuredContent?.notes ?? []).join(' ');
-    expect(notes).toMatch(/Skipped broken\.ics/);
+    expect(notes).toMatch(/Skipped "broken\.ics"/);
     expect(notes).toMatch(/not with the arguments/);
     // Cut, not pasted: the hostile line is 28 kB and the answer is not.
     const text = JSON.stringify(result);

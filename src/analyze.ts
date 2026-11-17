@@ -34,10 +34,18 @@ export const MAX_TEXT_CHARS = 2_000;
 /**
  * Characters a human reader cannot see but the model can: every format
  * character (zero-width, directional overrides and the Unicode tag block, which
- * spells out ASCII invisibly), both line separators, and lone surrogate halves.
- * A hand-written list of ranges missed the tag block, so the class is used.
+ * spells out ASCII invisibly), both line separators, lone surrogate halves, and
+ * every other default-ignorable code point — the variation selectors, which
+ * carry a hidden byte each after any character, the Hangul fillers, the
+ * Mongolian free variation selectors. A hand-written list of ranges missed the
+ * tag block, so the classes are used.
+ *
+ * U+FE0E and U+FE0F stay: they pick text or emoji presentation, and without
+ * them a heart renders as a black glyph. Two values carry one bit; the
+ * variation selectors that smuggle a byte each are the other 254.
  */
-const INVISIBLE_CHARS = /[\p{Cf}\p{Cs}\p{Zl}\p{Zp}]/gu;
+const INVISIBLE_CHARS =
+  /(?![\uFE0E\uFE0F])[\p{Cf}\p{Cs}\p{Zl}\p{Zp}\p{Default_Ignorable_Code_Point}]/gu;
 
 /**
  * C0/C1 control characters, tab and newline excepted.
@@ -201,7 +209,18 @@ export function quoted(input: string, max = 200): string {
   // read. Zero-width and directional characters are not `\s`, so they still
   // meet the escaper.
   const escaped = escapeInvisible(input.replace(/\s+/g, ' '));
-  return escaped.length > max ? `${escaped.slice(0, max)}…` : escaped;
+  return escaped.length > max ? `${cutAt(escaped, max)}…` : escaped;
+}
+
+/**
+ * The first `max` UTF-16 units of `text`, one fewer when the cut would split a
+ * surrogate pair. A slice by code unit leaves half a pair behind, which is the
+ * lone surrogate the cleaning had just removed.
+ */
+export function cutAt(text: string, max: number): string {
+  if (text.length <= max) return text;
+  const last = text.charCodeAt(max - 1);
+  return text.slice(0, last >= 0xd800 && last <= 0xdbff ? max - 1 : max);
 }
 
 /**
@@ -247,13 +266,33 @@ export function defuseAutoFetch(text: string): string {
  * valid markdown image syntax, so defusing before normalising would miss it.
  */
 export function sanitizeText(input: string, maxChars = MAX_TEXT_CHARS): string {
-  const normalized = defuseAutoFetch(stripInvisible(input.normalize('NFKC')))
+  return cleanText(input, maxChars).text;
+}
+
+/**
+ * Raw text read before it is cleaned. Cleaning is linear but not cheap, and a
+ * stored entry can carry megabytes in one field; NFKC rarely more than
+ * quadruples what is left after invisibles are removed.
+ */
+const RAW_FACTOR = 4;
+
+/** {@link sanitizeText}, and whether it had to cut. */
+export function cleanText(
+  input: string,
+  maxChars = MAX_TEXT_CHARS
+): { text: string; cut: boolean } {
+  const raw = cutAt(input, maxChars * RAW_FACTOR);
+  const normalized = defuseAutoFetch(stripInvisible(raw.normalize('NFKC')))
     .replace(/[ \t]+/g, ' ')
     .replace(/\n{3,}/g, '\n\n')
     .trim();
-  return normalized.length > maxChars
-    ? `${normalized.slice(0, maxChars)}\n… (truncated at ${maxChars} characters — get_event returns the full text)`
-    : normalized;
+  if (normalized.length <= maxChars && raw.length === input.length) {
+    return { text: normalized, cut: false };
+  }
+  return {
+    text: `${cutAt(normalized, maxChars)}\n… (truncated at ${maxChars} characters — get_event returns the full text)`,
+    cut: true,
+  };
 }
 
 /** Names of the injection shapes present in `text`. */
