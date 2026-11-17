@@ -196,7 +196,7 @@ describe('a rule that does not end', () => {
 
   // A YEARLY iterator searches up to the year 20000 for a year its parts
   // match, in its constructor: two seconds per RRULE line, every line paying.
-  it.each([1, 20])(
+  it.each([1, 4])(
     'stops the year search of an impossible YEARLY rule, %i lines of it',
     (lines) => {
       const started = Date.now();

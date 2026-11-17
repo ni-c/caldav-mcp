@@ -967,6 +967,12 @@ function setRecurrence(component: ICAL.Component, rule: string): void {
         'so it does not write one; use a smaller INTERVAL.'
     );
   }
+  if ((recur.parts.BYDAY?.length ?? 0) > 64) {
+    throw new ToolInputError(
+      `caldav-mcp: "${quoted(rule)}" names more than 64 weekdays. This server ` +
+        'does not read such a rule back, so it does not write one.'
+    );
+  }
   const property = new ICAL.Property('rrule', component);
   property.setValue(recur);
   component.addProperty(property);

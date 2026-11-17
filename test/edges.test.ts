@@ -453,6 +453,22 @@ describe('through the tools', () => {
     expect(textOf(result)).toMatch(/not a recurrence rule/);
   });
 
+  it('refuses a rule with more than 64 weekdays, and writes nothing', async () => {
+    await start();
+    const days = Array.from({ length: 65 }, (_, i) =>
+      i < 53 ? `${i + 1}MO` : `${i - 52}TU`
+    ).join(',');
+    const result = await call('create_event', {
+      calendar_id: WORK,
+      summary: 'x',
+      start: '2026-09-20T10:00:00',
+      recurrence: `FREQ=YEARLY;BYDAY=${days}`,
+    });
+    expect((result as { isError?: boolean }).isError).toBe(true);
+    expect(textOf(result)).toMatch(/more than 64 weekdays/);
+    expect(fake.requests.filter((r) => r.method === 'PUT')).toEqual([]);
+  });
+
   it('refuses a rule that repeats only every few hundred years, and writes nothing', async () => {
     await start();
     const result = await call('create_event', {

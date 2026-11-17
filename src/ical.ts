@@ -1,6 +1,8 @@
 import ICAL from 'ical.js';
 
 import { ToolInputError } from './errors.js';
+// Installs the bounds on ical.js's loops before anything here can use it.
+import './ical-guard.js';
 import { cacheZone, isKnownZone, wallClockToInstant } from './time.js';
 
 export { isKnownZone };
@@ -48,6 +50,8 @@ export const COMPONENT_OF: Record<Kind, 'VEVENT' | 'VTODO' | 'VJOURNAL'> = {
  * stranger's text, and a quote mark inside it could close the excerpt.
  */
 export function parseCalendar(ics: string, what: string): ICAL.Component {
+  const scanned = parameterProblem(ics);
+  if (scanned !== undefined) throw notEvaluable(what, scanned);
   let root: ICAL.Component;
   try {
     root = new ICAL.Component(ICAL.parse(ics));
@@ -62,7 +66,132 @@ export function parseCalendar(ics: string, what: string): ICAL.Component {
       `caldav-mcp: ${what} is not a VCALENDAR document.`
     );
   }
+  const problem = evaluableProblem(root);
+  if (problem !== undefined) throw notEvaluable(what, problem);
   return root;
+}
+
+function notEvaluable(what: string, problem: string): ToolInputError {
+  return new ToolInputError(
+    `caldav-mcp: ${what} ${problem}, which this server does not evaluate. ` +
+      'This is the stored entry, not the arguments of this call.'
+  );
+}
+
+/**
+ * The limits a document is held to before ical.js evaluates any of it.
+ *
+ * No calendar a person uses comes near them; each is a construct ical.js
+ * handles at a cost the document chooses, and the guards in ical-guard.ts are
+ * the second line behind them. A document past one is refused as a whole,
+ * like an unreadable one: a listing names it and lists the rest.
+ */
+const LIMITS = {
+  /** Characters before the value, and parameters, on one content line. */
+  parameterChars: 8192,
+  parameters: 100,
+  /** RRULE lines in one component; RFC 5545 says it SHOULD be one. */
+  rules: 4,
+  /** BYDAY values in one rule; sorted pairwise when the rule is built. */
+  byDay: 64,
+  /** RDATE and EXDATE values in one component. */
+  dates: 10_000,
+  /** Observances in one VTIMEZONE. */
+  observances: 2000,
+};
+
+/**
+ * A content line's parameter section, scanned once over the unfolded text:
+ * ical.js looks for the value delimiter again for every parameter, which is
+ * quadratic in a line of a hundred thousand of them.
+ */
+function parameterProblem(ics: string): string | undefined {
+  for (const line of ics.replace(/\r?\n[ \t]/g, '').split(/\r?\n/)) {
+    let quoted = false;
+    let semicolons = 0;
+    for (let index = 0; index < line.length; index += 1) {
+      const char = line[index];
+      if (char === '"') quoted = !quoted;
+      else if (!quoted && char === ':') break;
+      else if (!quoted && char === ';') semicolons += 1;
+      if (index > LIMITS.parameterChars || semicolons > LIMITS.parameters) {
+        return 'has a content line with more parameters than a calendar writes';
+      }
+    }
+  }
+  return undefined;
+}
+
+/** The first limit the parsed document is past, as a phrase, or undefined. */
+function evaluableProblem(root: ICAL.Component): string | undefined {
+  const pending = [root];
+  while (pending.length > 0) {
+    const component = pending.pop() as ICAL.Component;
+    pending.push(...component.getAllSubcomponents());
+    const rules = component.getAllProperties('rrule');
+    if (rules.length > LIMITS.rules) {
+      return `carries ${rules.length} recurrence rules in one entry`;
+    }
+    const dates = [
+      ...component.getAllProperties('rdate'),
+      ...component.getAllProperties('exdate'),
+    ].reduce((sum, property) => sum + property.getValues().length, 0);
+    if (dates > LIMITS.dates) {
+      return `lists ${dates} extra or excluded dates in one entry`;
+    }
+    for (const rule of rules) {
+      const recur = rule.getFirstValue();
+      if (!(recur instanceof ICAL.Recur)) continue;
+      if ((recur.parts.BYDAY?.length ?? 0) > LIMITS.byDay) {
+        return 'has a recurrence rule with more weekdays than a calendar writes';
+      }
+    }
+    if (component.name === 'vtimezone') {
+      const observances = component.getAllSubcomponents();
+      if (observances.length > LIMITS.observances) {
+        return 'defines a timezone with more observances than a calendar writes';
+      }
+      for (const observance of observances) {
+        for (const rule of observance.getAllProperties('rrule')) {
+          const recur = rule.getFirstValue();
+          if (!(recur instanceof ICAL.Recur) || !isZoneRule(recur)) {
+            return 'defines a timezone with a rule no timezone uses';
+          }
+        }
+      }
+    }
+  }
+  return undefined;
+}
+
+const ZONE_RULE_PARTS = new Set(['BYMONTH', 'BYDAY', 'BYMONTHDAY', 'WKST']);
+const MONTH_DAYS = [31, 29, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31];
+
+/**
+ * The shape every real timezone rule has: once a year, in one month, on one
+ * weekday of it or on one week of days. ical.js expands a zone's rules itself
+ * whenever a time in it is compared, so anything else — a minutely rule, an
+ * interval of fifteen digits, a 30 February — is refused before it runs.
+ */
+function isZoneRule(recur: ICAL.Recur): boolean {
+  if (recur.freq !== 'YEARLY' || (recur.interval ?? 1) !== 1) return false;
+  const parts = recur.parts as Record<string, unknown[] | undefined>;
+  if (Object.keys(parts).some((part) => !ZONE_RULE_PARTS.has(part))) {
+    return false;
+  }
+  const months = (parts.BYMONTH ?? []) as number[];
+  const days = (parts.BYDAY ?? []) as string[];
+  const monthDays = (parts.BYMONTHDAY ?? []) as number[];
+  if (months.length !== 1 || days.length > 1 || monthDays.length > 7) {
+    return false;
+  }
+  const length = MONTH_DAYS[(months[0] ?? 0) - 1];
+  if (length === undefined) return false;
+  if (monthDays.some((day) => day === 0 || Math.abs(day) > length)) {
+    return false;
+  }
+  // A weekday within listed days has to be able to fall on one of them.
+  return monthDays.length === 0 || days.length === 0 || monthDays.length === 7;
 }
 
 /** Serialises a document back to the wire form. */
