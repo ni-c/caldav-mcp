@@ -21,6 +21,7 @@ import {
   untrustedFields,
 } from '../output-schema.js';
 import {
+  budget,
   fencedUntrustedResult,
   fittedListingResult,
   ownWordsResult,
@@ -309,10 +310,13 @@ export function registerEventReadTools(
               continue;
             }
             collectedNotes.push(...listing.notes);
-            for (const entry of listing.entries) {
-              const busy = busyOf(entry, calendar.path);
-              if (busy !== undefined) collected.push(busy);
-            }
+            collected.push(
+              ...mergedPeriods(
+                listing.entries
+                  .map((entry) => busyOf(entry, calendar.path))
+                  .filter((busy) => busy !== undefined)
+              )
+            );
             if (listing.truncated !== undefined) {
               const until = listing.truncated.window_covered_until as
                 string | undefined;
@@ -350,17 +354,26 @@ export function registerEventReadTools(
           );
         }
 
-        return ownWordsResult({
-          busy: collected,
-          count: collected.length,
-          window: {
-            from: window.from.toISOString(),
-            to: window.to.toISOString(),
+        // Under the same ceiling as every other answer: worked out from the
+        // events, a calendar can give thousands of periods.
+        const answer = budget(
+          {
+            busy: collected,
+            count: collected.length,
+            window: {
+              from: window.from.toISOString(),
+              to: window.to.toISOString(),
+            },
+            method,
+            ...(collectedNotes.length > 0
+              ? { notes: [...new Set(collectedNotes)] }
+              : {}),
           },
-          method,
-          ...(collectedNotes.length > 0
-            ? { notes: [...new Set(collectedNotes)] }
-            : {}),
+          'Ask for a shorter time range or fewer calendars.'
+        );
+        return ownWordsResult({
+          ...answer,
+          count: (answer.busy as unknown[]).length,
         });
       })
   );
@@ -483,6 +496,51 @@ function periodEnd(start: string | undefined, raw: string): string | undefined {
 }
 
 /** A busy period from a shaped event, for the computed fallback. */
+/**
+ * Overlapping and touching periods of one calendar, joined, as a free-busy
+ * answer joins them: a minutely series is one busy period, not five thousand.
+ * Periods whose times do not parse are kept as they are.
+ */
+function mergedPeriods(
+  periods: readonly { start: string; end: string; calendar: string }[]
+): { start: string; end: string; calendar: string }[] {
+  const timed = periods
+    .map((period) => ({
+      period,
+      from: Date.parse(period.start),
+      until: Date.parse(period.end),
+    }))
+    .toSorted((left, right) => left.from - right.from);
+  const merged: { start: string; end: string; calendar: string }[] = [];
+  let open:
+    { start: string; end: string; calendar: string; until: number } | undefined;
+  for (const { period, from, until } of timed) {
+    if (Number.isNaN(from) || Number.isNaN(until)) {
+      merged.push(period);
+      continue;
+    }
+    if (open !== undefined && from <= open.until) {
+      if (until > open.until) {
+        open.end = period.end;
+        open.until = until;
+      }
+      continue;
+    }
+    if (open !== undefined) {
+      merged.push({
+        start: open.start,
+        end: open.end,
+        calendar: open.calendar,
+      });
+    }
+    open = { ...period, until };
+  }
+  if (open !== undefined) {
+    merged.push({ start: open.start, end: open.end, calendar: open.calendar });
+  }
+  return merged;
+}
+
 function busyOf(
   entry: Record<string, unknown>,
   calendarPath: string
