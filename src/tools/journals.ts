@@ -45,6 +45,7 @@ import {
   commit,
   createEntry,
   loadForWrite,
+  writableCalendarOf,
 } from '../write.js';
 import { CREATE, DELETE, READ_ONLY, REPLACE } from './annotations.js';
 import { loadEntry, resolveWindow } from './common.js';
@@ -306,6 +307,8 @@ export function registerJournalWriteTools(
       run(async () => {
         const registry = await context.discovery.registry();
         const entity = parseEntityId(args.id, 'vjournal', registry);
+        // Before the dialog: nobody is asked to approve what cannot be done.
+        writableCalendarOf(registry, entity);
 
         const outcome = await approval.requestApproval(
           server,

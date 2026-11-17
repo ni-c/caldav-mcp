@@ -56,6 +56,7 @@ import {
   loadForWrite,
   type LoadedEntry,
   type Scope,
+  writableCalendarOf,
 } from '../write.js';
 import { CREATE, DELETE, MOVE, REPLACE, SET_STATE } from './annotations.js';
 import { loadEntry } from './common.js';
@@ -361,6 +362,8 @@ export function registerEventWriteTools(
       run(async () => {
         const registry = await context.discovery.registry();
         const entity = parseEntityId(args.id, 'vevent', registry);
+        // Before the dialog: nobody is asked to approve what cannot be done.
+        writableCalendarOf(registry, entity);
         const scope = resolveScope(entity, args.scope);
 
         // Read before asking. A GET is not the destructive act, and the
@@ -463,6 +466,8 @@ export function registerEventWriteTools(
       run(async () => {
         const registry = await context.discovery.registry();
         const entity = parseEntityId(args.id, 'vevent', registry);
+        // Before the dialog: nobody is asked to approve what cannot be done.
+        writableCalendarOf(registry, entity);
         const destination = registry.resolve(args.destination_calendar_id);
         if (destination.path === entity.calendarPath) {
           throw new ToolInputError(
@@ -594,6 +599,8 @@ export function registerEventWriteTools(
       run(async () => {
         const registry = await context.discovery.registry();
         const entity = parseEntityId(args.id, 'vevent', registry);
+        // Before the dialog: nobody is asked to approve what cannot be done.
+        writableCalendarOf(registry, entity);
         const principal = await context.discovery.principal();
         const addresses = selfAddressesOf(context.config, principal.addresses);
         if (addresses.length === 0) {
@@ -1029,12 +1036,7 @@ async function excludeOccurrence(
   entity: EntityId
 ): Promise<void> {
   const registry = await context.discovery.registry();
-  const calendar = registry.byPath(entity.calendarPath);
-  if (calendar === undefined) {
-    throw new ToolInputError(
-      'caldav-mcp: that calendar is no longer available.'
-    );
-  }
+  const calendar = writableCalendarOf(registry, entity);
   const url = resourceUrl(calendar, entity.resourceName);
   const resource = await context.api.get(url, true);
   if (resource.etag === undefined) {

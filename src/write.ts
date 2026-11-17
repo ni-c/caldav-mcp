@@ -3,7 +3,7 @@ import { randomUUID } from 'node:crypto';
 import { quoted } from './analyze.js';
 import { CalDavApiError, ResponseTooLargeError } from './api.js';
 import { resourceUrl } from './calendars.js';
-import type { CalendarEntry } from './calendars.js';
+import type { CalendarEntry, CalendarRegistry } from './calendars.js';
 import type { ToolContext } from './entries.js';
 import type { EntityId } from './entity-id.js';
 import { PreconditionFailedError, ToolInputError } from './errors.js';
@@ -76,18 +76,48 @@ export interface LoadedEntry {
  * most likely an inline attachment, which is the largest thing an entry
  * carries.
  */
-export async function loadForWrite(
-  context: ToolContext,
-  id: EntityId,
-  scope: Scope
-): Promise<LoadedEntry> {
-  const registry = await context.discovery.registry();
+/**
+ * Refuses a write to a calendar the account can only read, before anything is
+ * sent or asked.
+ *
+ * It used to be checked on create alone. Every other write reached the server
+ * and relied on its refusal: after the approval dialog had been answered, and
+ * in `move_event` after the copy had already been written to the destination.
+ * A calendar whose content somebody else publishes must not be answerable from
+ * here either: `respond_to_event` on it could send a reply to an organiser that
+ * somebody else chose.
+ */
+export function assertWritable(calendar: CalendarEntry): void {
+  if (calendar.readOnly) {
+    throw new ToolInputError(
+      `caldav-mcp: the account can read ${quoted(calendar.path)} but not ` +
+        'write to it, so nothing was written.'
+    );
+  }
+}
+
+/** The calendar an id names, refused unless it still exists and can be written. */
+export function writableCalendarOf(
+  registry: CalendarRegistry,
+  id: EntityId
+): CalendarEntry {
   const calendar = registry.byPath(id.calendarPath);
   if (calendar === undefined) {
     throw new ToolInputError(
       'caldav-mcp: that calendar is no longer available. Call list_calendars.'
     );
   }
+  assertWritable(calendar);
+  return calendar;
+}
+
+export async function loadForWrite(
+  context: ToolContext,
+  id: EntityId,
+  scope: Scope
+): Promise<LoadedEntry> {
+  const registry = await context.discovery.registry();
+  const calendar = writableCalendarOf(registry, id);
   const url = resourceUrl(calendar, id.resourceName);
 
   let resource;
@@ -460,11 +490,7 @@ export async function createEntry(
   url: string;
   etag: string | undefined;
 }> {
-  if (calendar.readOnly) {
-    throw new ToolInputError(
-      `caldav-mcp: the account can read ${calendar.path} but not write to it.`
-    );
-  }
+  assertWritable(calendar);
   if (
     calendar.components.length > 0 &&
     !calendar.components.includes(COMPONENT_OF[kind])
