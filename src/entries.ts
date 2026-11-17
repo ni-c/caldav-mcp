@@ -395,7 +395,7 @@ export async function listEntries(
   options: ListOptions
 ): Promise<Listing> {
   const notes: string[] = [];
-  const deadline = Date.now() + 5_000;
+  const expansion = new ExpansionBudget();
   const boundedSeries: string[] = [];
   const earliest = new Earliest();
 
@@ -432,7 +432,7 @@ export async function listEntries(
       const result = expandOne(
         document,
         { ...options, to: earliest.until(options.to) },
-        deadline,
+        expansion,
         context.config.timezone,
         notes
       );
@@ -797,13 +797,13 @@ export async function searchEntries(
     );
   }
 
-  const deadline = Date.now() + 5_000;
+  const expansion = new ExpansionBudget();
   const earliest = new Earliest();
   for (const document of documents) {
     const result = expandOne(
       document,
       { ...options, to: earliest.until(options.to) },
-      deadline,
+      expansion,
       context.config.timezone,
       notes
     );
@@ -879,10 +879,11 @@ export async function searchEntries(
 function expandOne(
   document: ResourceDocument,
   options: { kind: Kind; from: Date; to: Date },
-  deadline: number,
+  budget: ExpansionBudget,
   fallbackZone: string,
   notes: string[]
 ) {
+  const started = Date.now();
   try {
     const root = parseCalendar(document.ics, 'the stored entry');
     const components = componentsOf(root, options.kind);
@@ -894,7 +895,7 @@ function expandOne(
       // expands the series again from the start of the window.
       cap: MAX_COLLECTED,
       fallbackZone,
-      deadline,
+      deadline: budget.deadline(),
     });
     return {
       ...expansion,
@@ -907,6 +908,27 @@ function expandOne(
   } catch (error) {
     notes.push(skippedNote(document, error));
     return undefined;
+  } finally {
+    budget.spend(Date.now() - started);
+  }
+}
+
+/**
+ * Five seconds of expansion per call, counted while expanding.
+ *
+ * It was a wall-clock deadline set when the call began, so it also ran out
+ * while the server answered: after five seconds of slow REPORTs every series
+ * stopped at its first step and was reported as one that could not be walked.
+ */
+class ExpansionBudget {
+  private left = 5_000;
+
+  deadline(): number {
+    return Date.now() + Math.max(0, this.left);
+  }
+
+  spend(ms: number): void {
+    this.left -= ms;
   }
 }
 
