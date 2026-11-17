@@ -97,7 +97,7 @@ Busy periods in a time range — start and end only, no titles and no attendees.
 
 **List tasks** — read-only
 
-Tasks with a start or due date inside a time range. Tasks with no date at all are not returned by a time-range query — the CalDAV specification defines the filter against the dates, and a task with none of them matches no window.
+Tasks with a start or due date inside a time range. Tasks with no date at all are not returned by a time-range query - the CalDAV specification defines the filter against the dates, and a task with none of them matches no window. Set `undated` to list exactly those instead.
 
 | Parameter | Type | Required | Description |
 | --- | --- | --- | --- |
@@ -106,6 +106,7 @@ Tasks with a start or due date inside a time range. Tasks with no date at all ar
 | `timezone` | string | no | IANA zone for timestamps that carry no offset, e.g. "Europe/Berlin". Defaults to CALDAV_TIMEZONE. Refused together with a value that already carries an offset. |
 | `calendars` | string[] | no | Which calendars to look in. Leave it out for all of them. A calendar outside CALDAV_CALENDARS is refused rather than silently skipped. |
 | `include_completed` | boolean | no | Defaults to false, which leaves completed tasks out. |
+| `undated` | boolean | no | List only the tasks that have neither a start nor a due date, which no time range can return. Takes no time range: it cannot be combined with `from`, `to` or `timezone`, and it reads every task in the calendars rather than a window of them. |
 | `limit` | integer | no | Entries to return, at most 500. Defaults to CALDAV_MAX_EVENTS. |
 | `after` | string | no | The `truncated.next_cursor` of a previous call, to continue where it stopped. The window has to be the same one. |
 

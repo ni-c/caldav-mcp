@@ -7,7 +7,7 @@ import {
 import type { CalendarEntry } from './calendars.js';
 import { buildOccurrenceId, buildSeriesId } from './entity-id.js';
 import { ICAL, readInt, readList, readText, type Kind } from './ical.js';
-import type { Occurrence } from './recurrence.js';
+import type { Occurrence, UndatedOccurrence } from './recurrence.js';
 import { renderTime, type RenderedTime } from './time.js';
 
 /**
@@ -50,7 +50,7 @@ export interface Shaped {
 
 /** Projects one occurrence into the shape its tool declares. */
 export function shapeEntry(
-  occurrence: Occurrence,
+  occurrence: Occurrence | UndatedOccurrence,
   options: ShapeOptions
 ): Shaped {
   const component = occurrence.component;

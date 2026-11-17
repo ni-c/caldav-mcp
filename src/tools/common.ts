@@ -5,7 +5,11 @@ import { selfAddressesOf, type ToolContext } from '../entries.js';
 import type { EntityId } from '../entity-id.js';
 import { ToolInputError } from '../errors.js';
 import { componentsOf, parseCalendar } from '../ical.js';
-import { expandSeries, type Occurrence } from '../recurrence.js';
+import {
+  expandSeries,
+  undatedOccurrence,
+  type Occurrence,
+} from '../recurrence.js';
 import { shapeEntry, type Shaped } from '../shape.js';
 import { parseInstant } from '../time.js';
 
@@ -99,7 +103,14 @@ export async function loadEntry(
     fallbackZone: context.config.timezone,
   });
 
-  const occurrence = pick(expansion.occurrences, entity.recurrenceId);
+  // A task with no date at all is in no window, so the expansion above has
+  // nothing to return for it. It is still a real entry with an id, which
+  // `list_tasks` hands out for it, so reading it back has to work.
+  const occurrence =
+    pick(expansion.occurrences, entity.recurrenceId) ??
+    (entity.kind === 'vtodo' && entity.recurrenceId === undefined
+      ? undatedOccurrence(components)
+      : undefined);
   if (occurrence === undefined) {
     throw new ToolInputError(
       entity.recurrenceId === undefined

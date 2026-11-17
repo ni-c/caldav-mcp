@@ -19,8 +19,10 @@ import {
 } from './ical.js';
 import {
   expandSeries,
+  undatedOccurrence,
   WINDOW_SLACK_MS,
   type Occurrence,
+  type UndatedOccurrence,
 } from './recurrence.js';
 import { shapeEntry } from './shape.js';
 import { toUtcStamp } from './time.js';
@@ -318,6 +320,140 @@ export async function listEntries(
   return listing;
 }
 
+export interface UndatedListOptions {
+  calendars: readonly CalendarEntry[];
+  includeCompleted: boolean;
+  /** Most tasks to return. Already clamped by the caller. */
+  limit: number;
+  /** A cursor from a previous truncated answer. */
+  after?: string | undefined;
+}
+
+/**
+ * Lists the tasks that carry no date at all: no DTSTART and no DUE.
+ *
+ * A `time-range` filter is matched against those two properties, so such a
+ * task is in no window and a windowed listing can never return it — it looks
+ * exactly like a task that does not exist. The only way to see one is to ask
+ * for every VTODO with no time filter and keep the ones that have no date,
+ * which is what this does. That reads every task in the calendar rather than a
+ * window of them, so it is a separate request from a windowed listing and not
+ * what `list_tasks` does by default.
+ *
+ * Sorted by calendar and file name, since there is no time to sort by. The
+ * cursor is the entry's id alone.
+ */
+export async function listUndatedTasks(
+  context: ToolContext,
+  options: UndatedListOptions
+): Promise<Listing> {
+  const notes: string[] = [];
+  const collected: {
+    occurrence: UndatedOccurrence;
+    document: ResourceDocument;
+  }[] = [];
+  const component = COMPONENT_OF.vtodo;
+  const calendars = options.calendars.filter((calendar) =>
+    accepts(calendar, component)
+  );
+  const started = Date.now();
+  let asked = 0;
+  let stop: Stop | undefined;
+
+  for (const calendar of calendars) {
+    if (Date.now() - started > CALL_BUDGET_MS) {
+      stop = 'time';
+      break;
+    }
+    if (collected.length >= MAX_COLLECTED) {
+      stop = 'ceiling';
+      break;
+    }
+    asked += 1;
+    const documents = await queryCalendar(
+      context.api,
+      calendar,
+      calendarQueryBody(component)
+    );
+    for (const document of documents) {
+      try {
+        const root = parseCalendar(
+          document.ics,
+          `the entry ${document.resourceName}`
+        );
+        const occurrence = undatedOccurrence(componentsOf(root, 'vtodo'));
+        if (
+          occurrence !== undefined &&
+          (options.includeCompleted ||
+            String(
+              occurrence.component.getFirstPropertyValue('status') ?? ''
+            ).toUpperCase() !== 'COMPLETED')
+        ) {
+          collected.push({ occurrence, document });
+        }
+      } catch (error) {
+        notes.push(skippedNote(document, error));
+      }
+    }
+  }
+
+  collected.sort(
+    (left, right) =>
+      left.document.calendar.path.localeCompare(right.document.calendar.path) ||
+      left.document.resourceName.localeCompare(right.document.resourceName)
+  );
+
+  const principal = await context.discovery.principal();
+  const selfAddresses = selfAddressesOf(context.config, principal.addresses);
+
+  const shaped = collected.map(({ occurrence, document }) =>
+    shapeEntry(occurrence, {
+      kind: 'vtodo',
+      calendar: document.calendar,
+      resourceName: document.resourceName,
+      fallbackZone: context.config.timezone,
+      detailed: false,
+      selfAddresses,
+    })
+  );
+
+  const afterIndex =
+    options.after === undefined
+      ? 0
+      : cursorIndex(shaped, options.after, 'call');
+  const page = shaped.slice(afterIndex, afterIndex + options.limit);
+  const remaining = shaped.length - (afterIndex + page.length);
+
+  const listing: Listing = {
+    entries: page.map((item) => item.entry),
+    notes: dedupe(notes),
+  };
+
+  if (remaining > 0 || stop !== undefined) {
+    const nextEntry = shaped[afterIndex + page.length];
+    const more =
+      remaining > 0
+        ? `${remaining} more task${remaining === 1 ? '' : 's'} with no date.`
+        : '';
+    listing.truncated = {
+      reason:
+        stop === undefined
+          ? more
+          : `${stoppedReason(stop, asked, calendars.length)}${more === '' ? '' : ` ${more}`}`,
+      returned: page.length,
+      ...(nextEntry === undefined
+        ? {}
+        : { next_cursor: cursorOf(nextEntry.entry) }),
+      follow_up:
+        stop !== undefined
+          ? 'Name fewer calendars in `calendars`.'
+          : 'Call again with `after` set to next_cursor.',
+    };
+  }
+
+  return listing;
+}
+
 /** Searches one field across calendars and returns whole matching entries. */
 export async function searchEntries(
   context: ToolContext,
@@ -490,20 +626,28 @@ function expandOne(
       deadline,
     });
   } catch (error) {
-    // The name is a path segment the server chose, so it is escaped like any
-    // other quoted value; the parser's message is already cut and escaped.
-    const reason =
-      error instanceof ToolInputError
-        ? error.message.replace(/^caldav-mcp: /, '')
-        : 'it could not be expanded';
-    notes.push(
-      `Skipped ${quoted(document.resourceName)} in ` +
-        `${quoted(document.calendar.path)}: ` +
-        `${reason} This is a problem with that stored entry, not with the ` +
-        'arguments of this call; the other entries are reported as usual.'
-    );
+    notes.push(skippedNote(document, error));
     return undefined;
   }
+}
+
+/**
+ * The note for one stored entry a listing had to leave out.
+ *
+ * The name is a path segment the server chose, so it is escaped like any other
+ * quoted value; the parser's message is already cut and escaped.
+ */
+function skippedNote(document: ResourceDocument, error: unknown): string {
+  const reason =
+    error instanceof ToolInputError
+      ? error.message.replace(/^caldav-mcp: /, '')
+      : 'it could not be expanded';
+  return (
+    `Skipped ${quoted(document.resourceName)} in ` +
+    `${quoted(document.calendar.path)}: ` +
+    `${reason} This is a problem with that stored entry, not with the ` +
+    'arguments of this call; the other entries are reported as usual.'
+  );
 }
 
 function accepts(calendar: CalendarEntry, component: string): boolean {
@@ -536,14 +680,19 @@ function cursorOf(entry: Record<string, unknown>): string {
 
 function cursorIndex(
   shaped: readonly { entry: Record<string, unknown> }[],
-  cursor: string
+  cursor: string,
+  scope: 'window' | 'call' = 'window'
 ): number {
   const index = shaped.findIndex((item) => cursorOf(item.entry) === cursor);
   if (index === -1) {
     throw new ToolInputError(
-      'caldav-mcp: that cursor does not match anything in this window. It ' +
-        'comes from the `truncated.next_cursor` of a previous call, and the ' +
-        'window has to be the same one.'
+      scope === 'window'
+        ? 'caldav-mcp: that cursor does not match anything in this window. It ' +
+            'comes from the `truncated.next_cursor` of a previous call, and the ' +
+            'window has to be the same one.'
+        : 'caldav-mcp: that cursor does not match anything in this listing. It ' +
+            'comes from the `truncated.next_cursor` of a previous call, and the ' +
+            'arguments have to be the same ones.'
     );
   }
   return index;
