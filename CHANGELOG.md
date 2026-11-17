@@ -76,20 +76,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - A recurrence rule whose parts never match, such as
   `FREQ=MINUTELY;BYMONTH=2;BYMONTHDAY=30`, made ical.js loop for ever inside a
   single step, out of reach of every deadline: one invitation froze the
-  server. A DAILY rule of the same kind ran for over a minute. The rule check
-  is now bounded from inside, and the series is reported as incomplete.
+  server. A DAILY rule of the same kind ran for over a minute, an `INTERVAL` of
+  fifteen nines froze it as well, and an impossible YEARLY rule cost two
+  seconds per RRULE line. Each of these walks is now bounded from inside, and
+  the series is reported as incomplete; a rule that repeats only every few
+  hundred years is read as its first occurrence and refused when written.
 - A note about an entry the parser refused quoted part of the refused line.
   It now says only that the entry is not readable.
 - An image reference whose alt text was longer than 200 characters passed the
   defusing untouched.
 - `get_free_busy` worked out from events joins overlapping and touching periods
-  and stays under the size ceiling; FBTYPE is kept only as a token.
+  and stays under the size ceiling; FBTYPE is one of the four RFC 5545 values.
 - Every Unicode format character and every other default-ignorable code point
   is removed from calendar text and escaped where the server quotes a value:
   the tag block (U+E0000–E007F), which spells ASCII invisibly, and the
   variation selectors, which carry a hidden byte each. The previous list of
-  ranges stopped at U+FEFF. U+FE0E and U+FE0F stay, once and only straight after an emoji. Text is cut on code points,
-  so a cut no longer leaves half a surrogate pair.
+  ranges stopped at U+FEFF. U+FE0E and U+FE0F stay, once and only straight
+  after a pictographic emoji. Text is cut on code points, so a cut no longer
+  leaves half a surrogate pair.
 - A listing shaped every occurrence it collected, up to 5000, before cutting
   out a page, and each one cleaned its master's text again: one hourly series
   with a long description and many attendees took seconds and a gigabyte of
