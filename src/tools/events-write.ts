@@ -31,6 +31,7 @@ import {
   instantOfProperty,
   instantsOfProperty,
   parseRecurrenceId,
+  walkableRule,
 } from '../recurrence.js';
 import {
   alarmsParam,
@@ -957,6 +958,13 @@ function setRecurrence(component: ICAL.Component, rule: string): void {
         `"${quoted(recur.toString())}", which is not the same rule — ` +
         `${differences.join(', ')} ${differences.length === 1 ? 'differs' : 'differ'}. ` +
         'Write the rule the way RFC 5545 spells it, with each part once.'
+    );
+  }
+  if (!walkableRule(recur)) {
+    throw new ToolInputError(
+      `caldav-mcp: "${quoted(rule)}" repeats only every few hundred years or ` +
+        'more. This server reads such a rule as its first occurrence alone, ' +
+        'so it does not write one; use a smaller INTERVAL.'
     );
   }
   const property = new ICAL.Property('rrule', component);

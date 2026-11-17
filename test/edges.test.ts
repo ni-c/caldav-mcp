@@ -453,6 +453,19 @@ describe('through the tools', () => {
     expect(textOf(result)).toMatch(/not a recurrence rule/);
   });
 
+  it('refuses a rule that repeats only every few hundred years, and writes nothing', async () => {
+    await start();
+    const result = await call('create_event', {
+      calendar_id: WORK,
+      summary: 'x',
+      start: '2026-09-20T10:00:00',
+      recurrence: 'FREQ=DAILY;INTERVAL=999999999999999',
+    });
+    expect((result as { isError?: boolean }).isError).toBe(true);
+    expect(textOf(result)).toMatch(/every few hundred years/);
+    expect(fake.requests.filter((r) => r.method === 'PUT')).toEqual([]);
+  });
+
   it('refuses an end before the start, and explains the all-day rule', async () => {
     await start();
     const result = await call('create_event', {

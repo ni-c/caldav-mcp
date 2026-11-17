@@ -60,22 +60,67 @@ class RuleTooExpensive extends Error {}
 
 let ruleGuard: { left: number; deadline: number } | undefined;
 
+/**
+ * Spends `weight` of the guard and checks the clock on every call: a single
+ * call can cost milliseconds, and checking only every so often multiplied that
+ * by the stride.
+ */
+function spendGuard(weight: number): void {
+  if (ruleGuard === undefined) return;
+  ruleGuard.left -= weight;
+  if (ruleGuard.left < 0 || Date.now() > ruleGuard.deadline) {
+    throw new RuleTooExpensive();
+  }
+}
+
 const checkContractingRules =
   ICAL.RecurIterator.prototype.check_contracting_rules;
 ICAL.RecurIterator.prototype.check_contracting_rules = function (
   this: ICAL.RecurIterator
 ): boolean {
-  if (ruleGuard !== undefined) {
-    ruleGuard.left -= 1;
-    if (
-      ruleGuard.left < 0 ||
-      (ruleGuard.left % 1024 === 0 && Date.now() > ruleGuard.deadline)
-    ) {
-      throw new RuleTooExpensive();
-    }
-  }
+  spendGuard(1);
   return checkContractingRules.call(this);
 };
+
+// The other unbounded loop: a YEARLY iterator searches up to the year 20000
+// for a year its parts match, in its constructor, one whole year of days per
+// call. An impossible rule cost two seconds per RRULE line, and the error at
+// the end is swallowed by ical.js, so every further line paid again.
+const expandYearDays = ICAL.RecurIterator.prototype.expand_year_days;
+ICAL.RecurIterator.prototype.expand_year_days = function (
+  this: ICAL.RecurIterator,
+  ...args: Parameters<typeof expandYearDays>
+): ReturnType<typeof expandYearDays> {
+  spendGuard(64);
+  return expandYearDays.apply(this, args);
+};
+
+/**
+ * The longest step this server walks: four hundred years. ical.js moves a
+ * DAILY, WEEKLY or finer rule forward one day at a time per step, `INTERVAL`
+ * days at once, and `INTERVAL` has no upper bound — fifteen nines froze the
+ * process inside one step, before any check could run.
+ */
+const MAX_STEP_DAYS = 146_097;
+
+const DAYS_PER_UNIT: Record<string, number> = {
+  SECONDLY: 1 / 86_400,
+  MINUTELY: 1 / 1440,
+  HOURLY: 1 / 24,
+  DAILY: 1,
+  WEEKLY: 7,
+};
+
+/** Whether one step of the rule is short enough to walk. */
+export function walkableRule(recur: ICAL.Recur): boolean {
+  const days = DAYS_PER_UNIT[String(recur.freq)];
+  if (days === undefined) return true;
+  return (recur.interval ?? 1) * days <= MAX_STEP_DAYS;
+}
+
+const UNWALKABLE_NOTE =
+  'A recurrence rule in this window repeats only every few hundred years or ' +
+  'more, so only its first occurrence is considered.';
 
 const TOO_EXPENSIVE_NOTE =
   'A recurrence rule in this window could not be walked within its budget — ' +
@@ -390,6 +435,23 @@ export function expandSeries(
   const rules = master.getAllProperties('rrule');
   const rdates = master.getAllProperties('rdate');
   const recurring = rules.length > 0 || rdates.length > 0;
+
+  if (
+    rules.some((rule) => {
+      const value = rule.getFirstValue();
+      return value instanceof ICAL.Recur && !walkableRule(value);
+    })
+  ) {
+    const single = toOccurrence(master, options.fallbackZone, false);
+    return {
+      occurrences:
+        single !== undefined && overlaps(single, options) ? [single] : [],
+      recurring: true,
+      bounded: true,
+      truncated: false,
+      notes: [...notes, UNWALKABLE_NOTE],
+    };
+  }
 
   if (!recurring) {
     const single = toOccurrence(master, options.fallbackZone, false);

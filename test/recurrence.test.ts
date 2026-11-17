@@ -150,6 +150,76 @@ describe('a rule that does not end', () => {
     20_000
   );
 
+  // ical.js steps a DAILY, WEEKLY or finer rule forward a day at a time,
+  // INTERVAL days per step, and INTERVAL has no upper bound: fifteen nines
+  // froze the process inside one step, before any check could run.
+  it.each([
+    'FREQ=DAILY;INTERVAL=999999999999999',
+    'FREQ=WEEKLY;INTERVAL=999999999999',
+    'FREQ=HOURLY;INTERVAL=999999999999999',
+  ])(
+    'considers only the first occurrence of %s',
+    (rule) => {
+      const started = Date.now();
+      const result = expand(
+        calendar(
+          event([
+            'DTSTART:20261102T090000Z',
+            'DTEND:20261102T100000Z',
+            `RRULE:${rule}`,
+          ])
+        ),
+        { from: '2026-11-01T00:00:00Z', to: '2026-12-01T00:00:00Z', cap: 500 }
+      );
+      expect(Date.now() - started).toBeLessThan(1_000);
+      expect(result.occurrences).toHaveLength(1);
+      expect(result.bounded).toBe(true);
+      expect(result.notes.join(' ')).toContain('every few hundred years');
+    },
+    20_000
+  );
+
+  it('still walks a long interval that is short enough', () => {
+    const result = expand(
+      calendar(
+        event([
+          'DTSTART:20261102T090000Z',
+          'DTEND:20261102T100000Z',
+          'RRULE:FREQ=DAILY;INTERVAL=14',
+        ])
+      ),
+      { from: '2026-11-01T00:00:00Z', to: '2026-12-01T00:00:00Z', cap: 500 }
+    );
+    expect(result.occurrences).toHaveLength(3);
+    expect(result.bounded).toBe(false);
+  });
+
+  // A YEARLY iterator searches up to the year 20000 for a year its parts
+  // match, in its constructor: two seconds per RRULE line, every line paying.
+  it.each([1, 20])(
+    'stops the year search of an impossible YEARLY rule, %i lines of it',
+    (lines) => {
+      const started = Date.now();
+      const result = expand(
+        calendar(
+          event([
+            'DTSTART:19000105T090000Z',
+            'DTEND:19000105T100000Z',
+            ...Array.from(
+              { length: lines },
+              () =>
+                'RRULE:FREQ=YEARLY;BYMONTH=2;BYMONTHDAY=30;BYDAY=SU,MO,TU,WE,TH,FR,SA'
+            ),
+          ])
+        ),
+        { from: '2026-11-01T00:00:00Z', to: '2026-12-01T00:00:00Z', cap: 500 }
+      );
+      expect(Date.now() - started).toBeLessThan(1_500);
+      expect(result.occurrences).toEqual([]);
+    },
+    60_000
+  );
+
   it('leaves the guard off outside a walk, and a later walk unharmed', () => {
     const impossible = expand(
       calendar(
