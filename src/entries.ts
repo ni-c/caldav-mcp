@@ -283,6 +283,86 @@ function stoppedReason(
   return `Stopped after ${asked} of ${total} calendars: ${why}.`;
 }
 
+interface Collected {
+  occurrence: Occurrence;
+  document: ResourceDocument;
+}
+
+function byStart(left: Collected, right: Collected): number {
+  return (
+    left.occurrence.start.instant.getTime() -
+      right.occurrence.start.instant.getTime() ||
+    left.document.resourceName.localeCompare(right.document.resourceName)
+  );
+}
+
+/**
+ * The earliest {@link MAX_COLLECTED} occurrences of a call, in whatever order
+ * the server sent the entries.
+ *
+ * The ceiling used to fill in arrival order: one minutely series early in a
+ * multistatus took all of it, every entry after it — and every calendar after
+ * that — was never looked at, and the answer read as complete. Now every
+ * entry is expanded, but once the ceiling is full only up to the latest
+ * occurrence still kept, so later entries cost little.
+ */
+class Earliest {
+  private items: Collected[] = [];
+  private horizon: Date | undefined;
+  private full = false;
+
+  /** The end to expand the next entry to. */
+  until(to: Date): Date {
+    if (this.horizon === undefined) return to;
+    const bound = new Date(this.horizon.getTime() + 1);
+    return bound < to ? bound : to;
+  }
+
+  /** A series reached the ceiling on its own. */
+  overflowed(): void {
+    this.full = true;
+  }
+
+  add(items: readonly Collected[]): void {
+    this.items.push(...items);
+    // Compacted at twice the ceiling, so sorting stays linear in what arrives.
+    if (this.items.length >= 2 * MAX_COLLECTED) this.compact();
+  }
+
+  /**
+   * What was kept, sorted, and the instant from which nothing is listed when
+   * anything had to be dropped. Occurrences at that instant are dropped as a
+   * group, so "nothing from X on" holds exactly — unless that would leave
+   * nothing at all.
+   */
+  finish(): { items: Collected[]; cutoff: string | undefined } {
+    this.compact();
+    if (!this.full) return { items: this.items, cutoff: undefined };
+    const last = this.items[this.items.length - 1];
+    if (last === undefined) return { items: this.items, cutoff: undefined };
+    const instant = last.occurrence.start.instant;
+    const before = this.items.filter(
+      (item) => item.occurrence.start.instant.getTime() < instant.getTime()
+    );
+    return {
+      items: before.length > 0 ? before : this.items,
+      cutoff: instant.toISOString().replace('.000Z', 'Z'),
+    };
+  }
+
+  private compact(): void {
+    this.items.sort(byStart);
+    if (this.items.length > MAX_COLLECTED) {
+      this.items.length = MAX_COLLECTED;
+      this.full = true;
+    }
+    if (this.full) {
+      this.horizon =
+        this.items[this.items.length - 1]?.occurrence.start.instant;
+    }
+  }
+}
+
 const STOPPED_FOLLOW_UP =
   'Name fewer calendars in `calendars`, or use a narrower window.';
 
@@ -300,10 +380,7 @@ export async function listEntries(
   const notes: string[] = [];
   const deadline = Date.now() + 5_000;
   const boundedSeries: string[] = [];
-  const collected: {
-    occurrence: Occurrence;
-    document: ResourceDocument;
-  }[] = [];
+  const earliest = new Earliest();
 
   const range = requestRange(options.from, options.to);
   const component = COMPONENT_OF[options.kind];
@@ -321,10 +398,6 @@ export async function listEntries(
       stop = 'time';
       break;
     }
-    if (collected.length >= MAX_COLLECTED) {
-      stop = 'ceiling';
-      break;
-    }
     asked += 1;
     let documents: ResourceDocument[];
     try {
@@ -339,46 +412,35 @@ export async function listEntries(
       continue;
     }
     for (const document of documents) {
-      // Checked per document, not only per calendar: one calendar of long
-      // series could otherwise collect without bound.
-      if (collected.length >= MAX_COLLECTED) {
-        stop = 'ceiling';
-        break;
-      }
       const result = expandOne(
         document,
-        options,
-        MAX_COLLECTED - collected.length,
+        { ...options, to: earliest.until(options.to) },
         deadline,
         context.config.timezone,
         notes
       );
       if (result === undefined) continue;
       notes.push(...result.notes);
-      if ((result.bounded || result.truncated) && result.uid !== undefined) {
+      if (result.bounded && result.uid !== undefined) {
         boundedSeries.push(result.uid);
       }
+      if (result.truncated) earliest.overflowed();
       if (
         result.undated !== undefined &&
         !leftOut(result.undated.component, options)
       ) {
         undatedTasks += 1;
       }
-      for (const occurrence of result.occurrences) {
-        if (leftOut(occurrence.component, options)) continue;
-        collected.push({ occurrence, document });
-      }
+      earliest.add(
+        result.occurrences
+          .filter((occurrence) => !leftOut(occurrence.component, options))
+          .map((occurrence) => ({ occurrence, document }))
+      );
     }
   }
 
   const callNotes = refusalNotes(refusals, asked, WINDOW_SIZE_ADVICE);
-
-  collected.sort(
-    (left, right) =>
-      left.occurrence.start.instant.getTime() -
-        right.occurrence.start.instant.getTime() ||
-      left.document.resourceName.localeCompare(right.document.resourceName)
-  );
+  const { items: collected, cutoff } = earliest.finish();
 
   const principal = await context.discovery.principal();
   const selfAddresses = selfAddressesOf(context.config, principal.addresses);
@@ -407,6 +469,7 @@ export async function listEntries(
       remaining > 0 ||
       series.length > 0 ||
       stop !== undefined ||
+      cutoff !== undefined ||
       kept < page.length
     ) {
       const last = shown[shown.length - 1];
@@ -416,6 +479,11 @@ export async function listEntries(
           stop === undefined
             ? undefined
             : stoppedReason(stop, asked, calendars.length),
+          cutoff === undefined
+            ? undefined
+            : `More than ${MAX_COLLECTED} occurrences fall in this window, so ` +
+                `only the earliest were collected; nothing from ${cutoff} on ` +
+                'is listed.',
           remaining > 0
             ? `${remaining} more entr${remaining === 1 ? 'y' : 'ies'} in this window.`
             : undefined,
@@ -428,14 +496,23 @@ export async function listEntries(
         ...(last === undefined ? {} : { window_covered_until: last.start }),
         ...(next === undefined ? {} : { next_cursor: next.cursor }),
         ...(series.length > 0 ? { bounded_series: series } : {}),
-        follow_up:
-          stop !== undefined
-            ? STOPPED_FOLLOW_UP
-            : remaining > 0
-              ? series.length > 0
-                ? 'Call again with `after` set to next_cursor, or narrow the window; the entries named in bounded_series are the expensive ones.'
-                : 'Call again with `after` set to next_cursor, or narrow the window.'
-              : 'Narrow the window; the entries named in bounded_series are the expensive ones.',
+        follow_up: sentences(
+          next === undefined
+            ? cutoff === undefined
+              ? undefined
+              : `Call again with \`from\` set to ${cutoff} for the rest of the window.`
+            : 'Call again with `after` set to next_cursor.',
+          stop === undefined ? undefined : STOPPED_FOLLOW_UP,
+          series.length > 0
+            ? 'The entries named in bounded_series are the expensive ones; a narrower window walks them further.'
+            : undefined,
+          next === undefined &&
+            cutoff === undefined &&
+            stop === undefined &&
+            series.length === 0
+            ? 'Read the entry named in the reason on its own with its get tool.'
+            : undefined
+        ),
       };
     }
     return result;
@@ -697,32 +774,23 @@ export async function searchEntries(
   }
 
   const deadline = Date.now() + 5_000;
-  const collected: { occurrence: Occurrence; document: ResourceDocument }[] =
-    [];
+  const earliest = new Earliest();
   for (const document of documents) {
-    if (collected.length >= MAX_COLLECTED) {
-      stop = 'ceiling';
-      break;
-    }
     const result = expandOne(
       document,
-      options,
-      MAX_COLLECTED - collected.length,
+      { ...options, to: earliest.until(options.to) },
       deadline,
       context.config.timezone,
       notes
     );
     if (result === undefined) continue;
     notes.push(...result.notes);
-    for (const occurrence of result.occurrences) {
-      collected.push({ occurrence, document });
-    }
+    if (result.truncated) earliest.overflowed();
+    earliest.add(
+      result.occurrences.map((occurrence) => ({ occurrence, document }))
+    );
   }
-  collected.sort(
-    (left, right) =>
-      left.occurrence.start.instant.getTime() -
-      right.occurrence.start.instant.getTime()
-  );
+  const { items: collected, cutoff } = earliest.finish();
 
   const principal = await context.discovery.principal();
   const selfAddresses = selfAddressesOf(context.config, principal.addresses);
@@ -742,12 +810,16 @@ export async function searchEntries(
       entries: page.slice(0, kept).map((item) => item.entry),
       notes: allNotes,
     };
-    if (more > 0 || stop !== undefined) {
+    if (more > 0 || stop !== undefined || cutoff !== undefined) {
       result.truncated = {
         reason: sentences(
           stop === undefined
             ? undefined
             : stoppedReason(stop, asked, calendars.length),
+          cutoff === undefined
+            ? undefined
+            : `More than ${MAX_COLLECTED} occurrences matched, so only the ` +
+                `earliest were collected; nothing from ${cutoff} on is listed.`,
           more > 0 ? `${more} more matches.` : undefined,
           fitReason(page, kept)
         ),
@@ -783,7 +855,6 @@ export async function searchEntries(
 function expandOne(
   document: ResourceDocument,
   options: { kind: Kind; from: Date; to: Date },
-  room: number,
   deadline: number,
   fallbackZone: string,
   notes: string[]
@@ -794,10 +865,10 @@ function expandOne(
     const expansion = expandSeries(components, {
       from: options.from,
       to: options.to,
-      // The room left under the call's ceiling, not the page size: a series
-      // capped at `limit` lost every later occurrence on every page, because
-      // the next page expands the series again from the start of the window.
-      cap: Math.max(1, room),
+      // The call's ceiling, not the page size: a series capped at `limit`
+      // lost every later occurrence on every page, because the next page
+      // expands the series again from the start of the window.
+      cap: MAX_COLLECTED,
       fallbackZone,
       deadline,
     });

@@ -637,7 +637,10 @@ describe('a budget for the whole call', () => {
     }
   });
 
-  it('stops collecting at the occurrence ceiling', async () => {
+  it('keeps the earliest occurrences of every calendar under the ceiling', async () => {
+    // The ceiling used to fill in calendar order: once the first calendars had
+    // collected 5000 occurrences, the rest were never asked, and their entries
+    // on the first day of the window were missing from the first page.
     const fake = new FakeCalDav({ calendars: manyCalendars(16, daily) });
     fake.install();
     const session = await connect();
@@ -645,15 +648,21 @@ describe('a budget for the whole call', () => {
       const listing = dataOf(
         await session.client.callTool({
           name: 'list_events',
-          arguments: { from: '2026-01-01', to: '2026-12-31', limit: 500 },
+          arguments: { from: '2026-01-01', to: '2026-12-31', limit: 16 },
         })
       );
       const reports = fake.requests.filter((r) => r.method === 'REPORT');
-      expect(reports.length).toBeLessThan(16);
+      expect(reports).toHaveLength(16);
+      const events = listing.events as { calendar: string }[];
+      expect(new Set(events.map((e) => e.calendar)).size).toBe(16);
       const truncated = listing.truncated as { reason: string };
-      expect(truncated.reason).toMatch(
-        /^Stopped after \d+ of 16 calendars: 5000 occurrences had been collected\./
+      // 312 whole days of 16 make 4992; the 8 of day 313 that fitted are left
+      // out with the rest of that day, so "nothing from" holds exactly.
+      expect(truncated.reason).toContain(
+        'More than 5000 occurrences fall in this window, so only the earliest ' +
+          'were collected; nothing from 2026-11-09T07:00:00Z on is listed.'
       );
+      expect(truncated.reason).toContain('4976 more entries in this window.');
     } finally {
       await session.close();
     }

@@ -76,7 +76,7 @@ describe('a recurring series across pages', () => {
     }
   });
 
-  it('names a series the call ceiling cut, next to the count of the rest', async () => {
+  it('says from when on nothing is listed when one series fills the ceiling', async () => {
     const fake = new FakeCalDav();
     fake.install();
     fake.seed(
@@ -93,17 +93,48 @@ describe('a recurring series across pages', () => {
     );
     const truncated = page.truncated as {
       reason: string;
+      follow_up: string;
       bounded_series?: string[];
     };
-    expect(truncated.bounded_series).toContain('minutely');
-    expect(truncated.reason).toMatch(/^\d+ more entries in this window\. /);
-    expect(truncated.reason).toContain('more occurrences than could be walked');
+    // 5000 minutes from midnight: the 5000th starts at 11:19 on the fourth,
+    // and is left out so that "nothing from" holds exactly.
+    expect(truncated.reason).toContain(
+      'nothing from 2026-11-04T11:19:00Z on is listed.'
+    );
+    expect(truncated.reason).toContain('4994 more entries in this window.');
+    expect(truncated.follow_up).toBe(
+      'Call again with `after` set to next_cursor.'
+    );
+    expect(truncated).not.toHaveProperty('bounded_series');
   });
 
-  it('stops at the ceiling inside a calendar and says so', async () => {
-    // The ceiling was only checked between calendars, so one calendar of long
-    // series could collect without bound. The second entry here is never
-    // expanded, and the answer says why.
+  it('tells the last page where the rest of the window starts', async () => {
+    const fake = new FakeCalDav();
+    fake.install();
+    fake.seed(
+      'work',
+      'minutely.ics',
+      series('minutely', 'FREQ=MINUTELY', '20261101T000000Z')
+    );
+    session = await connect();
+    const answers = await pages(500);
+    const last = answers.at(-1)!;
+    const truncated = last.truncated as {
+      follow_up: string;
+      next_cursor?: string;
+    };
+    expect(truncated.next_cursor).toBeUndefined();
+    expect(truncated.follow_up).toBe(
+      'Call again with `from` set to 2026-11-04T11:19:00Z for the rest of the window.'
+    );
+    const listed = answers.flatMap((page) => page.events as unknown[]);
+    expect(listed).toHaveLength(4999);
+  });
+
+  it('still collects an entry that comes after a flooding series', async () => {
+    // The ceiling used to fill in the order the server sent the entries, so
+    // one minutely series first in the answer hid every entry after it — and
+    // the reason read as if the calendar had been read in full.
     const fake = new FakeCalDav();
     fake.install();
     fake.seed(
@@ -114,7 +145,7 @@ describe('a recurring series across pages', () => {
     fake.seed(
       'work',
       'b-daily.ics',
-      series('daily', 'FREQ=DAILY;COUNT=30', '20261101T090000Z')
+      series('daily', 'FREQ=DAILY;COUNT=30', '20261101T000030Z')
     );
     session = await connect();
     const page = dataOf(
@@ -123,8 +154,36 @@ describe('a recurring series across pages', () => {
         arguments: { ...WINDOW, limit: 5 },
       })
     );
+    expect(
+      (page.events as { summary: string }[]).map((e) => e.summary)
+    ).toEqual(['minutely', 'daily', 'minutely', 'minutely', 'minutely']);
+  });
+
+  it('lets a search find a match that comes after a flooding series', async () => {
+    const fake = new FakeCalDav();
+    fake.install();
+    fake.seed(
+      'work',
+      'a-minutely.ics',
+      series('minutely', 'FREQ=MINUTELY', '20261101T000000Z')
+    );
+    fake.seed(
+      'work',
+      'b-daily.ics',
+      series('daily', 'FREQ=DAILY;COUNT=30', '20261101T000030Z')
+    );
+    session = await connect();
+    const page = dataOf(
+      await session.client.callTool({
+        name: 'search_events',
+        arguments: { query: 'i', ...WINDOW, limit: 2 },
+      })
+    );
+    expect(
+      (page.events as { summary: string }[]).map((e) => e.summary)
+    ).toEqual(['minutely', 'daily']);
     expect((page.truncated as { reason: string }).reason).toContain(
-      '5000 occurrences had been collected'
+      'nothing from 2026-11-04T11:'
     );
   });
 });
