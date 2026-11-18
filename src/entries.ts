@@ -18,12 +18,11 @@ import type { Discovery } from './discovery.js';
 import { ToolInputError } from './errors.js';
 import {
   eachBounded,
-  ENTRY_LIMIT_MS,
+  hardLimits,
   HardLimitExceeded,
   MAX_OVERRUNS,
   newOverruns,
   type Overruns,
-  SINGLE_ENTRY_LIMIT_MS,
   withHardLimit,
 } from './hard-limit.js';
 import { guarded } from './ical-guard.js';
@@ -498,7 +497,7 @@ export async function listEntries(
         };
       },
       (document) => {
-        expansion.spend(ENTRY_LIMIT_MS);
+        expansion.spend(hardLimits.entry);
         notes.push(skippedNote(document, new HardLimitExceeded()));
       },
       (count) => abandoned.push(count)
@@ -915,7 +914,7 @@ export async function searchEntries(
       };
     },
     (document) => {
-      expansion.spend(ENTRY_LIMIT_MS);
+      expansion.spend(hardLimits.entry);
       notes.push(skippedNote(document, new HardLimitExceeded()));
     },
     (count) => abandoned.push(count)
@@ -1227,7 +1226,7 @@ function shapedPage<
   // and one that still runs over is reported by its id and times alone
   // rather than taking the page down with it.
   try {
-    return withHardLimit(SINGLE_ENTRY_LIMIT_MS, () =>
+    return withHardLimit(hardLimits.singleEntry, () =>
       items.map((item) => ({ ...item, entry: shape(item) }))
     );
   } catch (error) {
@@ -1237,7 +1236,7 @@ function shapedPage<
     try {
       return {
         ...item,
-        entry: withHardLimit(ENTRY_LIMIT_MS, () => shape(item)),
+        entry: withHardLimit(hardLimits.entry, () => shape(item)),
       };
     } catch (error) {
       if (!(error instanceof HardLimitExceeded)) throw error;

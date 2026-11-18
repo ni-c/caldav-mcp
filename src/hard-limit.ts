@@ -53,28 +53,26 @@ export function withHardLimit<T>(ms: number, work: () => T): T {
 }
 
 /**
- * The time one entry may take on its own, parse to last occurrence. A backstop
- * for loops no guard knows, not the budget: the guards keep a real entry to a
- * fraction of a second, and this leaves room for a slow or busy host, where a
- * long series took a second under load.
+ * The hard limits, in milliseconds. One object, so a test can shorten them
+ * rather than wait seconds for an overrun.
+ *
+ * - `entry`: the time one entry may take on its own, parse to last
+ *   occurrence. A backstop for loops no guard knows, not the budget: the
+ *   guards keep a real entry to a fraction of a second, and this leaves room
+ *   for a slow or busy host, where a long series took a second under load.
+ * - `singleEntry`: the same for a tool that reads or writes one entry.
+ * - `callEvaluation`: synchronous evaluation one call may spend in total.
+ *   Entries just under their own limit never count as overruns, so without
+ *   this a calendar of them cost seconds each.
  */
-export const ENTRY_LIMIT_MS = 3000;
-
-/**
- * The same for a tool that reads or writes one entry, which may carry a large
- * inline attachment and is worth waiting longer for.
- */
-export const SINGLE_ENTRY_LIMIT_MS = 3000;
+export const hardLimits = {
+  entry: 3000,
+  singleEntry: 3000,
+  callEvaluation: 20_000,
+};
 
 /** Entries a call gives up on before it stops evaluating any more. */
 export const MAX_OVERRUNS = 3;
-
-/**
- * Synchronous evaluation one call may spend in total. Entries just under
- * their own limit never count as overruns, so without this a calendar of them
- * cost a second each.
- */
-export const CALL_EVALUATION_MS = 20_000;
 
 /**
  * Overruns and evaluation time left, shared across one call. Time is counted
@@ -87,7 +85,7 @@ export interface Overruns {
 }
 
 export function newOverruns(): Overruns {
-  return { count: 0, leftMs: CALL_EVALUATION_MS };
+  return { count: 0, leftMs: hardLimits.callEvaluation };
 }
 
 /**
@@ -109,7 +107,7 @@ export function eachBounded<T>(
   work: (item: T) => (() => void) | undefined,
   onOverrun: (item: T) => void,
   onAbandoned: (count: number) => void,
-  limitMs = ENTRY_LIMIT_MS
+  limitMs = hardLimits.entry
 ): void {
   const applied = new Set<number>();
   let index = 0;

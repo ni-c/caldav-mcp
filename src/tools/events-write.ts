@@ -11,7 +11,7 @@ import { resourceUrl, type CalendarRegistry } from '../calendars.js';
 import { selfAddressesOf, type ToolContext } from '../entries.js';
 import { buildSeriesId, parseEntityId, type EntityId } from '../entity-id.js';
 import { ToolInputError } from '../errors.js';
-import { SINGLE_ENTRY_LIMIT_MS, withHardLimit } from '../hard-limit.js';
+import { hardLimits, withHardLimit } from '../hard-limit.js';
 import {
   ICAL,
   componentsOf,
@@ -714,7 +714,7 @@ async function describeTarget(
       true
     );
     // Parse and expansion under one hard limit; an overrun reads as unknown.
-    return withHardLimit(SINGLE_ENTRY_LIMIT_MS, () => {
+    return withHardLimit(hardLimits.singleEntry, () => {
       const root = parseCalendar(resource.ics, 'the stored entry');
       const components = componentsOf(root, entity.kind);
       const { master, overrides } = splitSeries(components);
@@ -1045,7 +1045,7 @@ async function excludeOccurrence(
     );
   }
   // Everything that reads times in the stored entry, under one hard limit.
-  const ics = withHardLimit(SINGLE_ENTRY_LIMIT_MS, () => {
+  const ics = withHardLimit(hardLimits.singleEntry, () => {
     const root = parseCalendar(resource.ics, 'the stored entry');
     const { master, overrides } = splitSeries(componentsOf(root, entity.kind));
     if (master === undefined) {

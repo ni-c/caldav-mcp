@@ -7,7 +7,7 @@ import type { CalendarEntry } from './calendars.js';
 import type { ToolContext } from './entries.js';
 import type { EntityId } from './entity-id.js';
 import { PreconditionFailedError, ToolInputError } from './errors.js';
-import { SINGLE_ENTRY_LIMIT_MS, withHardLimit } from './hard-limit.js';
+import { hardLimits, withHardLimit } from './hard-limit.js';
 import {
   COMPONENT_OF,
   ICAL,
@@ -113,7 +113,7 @@ export async function loadForWrite(
   }
 
   const etag = resource.etag;
-  return withHardLimit<LoadedEntry>(SINGLE_ENTRY_LIMIT_MS, () => {
+  return withHardLimit<LoadedEntry>(hardLimits.singleEntry, () => {
     const root = parseCalendar(resource.ics, 'the stored entry');
     const components = componentsOf(root, id.kind);
     const { master, overrides } = splitSeries(components);

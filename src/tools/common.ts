@@ -4,7 +4,7 @@ import type { Config } from '../config.js';
 import { selfAddressesOf, type ToolContext } from '../entries.js';
 import type { EntityId } from '../entity-id.js';
 import { ToolInputError } from '../errors.js';
-import { SINGLE_ENTRY_LIMIT_MS, withHardLimit } from '../hard-limit.js';
+import { hardLimits, withHardLimit } from '../hard-limit.js';
 import { componentsOf, parseCalendar } from '../ical.js';
 import {
   expandSeries,
@@ -89,7 +89,7 @@ export async function loadEntry(
   const selfAddresses = selfAddressesOf(context.config, principal.addresses);
   // Parse, expansion and shaping under one hard limit: each of them asks
   // ical.js about times, and a time in a stored zone runs its rules.
-  return withHardLimit(SINGLE_ENTRY_LIMIT_MS, () => {
+  return withHardLimit(hardLimits.singleEntry, () => {
     const root = parseCalendar(resource.ics, 'the stored entry');
     const components = componentsOf(root, entity.kind);
     if (components.length === 0) {
