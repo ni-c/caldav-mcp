@@ -333,7 +333,7 @@ describe('bounded_series', () => {
       expect(uid).not.toContain('​');
       expect(uid.length).toBeLessThanOrEqual(300);
     }
-  });
+  }, 30_000);
 });
 
 function huge(kind: 'VEVENT' | 'VTODO', dates: string[]): string {

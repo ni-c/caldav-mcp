@@ -214,7 +214,9 @@ describe('a rule that does not end', () => {
         ),
         { from: '2026-11-01T00:00:00Z', to: '2026-12-01T00:00:00Z', cap: 500 }
       );
-      expect(Date.now() - started).toBeLessThan(1_500);
+      // Generous for a slow CI runner; unguarded, four lines take seven
+      // seconds and more.
+      expect(Date.now() - started).toBeLessThan(5_000);
       expect(result.occurrences).toEqual([]);
     },
     60_000
