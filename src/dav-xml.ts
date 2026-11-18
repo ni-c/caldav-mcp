@@ -432,7 +432,6 @@ export function hrefsOf(prop: unknown): string[] {
     .filter((entry) => entry.length > 0);
 }
 
-/** Whether a `resourcetype` value contains a given element, e.g. `calendar`. */
 /**
  * Whether a resourcetype makes a collection one this server reads: a calendar,
  * or a subscription (#52). The one rule, so the listing filter and the check
@@ -445,6 +444,7 @@ export function isCalendarCollection(type: unknown): boolean {
   );
 }
 
+/** Whether a `resourcetype` value contains a given element, e.g. `calendar`. */
 export function resourceTypeHas(prop: unknown, name: string): boolean {
   if (prop === undefined || prop === null || typeof prop !== 'object') {
     return false;
