@@ -4,6 +4,7 @@ import {
   eachBounded,
   HardLimitExceeded,
   MAX_OVERRUNS,
+  newOverruns,
   withHardLimit,
 } from '../src/hard-limit.js';
 import { componentsOf, parseCalendar } from '../src/ical.js';
@@ -48,8 +49,8 @@ describe('eachBounded', () => {
     const seen: number[] = [];
     eachBounded(
       [1, 2, 3],
-      { count: 0 },
-      (item) => seen.push(item),
+      newOverruns(),
+      (item) => () => seen.push(item),
       () => {
         throw new Error('no overrun expected');
       },
@@ -65,10 +66,10 @@ describe('eachBounded', () => {
     const overrun: number[] = [];
     eachBounded(
       [1, 2, 3, 4],
-      { count: 0 },
+      newOverruns(),
       (item) => {
         if (item === 2) spin();
-        seen.push(item);
+        return () => seen.push(item);
       },
       (item) => overrun.push(item),
       () => {
@@ -79,14 +80,39 @@ describe('eachBounded', () => {
     expect(overrun).toEqual([2]);
   }, 10_000);
 
+  it('applies an item’s effects once when its batch is restarted', () => {
+    // The batch is stopped while item 2 is computed, after item 1's effects
+    // landed; the restart begins at item 2 and must not apply 1 again, and a
+    // second, quick computation of 2 is applied once.
+    const seen: number[] = [];
+    let first = true;
+    eachBounded(
+      [1, 2, 3],
+      newOverruns(),
+      (item) => {
+        if (item === 2 && first) {
+          first = false;
+          spin();
+        }
+        return () => seen.push(item);
+      },
+      () => {
+        throw new Error('no overrun expected');
+      },
+      () => {
+        throw new Error('nothing abandoned expected');
+      }
+    );
+    expect(seen).toEqual([1, 2, 3]);
+  }, 10_000);
+
   it(`gives up after ${MAX_OVERRUNS} overruns in a call and counts the rest`, () => {
-    const overruns = { count: 0 };
     const overrun: string[] = [];
     let abandoned = 0;
     const started = Date.now();
     eachBounded(
       ['a', 'b', 'c', 'd', 'e', 'f'],
-      overruns,
+      newOverruns(),
       () => spin(),
       (item) => overrun.push(item),
       (count) => {
@@ -96,6 +122,37 @@ describe('eachBounded', () => {
     expect(overrun).toEqual(['a', 'b', 'c']);
     expect(abandoned).toBe(3);
     expect(Date.now() - started).toBeLessThan(10_000);
+  }, 20_000);
+
+  it('stops at the call’s deadline when every item stays just under its limit', () => {
+    // No item runs over, so none counts as an overrun; the call's deadline is
+    // what ends it.
+    const overruns = { count: 0, leftMs: 1_000 };
+    let done = 0;
+    let abandoned = 0;
+    const started = Date.now();
+    eachBounded(
+      Array.from({ length: 50 }, (_, i) => i),
+      overruns,
+      () => {
+        const until = Date.now() + 300;
+        while (Date.now() < until) {
+          // Close to, but under, the entry's own limit.
+        }
+        return () => {
+          done += 1;
+        };
+      },
+      () => {
+        throw new Error('no overrun expected');
+      },
+      (count) => {
+        abandoned = count;
+      }
+    );
+    expect(Date.now() - started).toBeLessThan(3_000);
+    expect(done + abandoned).toBe(50);
+    expect(abandoned).toBeGreaterThan(40);
   }, 20_000);
 });
 

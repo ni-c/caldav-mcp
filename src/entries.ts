@@ -21,6 +21,7 @@ import {
   ENTRY_LIMIT_MS,
   HardLimitExceeded,
   MAX_OVERRUNS,
+  newOverruns,
   type Overruns,
   SINGLE_ENTRY_LIMIT_MS,
   withHardLimit,
@@ -46,6 +47,7 @@ import {
   isCompleted,
   newShapeCache,
   occurrenceKey,
+  placeholderEntry,
   shapeEntry,
 } from './shape.js';
 import { toUtcStamp } from './time.js';
@@ -391,14 +393,17 @@ class Earliest {
   }
 
   private compact(): void {
-    this.items.sort(byStart);
-    if (this.items.length > MAX_COLLECTED) {
-      this.items.length = MAX_COLLECTED;
+    // Sorted into a new list and stored once: a hard limit can stop the
+    // sort, and an in-place sort stopped half-way leaves the list in an order
+    // nobody chose.
+    const sorted = this.items.toSorted(byStart);
+    if (sorted.length > MAX_COLLECTED) {
+      sorted.length = MAX_COLLECTED;
       this.full = true;
     }
+    this.items = sorted;
     if (this.full) {
-      this.horizon =
-        this.items[this.items.length - 1]?.occurrence.start.instant;
+      this.horizon = sorted[sorted.length - 1]?.occurrence.start.instant;
     }
   }
 }
@@ -419,7 +424,7 @@ export async function listEntries(
 ): Promise<Listing> {
   const notes: string[] = [];
   const expansion = options.expansion ?? new ExpansionBudget();
-  const overruns = options.overruns ?? { count: 0 };
+  const overruns = options.overruns ?? newOverruns();
   const abandoned: number[] = [];
   const boundedSeries: string[] = [];
   const earliest = new Earliest();
@@ -457,36 +462,40 @@ export async function listEntries(
       documents,
       overruns,
       (document) => {
+        const local: string[] = [];
         const result = expandOne(
           document,
           { ...options, to: earliest.until(options.to) },
           expansion,
           context.config.timezone,
-          notes
+          local
         );
-        if (result === undefined) return;
-        notes.push(...result.notes);
-        // A series cut at the ceiling skips its moved overrides, so one moved to
-        // before the cutoff could be missing: it is named like a bounded one.
-        if (
-          (result.bounded || (result.truncated && result.overrides)) &&
-          result.uid !== undefined
-        ) {
-          boundedSeries.push(result.uid);
-        }
-        if (
-          result.undated !== undefined &&
-          !leftOut(result.undated.component, options)
-        ) {
-          undatedTasks += 1;
-        }
-        const kept = result.occurrences
+        const kept = (result?.occurrences ?? [])
           .filter((occurrence) => !leftOut(occurrence.component, options))
           .map((occurrence) => ({ occurrence, document }));
-        // Only what is kept can fill the ceiling: a completed recurring task
-        // left out of the listing must not cut the open ones short.
-        if (result.truncated && kept.length > 0) earliest.overflowed();
-        earliest.add(kept);
+        return () => {
+          notes.push(...local);
+          if (result === undefined) return;
+          notes.push(...result.notes);
+          // A series cut at the ceiling skips its moved overrides, so one moved to
+          // before the cutoff could be missing: it is named like a bounded one.
+          if (
+            (result.bounded || (result.truncated && result.overrides)) &&
+            result.uid !== undefined
+          ) {
+            boundedSeries.push(result.uid);
+          }
+          if (
+            result.undated !== undefined &&
+            !leftOut(result.undated.component, options)
+          ) {
+            undatedTasks += 1;
+          }
+          // Only what is kept can fill the ceiling: a completed recurring task
+          // left out of the listing must not cut the open ones short.
+          if (result.truncated && kept.length > 0) earliest.overflowed();
+          earliest.add(kept);
+        };
       },
       (document) => {
         expansion.spend(ENTRY_LIMIT_MS);
@@ -633,7 +642,8 @@ export async function listUndatedTasks(
   let stop: Stop | undefined;
   const refusals: Refusal[] = [];
   let unfiltered = 0;
-  const overruns = { count: 0 };
+  const overruns = newOverruns();
+  const undatedBudget = new ExpansionBudget();
   const abandoned: number[] = [];
 
   for (const calendar of calendars) {
@@ -670,18 +680,30 @@ export async function listUndatedTasks(
       documents,
       overruns,
       (document) => {
+        const begun = Date.now();
         try {
-          const root = parseCalendar(document.ics, 'the stored entry');
-          const occurrence = undatedOccurrence(
-            componentsOf(root, 'vtodo'),
-            context.config.timezone
+          // Under the call's expansion budget like a windowed listing: a
+          // task's start can sit in a zone the entry defines.
+          const occurrence = guarded(undatedBudget.deadline(), () =>
+            undatedOccurrence(
+              componentsOf(
+                parseCalendar(document.ics, 'the stored entry'),
+                'vtodo'
+              ),
+              context.config.timezone
+            )
           );
+          undatedBudget.spend(Date.now() - begun);
           if (
-            occurrence !== undefined &&
-            (options.includeCompleted || !isCompleted(occurrence.component))
+            occurrence === undefined ||
+            (!options.includeCompleted && isCompleted(occurrence.component))
           ) {
+            return undefined;
+          }
+          const unanchored = hasUnanchoredRule(occurrence.component);
+          return () => {
             collected.push({ occurrence, document });
-            if (hasUnanchoredRule(occurrence.component)) {
+            if (unanchored) {
               notes.push(
                 `"${quoted(document.resourceName)}" in ` +
                   `"${quoted(document.calendar.path)}" has a recurrence rule but ` +
@@ -689,9 +711,10 @@ export async function listUndatedTasks(
                   'the task is listed as one without a date.'
               );
             }
-          }
+          };
         } catch (error) {
-          notes.push(skippedNote(document, error));
+          undatedBudget.spend(Date.now() - begun);
+          return () => notes.push(skippedNote(document, error));
         }
       },
       (document) => notes.push(skippedNote(document, new HardLimitExceeded())),
@@ -864,28 +887,32 @@ export async function searchEntries(
   }
 
   const expansion = options.expansion ?? new ExpansionBudget();
-  const overruns = options.overruns ?? { count: 0 };
+  const overruns = options.overruns ?? newOverruns();
   const abandoned: number[] = [];
   const earliest = new Earliest();
   eachBounded(
     documents,
     overruns,
     (document) => {
+      const local: string[] = [];
       const result = expandOne(
         document,
         { ...options, to: earliest.until(options.to) },
         expansion,
         context.config.timezone,
-        notes
+        local
       );
-      if (result === undefined) return;
-      notes.push(...result.notes);
-      if (result.truncated && result.occurrences.length > 0) {
-        earliest.overflowed();
-      }
-      earliest.add(
-        result.occurrences.map((occurrence) => ({ occurrence, document }))
-      );
+      return () => {
+        notes.push(...local);
+        if (result === undefined) return;
+        notes.push(...result.notes);
+        if (result.truncated && result.occurrences.length > 0) {
+          earliest.overflowed();
+        }
+        earliest.add(
+          result.occurrences.map((occurrence) => ({ occurrence, document }))
+        );
+      };
     },
     (document) => {
       expansion.spend(ENTRY_LIMIT_MS);
@@ -1185,22 +1212,46 @@ function shapedPage<
   selfAddresses: readonly string[]
 ): (T & { entry: Record<string, unknown> })[] {
   const cache = newShapeCache();
-  // Shaping reads times too — a CREATED in a zone the entry defines runs that
-  // zone's rules — so the page is under a hard limit like the expansion was.
-  return withHardLimit(SINGLE_ENTRY_LIMIT_MS, () =>
-    items.map((item) => ({
-      ...item,
-      entry: shapeEntry(item.occurrence, {
-        kind,
-        calendar: item.document.calendar,
-        resourceName: item.document.resourceName,
-        fallbackZone: context.config.timezone,
-        detailed: false,
-        selfAddresses,
-        cache,
-      }).entry,
-    }))
-  );
+  const shape = (item: T): Record<string, unknown> =>
+    shapeEntry(item.occurrence, {
+      kind,
+      calendar: item.document.calendar,
+      resourceName: item.document.resourceName,
+      fallbackZone: context.config.timezone,
+      detailed: false,
+      selfAddresses,
+      cache,
+    }).entry;
+  // Shaping evaluates no stored zone any more, so the whole page under one
+  // limit is a backstop. Should it trip, each entry gets a limit of its own,
+  // and one that still runs over is reported by its id and times alone
+  // rather than taking the page down with it.
+  try {
+    return withHardLimit(SINGLE_ENTRY_LIMIT_MS, () =>
+      items.map((item) => ({ ...item, entry: shape(item) }))
+    );
+  } catch (error) {
+    if (!(error instanceof HardLimitExceeded)) throw error;
+  }
+  return items.map((item) => {
+    try {
+      return {
+        ...item,
+        entry: withHardLimit(ENTRY_LIMIT_MS, () => shape(item)),
+      };
+    } catch (error) {
+      if (!(error instanceof HardLimitExceeded)) throw error;
+      return {
+        ...item,
+        entry: placeholderEntry(item.occurrence, {
+          kind,
+          calendar: item.document.calendar,
+          resourceName: item.document.resourceName,
+          fallbackZone: context.config.timezone,
+        }),
+      };
+    }
+  });
 }
 
 /**

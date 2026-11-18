@@ -713,27 +713,28 @@ async function describeTarget(
       resourceUrl(calendar, entity.resourceName),
       true
     );
-    const root = parseCalendar(resource.ics, 'the stored entry');
-    const components = componentsOf(root, entity.kind);
-    const { master, overrides } = splitSeries(components);
-    // Two shapes hold more than one occurrence, and the dialog has to name
-    // both. The obvious one is a master carrying a rule. The other is a
-    // resource made *only* of detached occurrences, which is what a client
-    // writes after a "this and following" split and what `expandSeries`
-    // already handles in its standalone branch — there is no master at all,
-    // so reading the rule off `master` reported "an event" and then deleted a
-    // file holding N of them. Same contradiction as the series/occurrence
-    // one, one shape further out.
-    const recurring =
-      master === undefined
-        ? overrides.length > 1
-        : master.getFirstProperty('rrule') !== null ||
-          master.getFirstProperty('rdate') !== null;
-    if (!recurring) {
-      return { recurring: false, occurrences: undefined, unreadable: false };
-    }
-    const expansion = withHardLimit(SINGLE_ENTRY_LIMIT_MS, () =>
-      expandSeries(components, {
+    // Parse and expansion under one hard limit; an overrun reads as unknown.
+    return withHardLimit(SINGLE_ENTRY_LIMIT_MS, () => {
+      const root = parseCalendar(resource.ics, 'the stored entry');
+      const components = componentsOf(root, entity.kind);
+      const { master, overrides } = splitSeries(components);
+      // Two shapes hold more than one occurrence, and the dialog has to name
+      // both. The obvious one is a master carrying a rule. The other is a
+      // resource made *only* of detached occurrences, which is what a client
+      // writes after a "this and following" split and what `expandSeries`
+      // already handles in its standalone branch — there is no master at all,
+      // so reading the rule off `master` reported "an event" and then deleted a
+      // file holding N of them. Same contradiction as the series/occurrence
+      // one, one shape further out.
+      const recurring =
+        master === undefined
+          ? overrides.length > 1
+          : master.getFirstProperty('rrule') !== null ||
+            master.getFirstProperty('rdate') !== null;
+      if (!recurring) {
+        return { recurring: false, occurrences: undefined, unreadable: false };
+      }
+      const expansion = expandSeries(components, {
         from: new Date(-8_640_000_000_000),
         to: new Date(8_640_000_000_000),
         cap: 500,
@@ -745,15 +746,15 @@ async function describeTarget(
         // somebody else wrote. A count for a dialog is worth a second, not a
         // second budget.
         deadline,
-      })
-    );
-    return {
-      recurring: true,
-      occurrences: expansion.truncated
-        ? undefined
-        : expansion.occurrences.length,
-      unreadable: false,
-    };
+      });
+      return {
+        recurring: true,
+        occurrences: expansion.truncated
+          ? undefined
+          : expansion.occurrences.length,
+        unreadable: false,
+      };
+    });
   } catch {
     return unknown;
   }
