@@ -11,6 +11,7 @@ import { resourceUrl, type CalendarRegistry } from '../calendars.js';
 import { selfAddressesOf, type ToolContext } from '../entries.js';
 import { buildSeriesId, parseEntityId, type EntityId } from '../entity-id.js';
 import { ToolInputError } from '../errors.js';
+import { SINGLE_ENTRY_LIMIT_MS, withHardLimit } from '../hard-limit.js';
 import {
   ICAL,
   componentsOf,
@@ -731,19 +732,21 @@ async function describeTarget(
     if (!recurring) {
       return { recurring: false, occurrences: undefined, unreadable: false };
     }
-    const expansion = expandSeries(components, {
-      from: new Date(-8_640_000_000_000),
-      to: new Date(8_640_000_000_000),
-      cap: 500,
-      fallbackZone: context.config.timezone,
-      // Shared with the rest of the call rather than minted here. Without it
-      // this expansion starts its own full wall-clock budget, so describing
-      // the target for the dialog could cost as much time again as the work
-      // it describes — twice over on the two-call fallback path, on an entry
-      // somebody else wrote. A count for a dialog is worth a second, not a
-      // second budget.
-      deadline,
-    });
+    const expansion = withHardLimit(SINGLE_ENTRY_LIMIT_MS, () =>
+      expandSeries(components, {
+        from: new Date(-8_640_000_000_000),
+        to: new Date(8_640_000_000_000),
+        cap: 500,
+        fallbackZone: context.config.timezone,
+        // Shared with the rest of the call rather than minted here. Without it
+        // this expansion starts its own full wall-clock budget, so describing
+        // the target for the dialog could cost as much time again as the work
+        // it describes — twice over on the two-call fallback path, on an entry
+        // somebody else wrote. A count for a dialog is worth a second, not a
+        // second budget.
+        deadline,
+      })
+    );
     return {
       recurring: true,
       occurrences: expansion.truncated
@@ -1040,7 +1043,9 @@ async function excludeOccurrence(
         'was deleted.'
     );
   }
-  const root = parseCalendar(resource.ics, 'the stored entry');
+  const root = withHardLimit(SINGLE_ENTRY_LIMIT_MS, () =>
+    parseCalendar(resource.ics, 'the stored entry')
+  );
   const { master, overrides } = splitSeries(componentsOf(root, entity.kind));
   if (master === undefined) {
     throw new ToolInputError(

@@ -197,6 +197,15 @@ refused wherever they happen, rule work spends from a budget whether a series or
 timezone is being expanded, and a timezone that ran out of budget is refused at once
 on its next use.
 
+Those two lines were found loop by loop, and five rounds of review each found another.
+The third line does not depend on finding them: evaluating stored entries runs under a
+hard time limit that V8 enforces. The work is the callback of a script started with a
+`timeout`; when the time is up, V8 terminates whatever is executing, whichever loop it
+is in. A listing puts a batch of entries under one limit, gives the entry it stopped in
+a second of its own, and skips that entry with a note if it runs over again; after
+three such entries in a call it stops evaluating and says how many it left out. A tool
+that reads or writes one entry gives it three seconds.
+
 Recurrence is expanded in this process, never by asking the server to do it, and
 carries three independent bounds: 5000 occurrences per call (the earliest are kept, and
 the answer names the instant from which nothing is listed), a per-series iteration cap,

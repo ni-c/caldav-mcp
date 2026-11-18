@@ -275,6 +275,7 @@ export function registerEventReadTools(
         const refusals: Refusal[] = [];
         let method: 'server' | 'computed' = 'server';
         const expansion = new ExpansionBudget();
+        const overruns = { count: 0 };
         const started = Date.now();
         let asked = 0;
 
@@ -306,6 +307,7 @@ export function registerEventReadTools(
                 to: window.to,
                 limit: MAX_COLLECTED,
                 expansion,
+                overruns,
               });
             } catch (error) {
               if (!isCalendarRefusal(error)) throw error;

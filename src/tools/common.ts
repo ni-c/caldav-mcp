@@ -4,6 +4,7 @@ import type { Config } from '../config.js';
 import { selfAddressesOf, type ToolContext } from '../entries.js';
 import type { EntityId } from '../entity-id.js';
 import { ToolInputError } from '../errors.js';
+import { SINGLE_ENTRY_LIMIT_MS, withHardLimit } from '../hard-limit.js';
 import { componentsOf, parseCalendar } from '../ical.js';
 import {
   expandSeries,
@@ -84,58 +85,60 @@ export async function loadEntry(
   }
   const url = resourceUrl(calendar, entity.resourceName);
   const resource = await context.api.get(url);
-  const root = parseCalendar(resource.ics, 'the stored entry');
-  const components = componentsOf(root, entity.kind);
-  if (components.length === 0) {
-    throw new ToolInputError(
-      'caldav-mcp: that entry no longer holds anything of the kind this tool ' +
-        'reads. It may have been replaced.'
-    );
-  }
-
-  // A window wide enough that the addressed occurrence is certainly inside it,
-  // rather than a guess based on the recurrence id: an override may have moved
-  // the instance far from where the rule put it.
-  const expansion = expandSeries(components, {
-    from: new Date(-8_640_000_000_000),
-    to: new Date(8_640_000_000_000),
-    cap: 1_000,
-    fallbackZone: context.config.timezone,
-  });
-
-  // A task with no start or due date gives the expansion above nothing to
-  // place, so it returns nothing for it. It is still a real entry with an id,
-  // which `list_tasks` hands out for it, so reading it back has to work.
-  const occurrence =
-    pick(expansion.occurrences, entity.recurrenceId) ??
-    (entity.kind === 'vtodo' && entity.recurrenceId === undefined
-      ? undatedOccurrence(components, context.config.timezone)
-      : undefined);
-  if (occurrence === undefined) {
-    throw new ToolInputError(
-      entity.recurrenceId === undefined
-        ? 'caldav-mcp: that entry has no readable content.'
-        : 'caldav-mcp: that occurrence is not part of this entry any more — ' +
-            'the series may have been changed or the occurrence deleted. List ' +
-            'the entries again.'
-    );
-  }
-
   const principal = await context.discovery.principal();
   const selfAddresses = selfAddressesOf(context.config, principal.addresses);
+  // Parse, expansion and shaping under one hard limit: each of them asks
+  // ical.js about times, and a time in a stored zone runs its rules.
+  return withHardLimit(SINGLE_ENTRY_LIMIT_MS, () => {
+    const root = parseCalendar(resource.ics, 'the stored entry');
+    const components = componentsOf(root, entity.kind);
+    if (components.length === 0) {
+      throw new ToolInputError(
+        'caldav-mcp: that entry no longer holds anything of the kind this tool ' +
+          'reads. It may have been replaced.'
+      );
+    }
 
-  return {
-    shaped: shapeEntry(occurrence, {
-      kind: entity.kind,
-      calendar,
-      resourceName: entity.resourceName,
+    // A window wide enough that the addressed occurrence is certainly inside it,
+    // rather than a guess based on the recurrence id: an override may have moved
+    // the instance far from where the rule put it.
+    const expansion = expandSeries(components, {
+      from: new Date(-8_640_000_000_000),
+      to: new Date(8_640_000_000_000),
+      cap: 1_000,
       fallbackZone: context.config.timezone,
-      detailed: true,
-      selfAddresses,
-    }),
-    notes: expansion.notes,
-    etag: resource.etag,
-  };
+    });
+
+    // A task with no start or due date gives the expansion above nothing to
+    // place, so it returns nothing for it. It is still a real entry with an id,
+    // which `list_tasks` hands out for it, so reading it back has to work.
+    const occurrence =
+      pick(expansion.occurrences, entity.recurrenceId) ??
+      (entity.kind === 'vtodo' && entity.recurrenceId === undefined
+        ? undatedOccurrence(components, context.config.timezone)
+        : undefined);
+    if (occurrence === undefined) {
+      throw new ToolInputError(
+        entity.recurrenceId === undefined
+          ? 'caldav-mcp: that entry has no readable content.'
+          : 'caldav-mcp: that occurrence is not part of this entry any more — ' +
+              'the series may have been changed or the occurrence deleted. List ' +
+              'the entries again.'
+      );
+    }
+    return {
+      shaped: shapeEntry(occurrence, {
+        kind: entity.kind,
+        calendar,
+        resourceName: entity.resourceName,
+        fallbackZone: context.config.timezone,
+        detailed: true,
+        selfAddresses,
+      }),
+      notes: expansion.notes,
+      etag: resource.etag,
+    };
+  });
 }
 
 /**

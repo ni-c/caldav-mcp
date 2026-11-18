@@ -7,6 +7,7 @@ import type { CalendarEntry } from './calendars.js';
 import type { ToolContext } from './entries.js';
 import type { EntityId } from './entity-id.js';
 import { PreconditionFailedError, ToolInputError } from './errors.js';
+import { SINGLE_ENTRY_LIMIT_MS, withHardLimit } from './hard-limit.js';
 import {
   COMPONENT_OF,
   ICAL,
@@ -111,95 +112,98 @@ export async function loadForWrite(
     );
   }
 
-  const root = parseCalendar(resource.ics, 'the stored entry');
-  const components = componentsOf(root, id.kind);
-  const { master, overrides } = splitSeries(components);
+  const etag = resource.etag;
+  return withHardLimit<LoadedEntry>(SINGLE_ENTRY_LIMIT_MS, () => {
+    const root = parseCalendar(resource.ics, 'the stored entry');
+    const components = componentsOf(root, id.kind);
+    const { master, overrides } = splitSeries(components);
 
-  // A series id with `this_occurrence` never gets here — `resolveScope` in the
-  // event tools refuses it — so an id without a recurrence part means the
-  // stored entry as a whole, and the branch below is the only one it takes.
-  if (id.recurrenceId === undefined || scope === 'entire_series') {
-    const target = master ?? components[0];
-    if (target === undefined) {
+    // A series id with `this_occurrence` never gets here — `resolveScope` in the
+    // event tools refuses it — so an id without a recurrence part means the
+    // stored entry as a whole, and the branch below is the only one it takes.
+    if (id.recurrenceId === undefined || scope === 'entire_series') {
+      const target = master ?? components[0];
+      if (target === undefined) {
+        throw new ToolInputError(
+          'caldav-mcp: that entry no longer holds anything this tool can change.'
+        );
+      }
+      if (scope === 'entire_series' && hasThisAndFuture(overrides)) {
+        throw new ToolInputError(
+          'caldav-mcp: this series uses RECURRENCE-ID;RANGE=THISANDFUTURE, which ' +
+            'this server does not model. Changing the whole series could move ' +
+            'occurrences it does not understand, so it refuses. Change the ' +
+            'single occurrence instead, or edit the series in a calendar client.'
+        );
+      }
+      return {
+        root,
+        target,
+        master,
+        url,
+        etag,
+        calendar,
+        createdOverride: false,
+      };
+    }
+
+    // A single occurrence: an existing override, or a new one cloned from the
+    // master. Creating it here is what makes "change just this one" work on a
+    // series that has never been edited before.
+    // Matched on the **instant**, never on a serialised spelling — the same rule
+    // `excludeOccurrence` states at length, applied at the other end of the same
+    // problem. Two spellings of one occurrence agree only as long as both sides
+    // build them identically, and they stop agreeing on a non-conforming
+    // `RECURRENCE-ID;VALUE=DATE;TZID=…`: the listing side resolves the zone, the
+    // writing side drops it for a DATE value, and the two land a day apart. The
+    // lookup then found nothing, cloned a *second* override from the master, and
+    // left the resource with two components claiming the same instance.
+    const wanted = parseRecurrenceId(id.recurrenceId, context.config.timezone);
+    const wantedInstant = wanted.instant.getTime();
+    const existing = overrides.find((override) => {
+      const property = override.getFirstProperty('recurrence-id');
+      if (property === null) return false;
+      const instant = instantOfProperty(
+        property,
+        context.config.timezone
+      ).instant.getTime();
+      return Math.abs(instant - wantedInstant) < 1000;
+    });
+
+    if (existing !== undefined) {
+      return {
+        root,
+        target: existing,
+        master,
+        url,
+        etag,
+        calendar,
+        createdOverride: false,
+      };
+    }
+
+    if (master === undefined) {
       throw new ToolInputError(
-        'caldav-mcp: that entry no longer holds anything this tool can change.'
+        'caldav-mcp: that occurrence is not in this entry any more.'
       );
     }
-    if (scope === 'entire_series' && hasThisAndFuture(overrides)) {
-      throw new ToolInputError(
-        'caldav-mcp: this series uses RECURRENCE-ID;RANGE=THISANDFUTURE, which ' +
-          'this server does not model. Changing the whole series could move ' +
-          'occurrences it does not understand, so it refuses. Change the ' +
-          'single occurrence instead, or edit the series in a calendar client.'
-      );
-    }
-    return {
-      root,
-      target,
+
+    const override = cloneAsOverride(
       master,
-      url,
-      etag: resource.etag,
-      calendar,
-      createdOverride: false,
-    };
-  }
-
-  // A single occurrence: an existing override, or a new one cloned from the
-  // master. Creating it here is what makes "change just this one" work on a
-  // series that has never been edited before.
-  // Matched on the **instant**, never on a serialised spelling — the same rule
-  // `excludeOccurrence` states at length, applied at the other end of the same
-  // problem. Two spellings of one occurrence agree only as long as both sides
-  // build them identically, and they stop agreeing on a non-conforming
-  // `RECURRENCE-ID;VALUE=DATE;TZID=…`: the listing side resolves the zone, the
-  // writing side drops it for a DATE value, and the two land a day apart. The
-  // lookup then found nothing, cloned a *second* override from the master, and
-  // left the resource with two components claiming the same instance.
-  const wanted = parseRecurrenceId(id.recurrenceId, context.config.timezone);
-  const wantedInstant = wanted.instant.getTime();
-  const existing = overrides.find((override) => {
-    const property = override.getFirstProperty('recurrence-id');
-    if (property === null) return false;
-    const instant = instantOfProperty(
-      property,
+      id.kind,
+      wanted,
       context.config.timezone
-    ).instant.getTime();
-    return Math.abs(instant - wantedInstant) < 1000;
-  });
-
-  if (existing !== undefined) {
+    );
     return {
       root,
-      target: existing,
+      target: override,
       master,
       url,
-      etag: resource.etag,
+      etag,
       calendar,
-      createdOverride: false,
+      createdOverride: true,
     };
-  }
-
-  if (master === undefined) {
-    throw new ToolInputError(
-      'caldav-mcp: that occurrence is not in this entry any more.'
-    );
-  }
-
-  const override = cloneAsOverride(
-    master,
-    id.kind,
-    wanted,
-    context.config.timezone
-  );
-  return {
-    root,
-    target: override,
-    master,
-    url,
-    etag: resource.etag,
-    calendar,
-    createdOverride: true,
-  };
+  });
 }
 
 function hasThisAndFuture(overrides: readonly ICAL.Component[]): boolean {

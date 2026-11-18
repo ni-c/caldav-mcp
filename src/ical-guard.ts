@@ -66,6 +66,14 @@ export class RuleTooExpensive extends ToolInputError {
 
 let ruleGuard: { left: number; deadline: number } | undefined;
 
+/**
+ * Clears the guard state after a hard limit stopped work mid-way: V8's
+ * termination runs no `finally`, so whatever guard was set stays set.
+ */
+export function resetGuards(): void {
+  ruleGuard = undefined;
+}
+
 /** Runs `walk` under a fresh guard, restoring whatever was there before. */
 export function guarded<T>(deadline: number, walk: () => T): T {
   const previous = ruleGuard;
@@ -111,6 +119,21 @@ function patch(
 }
 
 const iterator = ICAL.RecurIterator.prototype;
+
+// Stepping a month or a year is what every loop over months does, the ones in
+// an iterator's constructor included: a fifth Sunday every 48 months from a
+// February that is never a leap year was searched for ever there.
+for (const name of ['increment_month', 'increment_year']) {
+  patch(
+    iterator,
+    name,
+    (original) =>
+      function (this: unknown, ...args: unknown[]) {
+        spendGuard(1);
+        return original.apply(this, args);
+      }
+  );
+}
 
 // The loop that runs until a candidate passes the rule's parts; only MONTHLY
 // and YEARLY count their misses in ical.js. Hot, so no rest arguments.
@@ -248,18 +271,19 @@ patch(
         return result;
       } catch (error) {
         if (!(error instanceof RuleTooExpensive)) throw error;
-        // Broken for good only when the zone spent its own budget; when the
-        // call's deadline ran out first, the zone may be fine next time.
-        const now = Date.now();
-        if (
-          guard.left < 0 ||
-          (now > own && (outer === undefined || now <= outer.deadline))
-        ) {
+        // Broken for good unless the call's deadline ran out first; then
+        // the zone may be fine next time.
+        // Every trip but the call's own deadline is the zone's doing: its
+        // checks, its 250 ms, or a size no real zone has.
+        if (outer === undefined || Date.now() <= outer.deadline) {
           brokenZones.add(zone);
         }
-        throw error instanceof RuleTooExpensive && error.message === BROKEN_ZONE
+        // A zone condemned says so; one that only met a spent budget does
+        // not, so a valid zone is not blamed for a hostile neighbour.
+        if (brokenZones.has(zone)) throw new RuleTooExpensive(BROKEN_ZONE);
+        throw error instanceof RuleTooExpensive && error.message !== BROKEN_ZONE
           ? error
-          : new RuleTooExpensive(BROKEN_ZONE);
+          : new RuleTooExpensive();
       } finally {
         ruleGuard = outer;
       }

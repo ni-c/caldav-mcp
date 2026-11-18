@@ -16,6 +16,13 @@ import {
 } from './dav-xml.js';
 import type { Discovery } from './discovery.js';
 import { ToolInputError } from './errors.js';
+import {
+  eachBounded,
+  ENTRY_LIMIT_MS,
+  HardLimitExceeded,
+  MAX_OVERRUNS,
+  type Overruns,
+} from './hard-limit.js';
 import { guarded } from './ical-guard.js';
 import {
   COMPONENT_OF,
@@ -239,6 +246,8 @@ export interface ListOptions {
    * own and passes one budget for the whole call.
    */
   expansion?: ExpansionBudget;
+  /** Entries that ran over their hard limit, counted across one call. */
+  overruns?: Overruns;
 }
 
 /** One page of a listing, as a tool answers it. */
@@ -408,6 +417,8 @@ export async function listEntries(
 ): Promise<Listing> {
   const notes: string[] = [];
   const expansion = options.expansion ?? new ExpansionBudget();
+  const overruns = options.overruns ?? { count: 0 };
+  const abandoned: number[] = [];
   const boundedSeries: string[] = [];
   const earliest = new Earliest();
 
@@ -440,41 +451,53 @@ export async function listEntries(
       refusals.push({ calendar, error });
       continue;
     }
-    for (const document of documents) {
-      const result = expandOne(
-        document,
-        { ...options, to: earliest.until(options.to) },
-        expansion,
-        context.config.timezone,
-        notes
-      );
-      if (result === undefined) continue;
-      notes.push(...result.notes);
-      // A series cut at the ceiling skips its moved overrides, so one moved to
-      // before the cutoff could be missing: it is named like a bounded one.
-      if (
-        (result.bounded || (result.truncated && result.overrides)) &&
-        result.uid !== undefined
-      ) {
-        boundedSeries.push(result.uid);
-      }
-      if (
-        result.undated !== undefined &&
-        !leftOut(result.undated.component, options)
-      ) {
-        undatedTasks += 1;
-      }
-      const kept = result.occurrences
-        .filter((occurrence) => !leftOut(occurrence.component, options))
-        .map((occurrence) => ({ occurrence, document }));
-      // Only what is kept can fill the ceiling: a completed recurring task
-      // left out of the listing must not cut the open ones short.
-      if (result.truncated && kept.length > 0) earliest.overflowed();
-      earliest.add(kept);
-    }
+    eachBounded(
+      documents,
+      overruns,
+      (document) => {
+        const result = expandOne(
+          document,
+          { ...options, to: earliest.until(options.to) },
+          expansion,
+          context.config.timezone,
+          notes
+        );
+        if (result === undefined) return;
+        notes.push(...result.notes);
+        // A series cut at the ceiling skips its moved overrides, so one moved to
+        // before the cutoff could be missing: it is named like a bounded one.
+        if (
+          (result.bounded || (result.truncated && result.overrides)) &&
+          result.uid !== undefined
+        ) {
+          boundedSeries.push(result.uid);
+        }
+        if (
+          result.undated !== undefined &&
+          !leftOut(result.undated.component, options)
+        ) {
+          undatedTasks += 1;
+        }
+        const kept = result.occurrences
+          .filter((occurrence) => !leftOut(occurrence.component, options))
+          .map((occurrence) => ({ occurrence, document }));
+        // Only what is kept can fill the ceiling: a completed recurring task
+        // left out of the listing must not cut the open ones short.
+        if (result.truncated && kept.length > 0) earliest.overflowed();
+        earliest.add(kept);
+      },
+      (document) => {
+        expansion.spend(ENTRY_LIMIT_MS);
+        notes.push(skippedNote(document, new HardLimitExceeded()));
+      },
+      (count) => abandoned.push(count)
+    );
   }
 
-  const callNotes = refusalNotes(refusals, asked, WINDOW_SIZE_ADVICE);
+  const callNotes = [
+    ...abandonedNotes(abandoned),
+    ...refusalNotes(refusals, asked, WINDOW_SIZE_ADVICE),
+  ];
   const { items: collected, cutoff, crowded } = earliest.finish();
 
   const principal = await context.discovery.principal();
@@ -608,6 +631,8 @@ export async function listUndatedTasks(
   let stop: Stop | undefined;
   const refusals: Refusal[] = [];
   let unfiltered = 0;
+  const overruns = { count: 0 };
+  const abandoned: number[] = [];
 
   for (const calendar of calendars) {
     if (Date.now() - started > CALL_BUDGET_MS) {
@@ -639,34 +664,43 @@ export async function listUndatedTasks(
       refusals.push({ calendar, error });
       continue;
     }
-    for (const document of documents) {
-      try {
-        const root = parseCalendar(document.ics, 'the stored entry');
-        const occurrence = undatedOccurrence(
-          componentsOf(root, 'vtodo'),
-          context.config.timezone
-        );
-        if (
-          occurrence !== undefined &&
-          (options.includeCompleted || !isCompleted(occurrence.component))
-        ) {
-          collected.push({ occurrence, document });
-          if (hasUnanchoredRule(occurrence.component)) {
-            notes.push(
-              `"${quoted(document.resourceName)}" in ` +
-                `"${quoted(document.calendar.path)}" has a recurrence rule but ` +
-                'no start or due date to anchor it, so the rule is ignored and ' +
-                'the task is listed as one without a date.'
-            );
+    eachBounded(
+      documents,
+      overruns,
+      (document) => {
+        try {
+          const root = parseCalendar(document.ics, 'the stored entry');
+          const occurrence = undatedOccurrence(
+            componentsOf(root, 'vtodo'),
+            context.config.timezone
+          );
+          if (
+            occurrence !== undefined &&
+            (options.includeCompleted || !isCompleted(occurrence.component))
+          ) {
+            collected.push({ occurrence, document });
+            if (hasUnanchoredRule(occurrence.component)) {
+              notes.push(
+                `"${quoted(document.resourceName)}" in ` +
+                  `"${quoted(document.calendar.path)}" has a recurrence rule but ` +
+                  'no start or due date to anchor it, so the rule is ignored and ' +
+                  'the task is listed as one without a date.'
+              );
+            }
           }
+        } catch (error) {
+          notes.push(skippedNote(document, error));
         }
-      } catch (error) {
-        notes.push(skippedNote(document, error));
-      }
-    }
+      },
+      (document) => notes.push(skippedNote(document, new HardLimitExceeded())),
+      (count) => abandoned.push(count)
+    );
   }
 
-  const callNotes = refusalNotes(refusals, asked, '');
+  const callNotes = [
+    ...abandonedNotes(abandoned),
+    ...refusalNotes(refusals, asked, ''),
+  ];
   if (unfiltered > 0) {
     callNotes.push(
       `The server refused the filter for tasks without a date in ${unfiltered} ` +
@@ -828,24 +862,36 @@ export async function searchEntries(
   }
 
   const expansion = options.expansion ?? new ExpansionBudget();
+  const overruns = options.overruns ?? { count: 0 };
+  const abandoned: number[] = [];
   const earliest = new Earliest();
-  for (const document of documents) {
-    const result = expandOne(
-      document,
-      { ...options, to: earliest.until(options.to) },
-      expansion,
-      context.config.timezone,
-      notes
-    );
-    if (result === undefined) continue;
-    notes.push(...result.notes);
-    if (result.truncated && result.occurrences.length > 0) {
-      earliest.overflowed();
-    }
-    earliest.add(
-      result.occurrences.map((occurrence) => ({ occurrence, document }))
-    );
-  }
+  eachBounded(
+    documents,
+    overruns,
+    (document) => {
+      const result = expandOne(
+        document,
+        { ...options, to: earliest.until(options.to) },
+        expansion,
+        context.config.timezone,
+        notes
+      );
+      if (result === undefined) return;
+      notes.push(...result.notes);
+      if (result.truncated && result.occurrences.length > 0) {
+        earliest.overflowed();
+      }
+      earliest.add(
+        result.occurrences.map((occurrence) => ({ occurrence, document }))
+      );
+    },
+    (document) => {
+      expansion.spend(ENTRY_LIMIT_MS);
+      notes.push(skippedNote(document, new HardLimitExceeded()));
+    },
+    (count) => abandoned.push(count)
+  );
+  callNotes.unshift(...abandonedNotes(abandoned));
   const { items: collected, cutoff, crowded } = earliest.finish();
 
   const principal = await context.discovery.principal();
@@ -982,6 +1028,18 @@ export class ExpansionBudget {
   spend(ms: number): void {
     this.left -= ms;
   }
+}
+
+/** The note for the entries a call stopped evaluating, if there were any. */
+function abandonedNotes(abandoned: readonly number[]): string[] {
+  const count = abandoned.reduce((sum, value) => sum + value, 0);
+  if (count === 0) return [];
+  return [
+    `${count} more stored entr${count === 1 ? 'y was' : 'ies were'} not ` +
+      `evaluated: ${MAX_OVERRUNS} entries in this call took longer than this ` +
+      'server allows, so it stopped reading any more. Name fewer calendars ' +
+      'or a shorter time range.',
+  ];
 }
 
 /**
