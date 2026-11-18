@@ -92,7 +92,7 @@ Tested against Radicale and Baikal (sabre/dav) in CI on every pull request.
 | `CALDAV_USERNAME`        | yes¹     | Account name.                                                                                                                                                                         |
 | `CALDAV_PASSWORD`        | yes¹     | Password or app-specific password. Deleted from the environment once read.                                                                                                            |
 | `CALDAV_TOKEN`           | yes¹     | Bearer token instead of username and password. Not both.                                                                                                                              |
-| `CALDAV_CALENDARS`       | no       | Comma-separated calendars this server may touch, by path or final path segment. Default: every calendar the account can see.                                                          |
+| `CALDAV_CALENDARS`       | no       | Comma-separated calendars this server may touch, by path or final path segment. Default: every calendar the account can see. A subscription named here is read by default.            |
 | `CALDAV_TIMEZONE`        | no       | IANA zone for timestamps that carry no offset, e.g. `Europe/Berlin`. Default `UTC`.                                                                                                   |
 | `CALDAV_USER_EMAIL`      | no       | The address you are invited as, so `respond_to_event` can find your own attendee line.                                                                                                |
 | `CALDAV_MAX_EVENTS`      | no       | Entries a listing returns by default, 1–500. Default `100`.                                                                                                                           |
@@ -282,6 +282,9 @@ answer built from calendar content and deliberately absent from the rest — see
   `RELATED-TO` between them — and a half-correct implementation corrupts a
   calendar silently. Changing one occurrence and changing the whole series are
   both exact.
+- **A subscription's feed address.** A subscribed calendar is read through the
+  CalDAV server like any other, and only when named. The address of the feed
+  behind it is neither fetched nor shown: this server talks to one origin.
 - **The scheduling inbox and outbox.** They are filtered out of the calendar
   list, so on a server with scheduling enabled an invitation sits there unseen by
   this server until a real client processes it.

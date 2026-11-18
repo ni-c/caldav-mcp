@@ -241,6 +241,13 @@ export const shapedCalendar = z
         'Component kinds it accepts. Empty means the server did not say.'
       ),
     read_only: z.boolean(),
+    subscribed: z
+      .literal(true)
+      .optional()
+      .describe(
+        'A subscription: somebody else’s feed, read-only, and only read ' +
+          'when named in `calendars`.'
+      ),
   })
   .meta({ additionalProperties: true });
 

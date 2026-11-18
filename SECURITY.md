@@ -58,10 +58,13 @@ could reach is a single resource, not somebody's entire calendar. The integratio
 bootstrap creates its collections over the wire precisely because the server cannot,
 so the suite never leans on a capability that is documented as missing.
 
-**It does not send mail.** Answering an invitation with `respond_to_event` writes a
-`PARTSTAT` into the calendar; on a server with a scheduling plugin, that server may
-then send an iTIP message. This process has no SMTP client and makes no outbound
-request of any kind. That is also why `respond_to_event` asks first even though it is
+**It does not send mail itself.** This process has no SMTP client and makes no
+outbound request of any kind. A CalDAV server with implicit scheduling (RFC 6638)
+does, on its behalf: answering an invitation with `respond_to_event` writes a
+`PARTSTAT` and the server sends the reply, and the same server also mails attendees
+when an event they are on is changed, deleted, or moved (which this server does as a
+copy and a delete) by the account that organises it. `get_server_info` reports
+whether the server advertises scheduling. That is also why `respond_to_event` asks first even though it is
 not destructive: _irreversible is not the same as destructive_, and something leaving
 the building on your behalf is worth a dialog regardless of what the annotation says.
 
@@ -98,6 +101,20 @@ timed against tens of thousands of characters of its own trigger, because a patt
 unbounded run and no anchor is quadratic and this process is single-threaded with
 stdio as its transport — a scan that takes a second on a real input takes the whole
 server with it on a crafted one.
+
+**A subscription is somebody else's calendar outright.** A subscribed feed —
+holidays, a school, another family's calendar — is published by a third party, and
+over plain HTTP by whoever sits on the path to it. Its entries are content like any
+other, and three things more: every write tool refuses a subscription before it sends
+anything or asks anybody, so nothing answers an invitation from a feed, writes to one,
+or moves an entry out of one — text read from a feed can still be passed to a write
+tool like any other text, which is why it is marked untrusted; a tool that is not
+told which calendars to read leaves
+subscriptions out, so "what is on this week" never reads a feed nobody named; and
+`CALDAV_CALENDARS` keeps them out entirely, or names the ones to read by default, as
+does a `CALDAV_URL` that points at one.
+The feed's own address is never requested from the server, never fetched, and never
+shown.
 
 **Calendar names are content too**, and they reach the model through `list_calendars`
 long before anyone reads an event. Each entry's name is cleaned like any other text, and its id is the collection's path, printed byte for byte — validated rather than cleaned, because it has to come back as `calendar_id` and match what discovery resolved.

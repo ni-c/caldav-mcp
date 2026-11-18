@@ -57,6 +57,14 @@ export function registerCalendarTools(
         const unmatched = registry.unmatched();
 
         const collected = [...principal.notes, ...registry.notes];
+        if (allowed.some((calendar) => calendar.subscribed)) {
+          collected.push(
+            'Calendars marked `subscribed` are feeds somebody else publishes. ' +
+              'They are read-only, and the other tools read them only when ' +
+              'they are named in `calendars`. Some servers keep only a feed’s ' +
+              'address and not its events; such a subscription answers as empty.'
+          );
+        }
         if (unmatched.length > 0) {
           collected.push(
             `CALDAV_CALENDARS names ${unmatched.length} entr` +
@@ -110,6 +118,7 @@ export function registerCalendarTools(
             id: z.string(),
             components: z.array(z.string()),
             read_only: z.boolean(),
+            subscribed: z.literal(true).optional(),
           })
         ),
         withheld: z.number().int(),
@@ -148,7 +157,10 @@ export function registerCalendarTools(
         // header: both features are things a server can advertise and answer
         // badly, and a listing that says "supported" and then returns nothing
         // is worse than one that says "no".
-        const probe = allowed[0];
+        // Not a subscription: its server may answer for a feed differently,
+        // and the answer is about the account's own calendars.
+        const probe =
+          allowed.find((calendar) => !calendar.subscribed) ?? allowed[0];
         let textMatch = false;
         let freeBusy = false;
         if (probe !== undefined) {
@@ -219,6 +231,7 @@ export function registerCalendarTools(
               sanitizeText(name, 50)
             ),
             read_only: calendar.readOnly,
+            ...(calendar.subscribed ? { subscribed: true as const } : {}),
           })),
           withheld: registry.withheld(),
           features: { text_match: textMatch, free_busy: freeBusy },

@@ -9,6 +9,7 @@ import { describeCalendarEntry } from './config.js';
 import { AllowlistError } from './errors.js';
 import {
   hrefsOf,
+  isCalendarCollection,
   privileges,
   resourceTypeHas,
   supportedComponents,
@@ -191,10 +192,7 @@ export class Discovery {
     //    round trip.
     const first = await this.probe(root);
     const self = first[0];
-    if (
-      self !== undefined &&
-      resourceTypeHas(self.props.resourcetype, 'calendar')
-    ) {
+    if (self !== undefined && isCalendarCollection(self.props.resourcetype)) {
       return {
         url: undefined,
         homes: [],
@@ -333,19 +331,25 @@ export class Discovery {
       }
     }
 
-    // Stable order, so two runs of the same listing agree.
-    found.sort((left, right) => left.path.localeCompare(right.path));
-    const unique = dedupe(found);
+    // Stable order, so two runs of the same listing agree, and own calendars
+    // before subscriptions: at the cap, a hundred subscribed feeds must not
+    // push the account's own calendars out.
+    const unique = dedupe(found).toSorted(
+      (left, right) =>
+        Number(left.subscribed) - Number(right.subscribed) ||
+        left.path.localeCompare(right.path)
+    );
     const kept = unique.slice(0, MAX_CALENDARS);
     const registry = new CalendarRegistry(
       kept,
       this.allowlist,
-      this.api.origin
+      this.api.origin,
+      principal.singleCalendar
     );
     if (unique.length > MAX_CALENDARS) {
       registry.notes.push(
         `This account has ${unique.length} calendars; only the first ` +
-          `${MAX_CALENDARS} by path are used.`
+          `${MAX_CALENDARS} are used, its own before subscriptions, each by path.`
       );
     }
     if (outsideHome > 0) {
@@ -418,7 +422,13 @@ export class Discovery {
   ): CalendarEntry | undefined {
     if (response === undefined) return undefined;
     const type = response.props.resourcetype;
-    if (!resourceTypeHas(type, 'calendar')) return undefined;
+    // A subscription is listed as `CS:subscribed` instead of `C:calendar` by
+    // Open-Xchange, and as both by some others; REPORTs work on it either way
+    // (#52). Every exclusion below, the home-set containment and the same
+    // origin apply to it as to any calendar. Its feed URL (`CS:source`) is not
+    // asked for: this server never fetches anything from another origin.
+    const subscribed = resourceTypeHas(type, 'subscribed');
+    if (!isCalendarCollection(type)) return undefined;
     if (
       resourceTypeHas(type, 'schedule-inbox') ||
       resourceTypeHas(type, 'schedule-outbox') ||
@@ -450,12 +460,16 @@ export class Discovery {
       color: textOf(response.props['calendar-color']),
       // Absent privileges mean the server did not say, which is not the same as
       // "no write" — assuming read-only there would refuse every write on a
-      // server that simply does not report the property.
+      // server that simply does not report the property. A subscription is
+      // read-only whatever the server grants: its content is a third party's,
+      // and nothing here may write to it or answer from it.
       readOnly:
-        granted.length > 0 &&
-        !granted.some((privilege) =>
-          ['write', 'write-content', 'all', 'bind'].includes(privilege)
-        ),
+        subscribed ||
+        (granted.length > 0 &&
+          !granted.some((privilege) =>
+            ['write', 'write-content', 'all', 'bind'].includes(privilege)
+          )),
+      subscribed,
     };
   }
 }
@@ -471,7 +485,8 @@ function firstHref(prop: unknown): string | undefined {
  * sets, the *stricter* answer wins: `readOnly` is a guard on this side, and a
  * guard decided by document order is a guard the server chooses. A write to a
  * collection that is in fact writable is refused with a sentence; a write to
- * one that is not would have been refused by the server anyway.
+ * one that is not would have been refused by the server anyway. The same holds
+ * for `subscribed`.
  */
 function dedupe(entries: readonly CalendarEntry[]): CalendarEntry[] {
   const byPath = new Map<string, CalendarEntry>();
@@ -479,8 +494,15 @@ function dedupe(entries: readonly CalendarEntry[]): CalendarEntry[] {
     const existing = byPath.get(entry.path);
     if (existing === undefined) {
       byPath.set(entry.path, entry);
-    } else if (entry.readOnly && !existing.readOnly) {
-      byPath.set(entry.path, { ...existing, readOnly: true });
+    } else if (
+      (entry.readOnly && !existing.readOnly) ||
+      (entry.subscribed && !existing.subscribed)
+    ) {
+      byPath.set(entry.path, {
+        ...existing,
+        readOnly: existing.readOnly || entry.readOnly,
+        subscribed: existing.subscribed || entry.subscribed,
+      });
     }
   }
   return [...byPath.values()];

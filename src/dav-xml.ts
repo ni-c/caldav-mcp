@@ -299,9 +299,14 @@ export function assertNoDoctype(xml: string, what: string): void {
  * tell two namespaces apart when they share a local name — and across the
  * property set above there is no such pair.
  *
- * What keeps that safe is a rule rather than a check: **no security decision is
- * ever taken from a collapsed XML name.** The calendar allowlist is keyed on the
- * resolved collection *path*, never on anything this parser produced by name.
+ * What keeps that safe is that the allowlist is keyed on the resolved
+ * collection *path*, never on anything this parser produced by name. Some
+ * decisions are taken on collapsed `resourcetype` names, and each fails in a
+ * known direction: `calendar` or `subscribed` from any namespace admits a
+ * collection, which still has to sit inside a home set on the same origin;
+ * `subscribed` also makes it read-only and keeps it out of the default set,
+ * which only narrows; `schedule-inbox`, `schedule-outbox`, `addressbook` and
+ * `notification` from any namespace exclude, which only narrows too.
  *
  * `parseTagValue: false` because an ETag of `"00123"` must stay a string, and
  * `stopNodes` because `calendar-data` is a document in its own right that has no
@@ -425,6 +430,18 @@ export function hrefsOf(prop: unknown): string[] {
   return list
     .map((entry) => decodeXmlText(String(entry)).trim())
     .filter((entry) => entry.length > 0);
+}
+
+/**
+ * Whether a resourcetype makes a collection one this server reads: a calendar,
+ * or a subscription (#52). The one rule, so the listing filter and the check
+ * on a configured collection URL cannot drift apart — when only the listing
+ * learned `subscribed`, a subscription URL fell through to the whole account.
+ */
+export function isCalendarCollection(type: unknown): boolean {
+  return (
+    resourceTypeHas(type, 'calendar') || resourceTypeHas(type, 'subscribed')
+  );
 }
 
 /** Whether a `resourcetype` value contains a given element, e.g. `calendar`. */

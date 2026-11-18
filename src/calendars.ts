@@ -31,8 +31,16 @@ export interface CalendarEntry {
   components: readonly string[];
   ctag: string | undefined;
   color: string | undefined;
-  /** True when `current-user-privilege-set` grants no form of write. */
+  /**
+   * True when `current-user-privilege-set` grants no form of write, and always
+   * for a subscription.
+   */
   readOnly: boolean;
+  /**
+   * A subscription (`CS:subscribed`): a feed somebody else publishes, which the
+   * server keeps in sync. Read-only on this side, and read only when named.
+   */
+  subscribed: boolean;
 }
 
 /**
@@ -180,7 +188,9 @@ export class CalendarRegistry implements CalendarLookup {
   constructor(
     all: readonly CalendarEntry[],
     allowlist: readonly string[],
-    origin = ''
+    origin = '',
+    /** CALDAV_URL is the one collection, so the operator named it. */
+    private readonly configuredCollection = false
   ) {
     this.all = all;
     this.allowlist = allowlist;
@@ -309,7 +319,15 @@ export class CalendarRegistry implements CalendarLookup {
                 'account has, so there is nothing to read.'
         );
       }
-      return this.permitted;
+      const defaults = this.defaults();
+      if (defaults.length === 0) {
+        throw new ToolInputError(
+          'caldav-mcp: every calendar available is a subscription, and ' +
+            'subscriptions are read only when named. Name one in `calendars`; ' +
+            'list_calendars shows them.'
+        );
+      }
+      return defaults;
     }
     const resolved = references.map((reference) => this.resolve(reference));
     // De-duplicate: two spellings of one calendar must not make it answer twice.
@@ -319,6 +337,22 @@ export class CalendarRegistry implements CalendarLookup {
       seen.add(calendar.path);
       return true;
     });
+  }
+
+  /**
+   * The calendars a tool acts on when the caller names none: the allowed ones,
+   * without subscriptions. A subscription is somebody else's feed — holidays,
+   * a school, another family's calendar — and whoever publishes it writes
+   * text this server would read on every "what is on this week". It is read
+   * when named: by the caller, by an explicit CALDAV_CALENDARS entry — every
+   * entry there names calendars explicitly, since none is a pattern — or by
+   * CALDAV_URL pointing at it.
+   */
+  private defaults(): readonly CalendarEntry[] {
+    if (this.allowlist.length > 0 || this.configuredCollection) {
+      return this.permitted;
+    }
+    return this.permitted.filter((calendar) => !calendar.subscribed);
   }
 
   /** The calendar a decoded id points at. Assumes the id was already checked. */

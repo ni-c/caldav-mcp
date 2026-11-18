@@ -29,6 +29,8 @@ the two lists are not the same one.
 
 Every calendar this server may use, with the id to pass to the other tools. Always asks the server rather than answering from a cache — being current is this tool’s whole job.
 
+A subscription — a feed somebody else publishes, such as public holidays or a school calendar — is listed with `subscribed: true` and `read_only: true`. Every write tool refuses it, and the other read tools look in it only when it is named in `calendars` or in `CALDAV_CALENDARS`.
+
 Takes no parameters.
 
 ### `get_server_info`
@@ -50,7 +52,7 @@ Events between two points in time, from every calendar this server may see or fr
 | `from` | string | no | Start of the window. Defaults to now. |
 | `to` | string | no | End of the window. Defaults to 30 days after `from`. |
 | `timezone` | string | no | IANA zone for timestamps that carry no offset, e.g. "Europe/Berlin". Defaults to CALDAV_TIMEZONE. Refused together with a value that already carries an offset. |
-| `calendars` | string[] | no | Which calendars to look in. Leave it out for all of them. A calendar outside CALDAV_CALENDARS is refused rather than silently skipped. |
+| `calendars` | string[] | no | Which calendars to look in. Leave it out for every calendar except subscriptions, which are read only when named. A calendar outside CALDAV_CALENDARS is refused rather than silently skipped. |
 | `limit` | integer | no | Entries to return, at most 500. Defaults to CALDAV_MAX_EVENTS. |
 | `after` | string | no | The `truncated.next_cursor` of a previous call, to continue where it stopped. Pass the same arguments as the call that returned it. |
 
@@ -77,7 +79,7 @@ Finds events whose summary, description or location contains a term. The search 
 | `from` | string | no | ISO 8601: "2026-09-07" for a whole day, "2026-09-07T09:00:00" in the timezone argument or CALDAV_TIMEZONE, or "2026-09-07T09:00:00+02:00". |
 | `to` | string | no | ISO 8601: "2026-09-07" for a whole day, "2026-09-07T09:00:00" in the timezone argument or CALDAV_TIMEZONE, or "2026-09-07T09:00:00+02:00". |
 | `timezone` | string | no | IANA zone for timestamps that carry no offset, e.g. "Europe/Berlin". Defaults to CALDAV_TIMEZONE. Refused together with a value that already carries an offset. |
-| `calendars` | string[] | no | Which calendars to look in. Leave it out for all of them. A calendar outside CALDAV_CALENDARS is refused rather than silently skipped. |
+| `calendars` | string[] | no | Which calendars to look in. Leave it out for every calendar except subscriptions, which are read only when named. A calendar outside CALDAV_CALENDARS is refused rather than silently skipped. |
 | `limit` | integer | no | Entries to return, at most 500. Defaults to CALDAV_MAX_EVENTS. |
 
 ### `get_free_busy`
@@ -91,7 +93,7 @@ Busy periods in a time range — start and end only, no titles and no attendees.
 | `from` | string | no | ISO 8601: "2026-09-07" for a whole day, "2026-09-07T09:00:00" in the timezone argument or CALDAV_TIMEZONE, or "2026-09-07T09:00:00+02:00". |
 | `to` | string | no | ISO 8601: "2026-09-07" for a whole day, "2026-09-07T09:00:00" in the timezone argument or CALDAV_TIMEZONE, or "2026-09-07T09:00:00+02:00". |
 | `timezone` | string | no | IANA zone for timestamps that carry no offset, e.g. "Europe/Berlin". Defaults to CALDAV_TIMEZONE. Refused together with a value that already carries an offset. |
-| `calendars` | string[] | no | Which calendars to look in. Leave it out for all of them. A calendar outside CALDAV_CALENDARS is refused rather than silently skipped. |
+| `calendars` | string[] | no | Which calendars to look in. Leave it out for every calendar except subscriptions, which are read only when named. A calendar outside CALDAV_CALENDARS is refused rather than silently skipped. |
 
 ### `list_tasks`
 
@@ -104,7 +106,7 @@ Tasks with a start or due date inside a time range. A task with neither has no p
 | `from` | string | no | ISO 8601: "2026-09-07" for a whole day, "2026-09-07T09:00:00" in the timezone argument or CALDAV_TIMEZONE, or "2026-09-07T09:00:00+02:00". |
 | `to` | string | no | ISO 8601: "2026-09-07" for a whole day, "2026-09-07T09:00:00" in the timezone argument or CALDAV_TIMEZONE, or "2026-09-07T09:00:00+02:00". |
 | `timezone` | string | no | IANA zone for timestamps that carry no offset, e.g. "Europe/Berlin". Defaults to CALDAV_TIMEZONE. Refused together with a value that already carries an offset. |
-| `calendars` | string[] | no | Which calendars to look in. Leave it out for all of them. A calendar outside CALDAV_CALENDARS is refused rather than silently skipped. |
+| `calendars` | string[] | no | Which calendars to look in. Leave it out for every calendar except subscriptions, which are read only when named. A calendar outside CALDAV_CALENDARS is refused rather than silently skipped. |
 | `include_completed` | boolean | no | Defaults to false, which leaves completed tasks out. |
 | `undated` | boolean | no | List only the tasks that have neither a start nor a due date, which a windowed listing leaves out. Takes no time range: it cannot be combined with `from`, `to` or `timezone`. |
 | `limit` | integer | no | Entries to return, at most 500. Defaults to CALDAV_MAX_EVENTS. |
@@ -131,7 +133,7 @@ Dated notes in a calendar, inside a time range. Most calendar clients hide these
 | `from` | string | no | ISO 8601: "2026-09-07" for a whole day, "2026-09-07T09:00:00" in the timezone argument or CALDAV_TIMEZONE, or "2026-09-07T09:00:00+02:00". |
 | `to` | string | no | ISO 8601: "2026-09-07" for a whole day, "2026-09-07T09:00:00" in the timezone argument or CALDAV_TIMEZONE, or "2026-09-07T09:00:00+02:00". |
 | `timezone` | string | no | IANA zone for timestamps that carry no offset, e.g. "Europe/Berlin". Defaults to CALDAV_TIMEZONE. Refused together with a value that already carries an offset. |
-| `calendars` | string[] | no | Which calendars to look in. Leave it out for all of them. A calendar outside CALDAV_CALENDARS is refused rather than silently skipped. |
+| `calendars` | string[] | no | Which calendars to look in. Leave it out for every calendar except subscriptions, which are read only when named. A calendar outside CALDAV_CALENDARS is refused rather than silently skipped. |
 | `limit` | integer | no | Entries to return, at most 500. Defaults to CALDAV_MAX_EVENTS. |
 | `after` | string | no | The `truncated.next_cursor` of a previous call, to continue where it stopped. Pass the same arguments as the call that returned it. |
 

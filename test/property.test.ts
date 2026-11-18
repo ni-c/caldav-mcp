@@ -370,6 +370,7 @@ const CALENDAR_ENTRY: CalendarEntry = {
   ctag: undefined,
   color: undefined,
   readOnly: false,
+  subscribed: false,
 };
 
 /** A parameter value: no delimiter, no quote, no line break, no space. */
