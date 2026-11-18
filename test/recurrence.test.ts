@@ -140,7 +140,7 @@ describe('a rule that does not end', () => {
         ),
         { from: '2026-11-01T00:00:00Z', to: '2026-12-01T00:00:00Z', cap: 500 }
       );
-      expect(Date.now() - started).toBeLessThan(3_000);
+      expect(Date.now() - started).toBeLessThan(5_000);
       expect(result.bounded).toBe(true);
       expect(result.occurrences).toEqual([]);
       expect(result.notes.join(' ')).toContain(

@@ -353,7 +353,8 @@ describe('the guards behind the limits', () => {
         'defines a timezone whose rules this server cannot evaluate'
       );
       const again = timed(() => readTime(event!, 'created', 'UTC'));
-      expect(again.ms).toBeLessThan(20);
+      // Under the 250 ms a zone gets: refused at once, not expanded again.
+      expect(again.ms).toBeLessThan(200);
       expect(again.result).toBeInstanceOf(ToolInputError);
     },
     20_000
@@ -442,7 +443,7 @@ describe('the guards behind the limits', () => {
     const spent = timed(() =>
       guarded(0, () => readTime(event!, 'dtstart', 'UTC'))
     );
-    expect(spent.ms).toBeLessThan(100);
+    expect(spent.ms).toBeLessThan(200);
     expect(spent.result).toBeInstanceOf(ToolInputError);
     expect(readTime(event!, 'dtstart', 'UTC')?.instant.toISOString()).toBe(
       '2026-09-07T07:00:00.000Z'

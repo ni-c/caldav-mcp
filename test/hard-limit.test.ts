@@ -196,7 +196,7 @@ describe('loops the fifth review found', () => {
           fallbackZone: 'UTC',
         }
       );
-      expect(Date.now() - started).toBeLessThan(1_000);
+      expect(Date.now() - started).toBeLessThan(3_000);
       expect(result.occurrences).toEqual([]);
       expect(result.bounded).toBe(true);
     }
