@@ -1043,61 +1043,67 @@ async function excludeOccurrence(
         'was deleted.'
     );
   }
-  const root = withHardLimit(SINGLE_ENTRY_LIMIT_MS, () =>
-    parseCalendar(resource.ics, 'the stored entry')
-  );
-  const { master, overrides } = splitSeries(componentsOf(root, entity.kind));
-  if (master === undefined) {
-    throw new ToolInputError(
-      'caldav-mcp: this entry has no series to exclude an occurrence from.'
-    );
-  }
-  const zone = context.config.timezone;
-  const at = parseRecurrenceId(entity.recurrenceId ?? '', zone);
-  const wanted = at.instant.getTime();
-
-  // An override for this instance is removed as well, or the exception would
-  // leave a component behind that still claims the occurrence exists.
-  let removedOverride = false;
-  for (const override of overrides) {
-    const property = override.getFirstProperty('recurrence-id');
-    if (property === null) continue;
-    const instant = instantOfProperty(property, zone).instant.getTime();
-    if (Math.abs(instant - wanted) < 1000) {
-      root.removeSubcomponent(override);
-      removedOverride = true;
+  // Everything that reads times in the stored entry, under one hard limit.
+  const ics = withHardLimit(SINGLE_ENTRY_LIMIT_MS, () => {
+    const root = parseCalendar(resource.ics, 'the stored entry');
+    const { master, overrides } = splitSeries(componentsOf(root, entity.kind));
+    if (master === undefined) {
+      throw new ToolInputError(
+        'caldav-mcp: this entry has no series to exclude an occurrence from.'
+      );
     }
-  }
+    const zone = context.config.timezone;
+    const at = parseRecurrenceId(entity.recurrenceId ?? '', zone);
+    const wanted = at.instant.getTime();
 
-  const alreadyExcluded = master
-    .getAllProperties('exdate')
-    .flatMap((property) => instantsOfProperty(property, zone))
-    .some((time) => Math.abs(time.instant.getTime() - wanted) < 1000);
-
-  if (alreadyExcluded && !removedOverride) {
-    // Nothing to write: the exception is there and no override contradicts it.
-    return;
-  }
-
-  if (!alreadyExcluded) {
-    const exdate = new ICAL.Property('exdate', master);
-    let value: ICAL.Time;
-    if (at.allDay) {
-      const [year, month, day] = formatDateInZone(at.instant, zone).split('-');
-      value = ICAL.Time.fromData({
-        year: Number(year),
-        month: Number(month),
-        day: Number(day),
-        isDate: true,
-      });
-    } else {
-      value = ICAL.Time.fromJSDate(at.instant, true);
+    // An override for this instance is removed as well, or the exception would
+    // leave a component behind that still claims the occurrence exists.
+    let removedOverride = false;
+    for (const override of overrides) {
+      const property = override.getFirstProperty('recurrence-id');
+      if (property === null) continue;
+      const instant = instantOfProperty(property, zone).instant.getTime();
+      if (Math.abs(instant - wanted) < 1000) {
+        root.removeSubcomponent(override);
+        removedOverride = true;
+      }
     }
-    exdate.setValue(value);
-    master.addProperty(exdate);
-  }
 
-  await context.api.put(url, serialize(root), { ifMatch: resource.etag });
+    const alreadyExcluded = master
+      .getAllProperties('exdate')
+      .flatMap((property) => instantsOfProperty(property, zone))
+      .some((time) => Math.abs(time.instant.getTime() - wanted) < 1000);
+
+    if (alreadyExcluded && !removedOverride) {
+      // Nothing to write: the exception is there and no override contradicts it.
+      return;
+    }
+
+    if (!alreadyExcluded) {
+      const exdate = new ICAL.Property('exdate', master);
+      let value: ICAL.Time;
+      if (at.allDay) {
+        const [year, month, day] = formatDateInZone(at.instant, zone).split(
+          '-'
+        );
+        value = ICAL.Time.fromData({
+          year: Number(year),
+          month: Number(month),
+          day: Number(day),
+          isDate: true,
+        });
+      } else {
+        value = ICAL.Time.fromJSDate(at.instant, true);
+      }
+      exdate.setValue(value);
+      master.addProperty(exdate);
+    }
+
+    return serialize(root);
+  });
+  // Undefined when the occurrence was already excluded: nothing to write.
+  if (ics === undefined) return;
+  await context.api.put(url, ics, { ifMatch: resource.etag });
 }
 
 /** The ATTENDEE line matching one of the addresses this account answers as. */

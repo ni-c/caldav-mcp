@@ -22,6 +22,8 @@ import {
   HardLimitExceeded,
   MAX_OVERRUNS,
   type Overruns,
+  SINGLE_ENTRY_LIMIT_MS,
+  withHardLimit,
 } from './hard-limit.js';
 import { guarded } from './ical-guard.js';
 import {
@@ -1183,18 +1185,22 @@ function shapedPage<
   selfAddresses: readonly string[]
 ): (T & { entry: Record<string, unknown> })[] {
   const cache = newShapeCache();
-  return items.map((item) => ({
-    ...item,
-    entry: shapeEntry(item.occurrence, {
-      kind,
-      calendar: item.document.calendar,
-      resourceName: item.document.resourceName,
-      fallbackZone: context.config.timezone,
-      detailed: false,
-      selfAddresses,
-      cache,
-    }).entry,
-  }));
+  // Shaping reads times too — a CREATED in a zone the entry defines runs that
+  // zone's rules — so the page is under a hard limit like the expansion was.
+  return withHardLimit(SINGLE_ENTRY_LIMIT_MS, () =>
+    items.map((item) => ({
+      ...item,
+      entry: shapeEntry(item.occurrence, {
+        kind,
+        calendar: item.document.calendar,
+        resourceName: item.document.resourceName,
+        fallbackZone: context.config.timezone,
+        detailed: false,
+        selfAddresses,
+        cache,
+      }).entry,
+    }))
+  );
 }
 
 /**
