@@ -1,8 +1,19 @@
 import { z } from 'zod';
 import type { McpServer } from '@modelcontextprotocol/server';
 
+import { quoted } from '../analyze.js';
 import { freeBusyQueryBody } from '../dav-xml.js';
-import { listEntries, searchEntries, type ToolContext } from '../entries.js';
+import {
+  CALL_BUDGET_MS,
+  ExpansionBudget,
+  isCalendarRefusal,
+  listEntries,
+  MAX_COLLECTED,
+  refusalNotes,
+  searchEntries,
+  type Refusal,
+  type ToolContext,
+} from '../entries.js';
 import { parseEntityId } from '../entity-id.js';
 import {
   notes,
@@ -11,10 +22,11 @@ import {
   untrustedFields,
 } from '../output-schema.js';
 import {
+  budget,
   fencedUntrustedResult,
+  fittedListingResult,
   ownWordsResult,
   run,
-  untrustedResult,
 } from '../result.js';
 import {
   afterParam,
@@ -76,18 +88,18 @@ export function registerEventReadTools(
           limit: args.limit ?? context.config.maxEntries,
           after: args.after,
         });
-        return untrustedResult({
-          events: listing.entries,
-          count: listing.entries.length,
+        return fittedListingResult(listing, (page) => ({
+          events: page.entries,
+          count: page.entries.length,
           window: {
             from: window.from.toISOString(),
             to: window.to.toISOString(),
           },
-          ...(listing.notes.length > 0 ? { notes: listing.notes } : {}),
-          ...(listing.truncated === undefined
+          ...(page.notes.length > 0 ? { notes: page.notes } : {}),
+          ...(page.truncated === undefined
             ? {}
-            : { truncated: listing.truncated }),
-        });
+            : { truncated: page.truncated }),
+        }));
       })
   );
 
@@ -185,9 +197,9 @@ export function registerEventReadTools(
           query: args.query,
           fields: args.fields ?? ['SUMMARY', 'DESCRIPTION', 'LOCATION'],
         });
-        return untrustedResult({
-          events: result.entries,
-          count: result.entries.length,
+        return fittedListingResult(result, (page) => ({
+          events: page.entries,
+          count: page.entries.length,
           window: {
             from: window.from.toISOString(),
             to: window.to.toISOString(),
@@ -195,11 +207,11 @@ export function registerEventReadTools(
           ...(result.collation === undefined
             ? {}
             : { collation: result.collation }),
-          ...(result.notes.length > 0 ? { notes: result.notes } : {}),
-          ...(result.truncated === undefined
+          ...(page.notes.length > 0 ? { notes: page.notes } : {}),
+          ...(page.truncated === undefined
             ? {}
-            : { truncated: result.truncated }),
-        });
+            : { truncated: page.truncated }),
+        }));
       })
   );
 
@@ -260,9 +272,18 @@ export function registerEventReadTools(
           calendar: string;
         }[] = [];
         const collectedNotes: string[] = [];
+        const refusals: Refusal[] = [];
         let method: 'server' | 'computed' = 'server';
+        const expansion = new ExpansionBudget();
+        const started = Date.now();
+        let asked = 0;
 
         for (const calendar of calendars) {
+          // The same clock every listing has. Without it, a server answering
+          // every calendar slowly and then with an error was walked to the
+          // end, two timeouts per calendar.
+          if (Date.now() - started > CALL_BUDGET_MS) break;
+          asked += 1;
           try {
             const ics = await context.api.freeBusy(
               calendar.url,
@@ -274,19 +295,55 @@ export function registerEventReadTools(
             // fallback: it aggregates every calendar the principal owns,
             // allowlist or not, which would be a way around CALDAV_CALENDARS.
             method = 'computed';
-            const listing = await listEntries(context, {
-              kind: 'vevent',
-              calendars: [calendar],
-              from: window.from,
-              to: window.to,
-              limit: context.config.maxEntries,
-            });
+            let listing;
+            try {
+              // Every event in the window, not a page of them: an event this
+              // leaves out is a busy period reported as free.
+              listing = await listEntries(context, {
+                kind: 'vevent',
+                calendars: [calendar],
+                from: window.from,
+                to: window.to,
+                limit: MAX_COLLECTED,
+                expansion,
+              });
+            } catch (error) {
+              if (!isCalendarRefusal(error)) throw error;
+              refusals.push({ calendar, error });
+              continue;
+            }
             collectedNotes.push(...listing.notes);
-            for (const entry of listing.entries) {
-              const busy = busyOf(entry, calendar.path);
-              if (busy !== undefined) collected.push(busy);
+            collected.push(
+              ...mergedPeriods(
+                listing.entries
+                  .map((entry) => busyOf(entry, calendar.path))
+                  .filter((busy) => busy !== undefined)
+              )
+            );
+            if (listing.truncated !== undefined) {
+              // No instant: a series stopped early is missing occurrences
+              // anywhere in the window, not only after the last one read.
+              collectedNotes.push(
+                `Not every event in "${quoted(calendar.path)}" could be read, ` +
+                  'so busy periods there may be missing. A shorter time ' +
+                  'range reads it in full.'
+              );
             }
           }
+        }
+        collectedNotes.push(
+          ...refusalNotes(
+            refusals,
+            asked,
+            ' A shorter time range would make it smaller.'
+          )
+        );
+        if (asked < calendars.length) {
+          collectedNotes.push(
+            `Stopped after ${asked} of ${calendars.length} calendars: the ` +
+              `call's ${CALL_BUDGET_MS / 1000}-second budget ran out, so the ` +
+              'others are not included. Name fewer calendars in `calendars`.'
+          );
         }
 
         collected.sort((left, right) => left.start.localeCompare(right.start));
@@ -299,21 +356,49 @@ export function registerEventReadTools(
           );
         }
 
-        return ownWordsResult({
-          busy: collected,
-          count: collected.length,
-          window: {
-            from: window.from.toISOString(),
-            to: window.to.toISOString(),
+        // Under the same ceiling as every other answer: worked out from the
+        // events, a calendar can give thousands of periods.
+        const answer = budget(
+          {
+            busy: collected,
+            count: collected.length,
+            window: {
+              from: window.from.toISOString(),
+              to: window.to.toISOString(),
+            },
+            method,
+            ...(collectedNotes.length > 0
+              ? { notes: [...new Set(collectedNotes)] }
+              : {}),
           },
-          method,
-          ...(collectedNotes.length > 0
-            ? { notes: [...new Set(collectedNotes)] }
-            : {}),
+          'Ask for a shorter time range or fewer calendars.'
+        );
+        return ownWordsResult({
+          ...answer,
+          count: (answer.busy as unknown[]).length,
         });
       })
   );
 }
+
+/**
+ * FBTYPE as one of the four RFC 5545 values. The server copies it from stored
+ * entries a stranger can write, and this answer carries no untrusted marker.
+ */
+function fbType(value: string | undefined): string | undefined {
+  if (value === undefined) return undefined;
+  const upper = value.toUpperCase();
+  // RFC 5545 reads an unknown type as BUSY, and reporting time as busy is
+  // the safe side of a mistake; a stranger's word is never repeated.
+  return FB_TYPES.has(upper) ? upper : 'BUSY';
+}
+
+const FB_TYPES = new Set([
+  'FREE',
+  'BUSY',
+  'BUSY-UNAVAILABLE',
+  'BUSY-TENTATIVE',
+]);
 
 /**
  * Reads the periods out of a VFREEBUSY document.
@@ -345,7 +430,7 @@ export function parseFreeBusy(
     const body = block.split(/END:VFREEBUSY/i)[0] ?? '';
     const start = /^DTSTART[^:]*:(\S+)/m.exec(body)?.[1];
     const end = /^DTEND[^:]*:(\S+)/m.exec(body)?.[1];
-    const type = /^FBTYPE[^:]*:(\S+)/m.exec(body)?.[1];
+    const type = fbType(/^FBTYPE[^:]*:(\S+)/m.exec(body)?.[1]);
     const from = start === undefined ? undefined : isoOfStamp(start);
     const until = end === undefined ? undefined : isoOfStamp(end);
     const hasPeriods = /^FREEBUSY[;:]/im.test(body);
@@ -370,6 +455,7 @@ export function parseFreeBusy(
     for (const match of body.matchAll(
       /^FREEBUSY(?:;FBTYPE=([A-Z-]+))?[^:]*:(.+)$/gim
     )) {
+      const pairType = fbType(match[1]);
       for (const pair of (match[2] ?? '').split(',')) {
         const [rawStart, rawEnd] = pair.trim().split('/');
         if (rawStart === undefined || rawEnd === undefined) continue;
@@ -379,7 +465,7 @@ export function parseFreeBusy(
         periods.push({
           start: pairStart,
           end: pairEnd,
-          ...(match[1] === undefined ? {} : { type: match[1] }),
+          ...(pairType === undefined ? {} : { type: pairType }),
           calendar: calendarPath,
         });
       }
@@ -432,6 +518,63 @@ function periodEnd(start: string | undefined, raw: string): string | undefined {
 }
 
 /** A busy period from a shaped event, for the computed fallback. */
+/**
+ * Overlapping and touching periods of one calendar, joined, as a free-busy
+ * answer joins them: a minutely series is one busy period, not five thousand.
+ * Periods whose times do not parse are kept as they are.
+ */
+function mergedPeriods(
+  periods: readonly { start: string; end: string; calendar: string }[]
+): { start: string; end: string; calendar: string }[] {
+  const timed = periods
+    .map((period) => ({
+      period,
+      from: Date.parse(period.start),
+      until: Date.parse(period.end),
+    }))
+    .toSorted(
+      (left, right) =>
+        (Number.isNaN(left.from) ? 0 : left.from) -
+        (Number.isNaN(right.from) ? 0 : right.from)
+    );
+  const merged: { start: string; end: string; calendar: string }[] = [];
+  let open:
+    { start: string; end: string; calendar: string; until: number } | undefined;
+  for (const { period, from, until } of timed) {
+    // An all-day value is a bare date, which Date.parse reads as UTC
+    // midnight, not midnight where the calendar is: joined with timed periods
+    // it swallowed the evening before it or the morning after. Kept apart.
+    if (
+      Number.isNaN(from) ||
+      Number.isNaN(until) ||
+      !period.start.includes('T') ||
+      !period.end.includes('T')
+    ) {
+      merged.push(period);
+      continue;
+    }
+    if (open !== undefined && from <= open.until) {
+      if (until > open.until) {
+        open.end = period.end;
+        open.until = until;
+      }
+      continue;
+    }
+    if (open !== undefined) {
+      merged.push({
+        start: open.start,
+        end: open.end,
+        calendar: open.calendar,
+      });
+    }
+    open = { ...period, until };
+  }
+  if (open !== undefined) {
+    merged.push({ start: open.start, end: open.end, calendar: open.calendar });
+  }
+  return merged;
+}
+
 function busyOf(
   entry: Record<string, unknown>,
   calendarPath: string

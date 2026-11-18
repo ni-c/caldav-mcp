@@ -1,6 +1,5 @@
 import ICAL from 'ical.js';
 
-import { quoted } from './analyze.js';
 import { ToolInputError } from './errors.js';
 import { cacheZone, isKnownZone, wallClockToInstant } from './time.js';
 
@@ -42,23 +41,20 @@ export const COMPONENT_OF: Record<Kind, 'VEVENT' | 'VTODO' | 'VJOURNAL'> = {
 /**
  * Parses an iCalendar document, refusing anything that is not one.
  *
- * The parser's own message is quoted only in part. ical.js repeats the
+ * The parser's own message is not quoted at all. ical.js repeats the
  * offending line verbatim, and that line is the one piece of the document
- * most under the control of whoever wrote it: unbounded, unsanitised, and
- * about to be delivered in this server's own voice outside any fence. A short,
- * escaped excerpt is enough to find the line; the document itself is not
- * something to paste into an error.
+ * most under the control of whoever wrote it, about to be delivered in this
+ * server's own voice. Even a short escaped excerpt was eighty characters of a
+ * stranger's text, and a quote mark inside it could close the excerpt.
  */
 export function parseCalendar(ics: string, what: string): ICAL.Component {
   let root: ICAL.Component;
   try {
     root = new ICAL.Component(ICAL.parse(ics));
-  } catch (error) {
-    const reason = error instanceof Error ? error.message : String(error);
+  } catch {
     throw new ToolInputError(
-      `caldav-mcp: ${what} is not a readable iCalendar document ` +
-        `(${quoted(reason.replace(/\s+/g, ' '), 120)}). This is the stored ` +
-        'entry, not the arguments of this call.'
+      `caldav-mcp: ${what} is not a readable iCalendar document. This is ` +
+        'the stored entry, not the arguments of this call.'
     );
   }
   if (root.name !== 'vcalendar') {

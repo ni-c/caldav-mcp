@@ -16,15 +16,99 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Added
 
 - `list_tasks` takes `undated: true` to list the tasks that have neither a
-  start nor a due date. A `time-range` query is matched against those two
-  properties, so such a task was in no window and could not be found at all.
-  `get_task` now reads one back by id. The option takes no time range and is
-  refused together with `from`, `to` or `timezone`; it asks the server for
-  every task in the calendars and keeps the ones without a date.
+  start nor a due date (#51). A windowed listing cannot place such a task in
+  time and leaves it out, although the server does return it there: RFC 4791
+  matches it through CREATED or COMPLETED, or always. The option asks the
+  server for exactly these tasks with `is-not-defined`, reads every task and
+  keeps the undated ones where a server refuses that filter, and is refused
+  together with `from`, `to` or `timezone`.
+- A windowed `list_tasks` says how many tasks without a date the server
+  returned, and how to list them.
+- `update_task` takes null for `due` and `start` to remove that date. Removing a
+  start that a recurrence rule, a date list or a duration depends on is refused
+  before anything is written.
 
 ### Changed
 
+- CI's `npm audit` checks the runtime dependencies only, the ones the package
+  and the image ship. Advisories against development tools are still reported
+  by Dependabot, but no longer block a merge.
 - Require Node.js 24 or newer. CI tests the latest 24 and 26 LTS releases; Node 22 is no longer supported.
+- A listing is fitted to the size ceiling as it is emitted, indented, before it
+  is counted. Pages that reach the ceiling hold fewer entries than before, and
+  `count`, `truncated.returned` and `next_cursor` describe the page returned.
+- One calendar that refuses a request — any status but 401 and 429, or an
+  answer over the size ceiling — no longer fails `list_events`, `list_tasks`,
+  `list_journals`, `search_events` or `get_free_busy`: the other calendars are
+  listed and a note names the one that refused. When every calendar refuses,
+  the call is still an error. At most twenty refusing calendars are named.
+- When a window holds more than 5000 occurrences, the earliest 5000 across all
+  entries and calendars are kept, and the answer names the instant from which
+  nothing is listed. The ceiling used to fill in the order the server sent the
+  entries and then stop asking further calendars. Every calendar is now asked.
+- `get_free_busy`, when it works the periods out from the events, reads every
+  event in the window rather than one page of them, keeps the 30-second call
+  budget, and says when a calendar held more than it could read.
+
+### Fixed
+
+- `get_task` failed on a task without a date, and `update_task` and
+  `complete_task` wrote the change and then reported an error (#51).
+- One task with an unreadable CREATED, LAST-MODIFIED or COMPLETED value made
+  every listing of its calendar fail. The field is now left out.
+- A task with an unreadable DTSTART or DUE, or with a recurrence rule but no
+  start or due date, vanished from the undated listing without a note.
+- A windowed `list_tasks` left completed tasks out after the page was cut, so a
+  page could hold fewer tasks than its limit while claiming more, and a STATUS
+  in fullwidth letters counted as open in one mode and done in the other.
+- Entries the size budget dropped were paged past for good.
+- A recurring series was expanded to at most `limit` occurrences, so its later
+  occurrences appeared on no page, with no note.
+- `window_covered_until` was empty on a page that ended on a task with only a
+  due date.
+- The five seconds of expansion per call ran out while a slow server answered,
+  so every series stopped at its first step.
+- `truncated_fields` named a field that had only lost invisible characters.
+- A spent expansion budget still gave every further series 256 steps.
+- A completed recurring task could fill the occurrence ceiling of a listing
+  that leaves it out.
+- Two occurrences with the same start and id made paging loop.
+
+### Security
+
+- A recurrence rule whose parts never match, such as
+  `FREQ=MINUTELY;BYMONTH=2;BYMONTHDAY=30`, made ical.js loop for ever inside a
+  single step, out of reach of every deadline: one invitation froze the
+  server. A DAILY rule of the same kind ran for over a minute, an `INTERVAL` of
+  fifteen nines froze it as well, and an impossible YEARLY rule cost two
+  seconds per RRULE line. Each of these walks is now bounded from inside, and
+  the series is reported as incomplete; a rule that repeats only every few
+  hundred years is read as its first occurrence and refused when written.
+- A note about an entry the parser refused quoted part of the refused line.
+  It now says only that the entry is not readable.
+- An image reference whose alt text was longer than 200 characters passed the
+  defusing untouched.
+- `get_free_busy` worked out from events joins overlapping and touching periods
+  and stays under the size ceiling; FBTYPE is one of the four RFC 5545 values.
+- Every Unicode format character and every other default-ignorable code point
+  is removed from calendar text and escaped where the server quotes a value:
+  the tag block (U+E0000–E007F), which spells ASCII invisibly, and the
+  variation selectors, which carry a hidden byte each. The previous list of
+  ranges stopped at U+FEFF. U+FE0E and U+FE0F stay, once and only straight
+  after a pictographic emoji. Text is cut on code points, so a cut no longer
+  leaves half a surrogate pair.
+- A listing shaped every occurrence it collected, up to 5000, before cutting
+  out a page, and each one cleaned its master's text again: one hourly series
+  with a long description and many attendees took seconds and a gigabyte of
+  memory for `limit: 1`. Only the page is shaped now, occurrences of one
+  series share their cleaned fields, and a field's raw text is read only up to
+  four times its cap.
+- A note about an unreadable entry repeated the resource name uncut through the
+  parser's message. The name is now quoted once, cut and escaped.
+- `bounded_series` named UIDs taken raw from the iCalendar text. They are now
+  cleaned like every other field, and at most twenty are named.
+- Notes about individual entries are capped at twenty, so a calendar full of
+  broken entries cannot crowd the entries out of an answer.
 
 ## [0.1.5] - 2026-10-13
 

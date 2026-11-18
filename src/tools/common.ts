@@ -84,7 +84,7 @@ export async function loadEntry(
   }
   const url = resourceUrl(calendar, entity.resourceName);
   const resource = await context.api.get(url);
-  const root = parseCalendar(resource.ics, `the entry ${entity.resourceName}`);
+  const root = parseCalendar(resource.ics, 'the stored entry');
   const components = componentsOf(root, entity.kind);
   if (components.length === 0) {
     throw new ToolInputError(
@@ -103,13 +103,13 @@ export async function loadEntry(
     fallbackZone: context.config.timezone,
   });
 
-  // A task with no date at all is in no window, so the expansion above has
-  // nothing to return for it. It is still a real entry with an id, which
-  // `list_tasks` hands out for it, so reading it back has to work.
+  // A task with no start or due date gives the expansion above nothing to
+  // place, so it returns nothing for it. It is still a real entry with an id,
+  // which `list_tasks` hands out for it, so reading it back has to work.
   const occurrence =
     pick(expansion.occurrences, entity.recurrenceId) ??
     (entity.kind === 'vtodo' && entity.recurrenceId === undefined
-      ? undatedOccurrence(components)
+      ? undatedOccurrence(components, context.config.timezone)
       : undefined);
   if (occurrence === undefined) {
     throw new ToolInputError(

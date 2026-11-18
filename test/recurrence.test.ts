@@ -118,6 +118,136 @@ describe('a rule that does not end', () => {
     expect(result.bounded).toBe(false);
   });
 
+  // ical.js loops inside one next() until a candidate passes the BY-parts, and
+  // only MONTHLY and YEARLY count their misses. These never match, so the walk
+  // ran for ever (MINUTELY), until a RangeError (DAILY), or for seconds.
+  it.each([
+    'FREQ=MINUTELY;BYMONTH=2;BYMONTHDAY=30',
+    'FREQ=HOURLY;BYMONTH=2;BYMONTHDAY=30',
+    'FREQ=DAILY;BYMONTH=2;BYMONTHDAY=30',
+    'FREQ=SECONDLY;BYMONTH=1;BYMONTHDAY=1;BYHOUR=0;BYMINUTE=0',
+  ])(
+    'stops a rule whose parts never match from inside ical.js: %s',
+    (rule) => {
+      const started = Date.now();
+      const result = expand(
+        calendar(
+          event([
+            'DTSTART:20260101T000000Z',
+            'DTEND:20260101T000100Z',
+            `RRULE:${rule}`,
+          ])
+        ),
+        { from: '2026-11-01T00:00:00Z', to: '2026-12-01T00:00:00Z', cap: 500 }
+      );
+      expect(Date.now() - started).toBeLessThan(3_000);
+      expect(result.bounded).toBe(true);
+      expect(result.occurrences).toEqual([]);
+      expect(result.notes.join(' ')).toContain(
+        'could not be walked within its budget'
+      );
+    },
+    20_000
+  );
+
+  // ical.js steps a DAILY, WEEKLY or finer rule forward a day at a time,
+  // INTERVAL days per step, and INTERVAL has no upper bound: fifteen nines
+  // froze the process inside one step, before any check could run.
+  it.each([
+    'FREQ=DAILY;INTERVAL=999999999999999',
+    'FREQ=WEEKLY;INTERVAL=999999999999',
+    'FREQ=HOURLY;INTERVAL=999999999999999',
+  ])(
+    'considers only the first occurrence of %s',
+    (rule) => {
+      const started = Date.now();
+      const result = expand(
+        calendar(
+          event([
+            'DTSTART:20261102T090000Z',
+            'DTEND:20261102T100000Z',
+            `RRULE:${rule}`,
+          ])
+        ),
+        { from: '2026-11-01T00:00:00Z', to: '2026-12-01T00:00:00Z', cap: 500 }
+      );
+      expect(Date.now() - started).toBeLessThan(1_000);
+      expect(result.occurrences).toHaveLength(1);
+      expect(result.bounded).toBe(true);
+      expect(result.notes.join(' ')).toContain('every few hundred years');
+    },
+    20_000
+  );
+
+  it('still walks a long interval that is short enough', () => {
+    const result = expand(
+      calendar(
+        event([
+          'DTSTART:20261102T090000Z',
+          'DTEND:20261102T100000Z',
+          'RRULE:FREQ=DAILY;INTERVAL=14',
+        ])
+      ),
+      { from: '2026-11-01T00:00:00Z', to: '2026-12-01T00:00:00Z', cap: 500 }
+    );
+    expect(result.occurrences).toHaveLength(3);
+    expect(result.bounded).toBe(false);
+  });
+
+  // A YEARLY iterator searches up to the year 20000 for a year its parts
+  // match, in its constructor: two seconds per RRULE line, every line paying.
+  it.each([1, 20])(
+    'stops the year search of an impossible YEARLY rule, %i lines of it',
+    (lines) => {
+      const started = Date.now();
+      const result = expand(
+        calendar(
+          event([
+            'DTSTART:19000105T090000Z',
+            'DTEND:19000105T100000Z',
+            ...Array.from(
+              { length: lines },
+              () =>
+                'RRULE:FREQ=YEARLY;BYMONTH=2;BYMONTHDAY=30;BYDAY=SU,MO,TU,WE,TH,FR,SA'
+            ),
+          ])
+        ),
+        { from: '2026-11-01T00:00:00Z', to: '2026-12-01T00:00:00Z', cap: 500 }
+      );
+      // Generous for a slow CI runner; unguarded, four lines take seven
+      // seconds and more.
+      expect(Date.now() - started).toBeLessThan(5_000);
+      expect(result.occurrences).toEqual([]);
+    },
+    60_000
+  );
+
+  it('leaves the guard off outside a walk, and a later walk unharmed', () => {
+    const impossible = expand(
+      calendar(
+        event([
+          'DTSTART:20260101T000000Z',
+          'DTEND:20260101T000100Z',
+          'RRULE:FREQ=MINUTELY;BYMONTH=2;BYMONTHDAY=30',
+        ])
+      ),
+      { from: '2026-11-01T00:00:00Z', to: '2026-12-01T00:00:00Z', cap: 500 }
+    );
+    expect(impossible.bounded).toBe(true);
+    const weekly = expand(
+      calendar(
+        event([
+          'DTSTART:20261102T090000Z',
+          'DTEND:20261102T100000Z',
+          'RRULE:FREQ=WEEKLY;BYDAY=MO',
+        ])
+      ),
+      { from: '2026-11-01T00:00:00Z', to: '2026-12-01T00:00:00Z', cap: 500 }
+    );
+    expect(weekly.occurrences).toHaveLength(5);
+    expect(weekly.bounded).toBe(false);
+  });
+
   it('stops on the iteration bound and says so, rather than running away', () => {
     // FREQ=SECONDLY over a month is millions of instances. The window filter
     // alone would not save the process; the iteration bound is what does.

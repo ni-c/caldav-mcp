@@ -345,6 +345,22 @@ const valueType = fc.constantFrom(
   ';VALUE=INTEGER'
 );
 
+/** A UTC stamp as some client wrote it: valid, odd, or not a stamp at all. */
+const stamp = fc.tuple(
+  fc.constantFrom('', ';VALUE=TEXT', ';VALUE=DATE', ';VALUE=DATE-TIME'),
+  fc.oneof(
+    fc.constantFrom(
+      '20261101T120000Z',
+      '20261101',
+      '20261399T999999Z',
+      '99999999T999999Z',
+      'x',
+      ''
+    ),
+    propertyValue
+  )
+);
+
 const CALENDAR_ENTRY: CalendarEntry = {
   url: 'https://dav.example.net/tester/work/',
   path: '/tester/work/',
@@ -379,6 +395,9 @@ const component = fc
     partstat: propertyValue,
     role: propertyValue,
     trigger: propertyValue,
+    created: stamp,
+    lastModified: stamp,
+    completed: stamp,
   })
   .map((v) => {
     const name = { vevent: 'VEVENT', vtodo: 'VTODO', vjournal: 'VJOURNAL' }[
@@ -412,6 +431,11 @@ const component = fc
         'DESCRIPTION:Reminder',
         `TRIGGER:${icsText(v.trigger)}`,
         'END:VALARM',
+        `CREATED${v.created[0]}:${icsText(v.created[1])}`,
+        `LAST-MODIFIED${v.lastModified[0]}:${icsText(v.lastModified[1])}`,
+        ...(v.kind === 'vtodo'
+          ? [`COMPLETED${v.completed[0]}:${icsText(v.completed[1])}`]
+          : []),
         `END:${name}`,
         'END:VCALENDAR',
         '',

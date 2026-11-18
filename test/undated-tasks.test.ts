@@ -11,10 +11,11 @@ import {
 /**
  * `list_tasks` with `undated`.
  *
- * A `time-range` filter is matched against DTSTART and DUE, so a task that has
- * neither is in no window and no windowed listing can return it. These tests
- * pin the other half: that such a task can be listed, read back and completed,
- * and that asking for it does not change what a windowed listing returns.
+ * A task with neither DTSTART nor DUE has no place in a window, so a windowed
+ * listing leaves it out (the server may still return it: RFC 4791 9.9 matches
+ * it through CREATED or COMPLETED, or always). These tests pin the other half:
+ * that such a task can be listed, read back and completed, and that asking for
+ * it does not change what a windowed listing returns.
  */
 
 const WINDOW = { from: '2026-09-01', to: '2026-09-30' };
@@ -262,5 +263,41 @@ describe('list_tasks with undated', () => {
     const listing = dataOf(await call('list_tasks', { undated: true }));
     expect(summaries(listing)).toEqual(['No date good']);
     expect(JSON.stringify(listing.notes)).toContain('bad.ics');
+  });
+
+  it('lists a task whose recurrence rule has no anchor, and says the rule is ignored', async () => {
+    // RRULE without DTSTART or DUE generates nothing, so the task used to be
+    // in neither mode and nothing said so.
+    fake.seed(
+      'work',
+      'rule.ics',
+      task('rule@example.net', 'Rule without a start', ['RRULE:FREQ=DAILY'])
+    );
+    const listing = dataOf(await call('list_tasks', { undated: true }));
+    expect(summaries(listing)).toEqual(['Rule without a start']);
+    expect(JSON.stringify(listing.notes)).toContain('recurrence rule');
+    const id = (listing.tasks as { id: string }[])[0]?.id;
+    const single = dataOf(await call('get_task', { id }));
+    expect((single.task as { summary?: string }).summary).toBe(
+      'Rule without a start'
+    );
+  });
+
+  it('reports a date it cannot read instead of passing the task over', async () => {
+    fake.seed(
+      'work',
+      'garbage.ics',
+      task('g@example.net', 'Garbage due', ['DUE:garbage'])
+    );
+    fake.seed(
+      'work',
+      'empty.ics',
+      task('e@example.net', 'Empty due', ['DUE;VALUE=DATE:'])
+    );
+    const listing = dataOf(await call('list_tasks', { undated: true }));
+    expect(listing.count).toBe(0);
+    const notes = JSON.stringify(listing.notes);
+    expect(notes).toContain('garbage.ics');
+    expect(notes).toContain('empty.ics');
   });
 });

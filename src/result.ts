@@ -6,6 +6,7 @@ import type {
 import { CalDavApiError } from './api.js';
 import { quoted, sanitizeText, wrapUntrusted } from './analyze.js';
 import { parseDavError, XmlValueError } from './dav-xml.js';
+import type { Listing, Page } from './entries.js';
 import {
   AllowlistError,
   CalendarNotAllowedError,
@@ -24,6 +25,98 @@ export function textResult(text: string): CallToolResult {
 
 export function errorResult(text: string): CallToolResult {
   return { content: [{ type: 'text', text }], isError: true };
+}
+
+/**
+ * The length of the text block a payload is emitted as.
+ *
+ * Measured as emitted — indented, with the `untrusted` and `source` markers —
+ * because that is what a client reading only `content` receives. Measuring the
+ * compact form let an answer pass the ceiling by a third.
+ */
+export function emittedLength(data: Record<string, unknown>): number {
+  return JSON.stringify({ untrusted: true, source: 'caldav', ...data }, null, 2)
+    .length;
+}
+
+/**
+ * The longest prefix of `candidates` entries whose answer fits the ceiling.
+ *
+ * Everything is tried first, which is the usual case and costs one
+ * serialisation; otherwise a binary search keeps "this many fit". Sizes are
+ * only nearly monotone — a cursor's length differs from entry to entry — so the
+ * prefix found always fits but may not be the longest that would.
+ */
+export function fitPrefix<T extends Record<string, unknown>>(
+  candidates: number,
+  answerFor: (kept: number) => T,
+  maxBytes = MAX_RESULT_BYTES
+): { kept: number; answer: T } {
+  const all = answerFor(candidates);
+  if (emittedLength(all) <= maxBytes) return { kept: candidates, answer: all };
+  const floor = answerFor(0);
+  if (emittedLength(floor) > maxBytes) {
+    // Notes and markers do not shrink with the page. If they alone are past the
+    // ceiling, stepping past entries would count notes as entries; refuse.
+    throw new ResultTooLargeError(
+      `caldav-mcp: even an answer without entries exceeds ${maxBytes} ` +
+        'characters. Name fewer calendars in `calendars`.'
+    );
+  }
+  let best = { kept: 0, answer: floor };
+  let low = 1;
+  let high = candidates - 1;
+  while (low <= high) {
+    const middle = Math.floor((low + high) / 2);
+    const answer = answerFor(middle);
+    if (emittedLength(answer) <= maxBytes) {
+      best = { kept: middle, answer };
+      low = middle + 1;
+    } else {
+      high = middle - 1;
+    }
+  }
+  return best;
+}
+
+/**
+ * How many leading entries could fit at all, measured one entry at a time.
+ *
+ * Each entry is serialised on its own and the sum stops at the first one past
+ * the ceiling, so a page of entries too large to serialise together — a series
+ * whose master carries thousands of attendees, repeated on every occurrence —
+ * is never serialised as a whole. Standalone, an entry is indented less than
+ * inside the answer, so the sum is a lower bound and the count an upper one.
+ */
+export function entriesThatCouldFit(
+  entries: readonly unknown[],
+  maxBytes = MAX_RESULT_BYTES
+): number {
+  let total = 0;
+  for (const [index, entry] of entries.entries()) {
+    total += JSON.stringify(entry, null, 2).length;
+    if (total > maxBytes) return index;
+  }
+  return entries.length;
+}
+
+/**
+ * A listing's answer, fitted to the ceiling before it is counted.
+ *
+ * `answer` builds the tool's object from one page; the page that fits is the
+ * one counted, so `count`, `truncated.returned` and the cursor describe what
+ * the caller receives. `budget()` still runs behind it as a safety net.
+ */
+export function fittedListingResult(
+  listing: Listing,
+  answer: (page: Page) => Record<string, unknown>,
+  followUp?: string
+): CallToolResult {
+  const { answer: fitted } = fitPrefix(
+    entriesThatCouldFit(listing.entries),
+    (kept) => answer(listing.cut(kept))
+  );
+  return untrustedResult(fitted, followUp);
 }
 
 /**
@@ -47,7 +140,7 @@ export function budget(
   let current = data;
   let dropped = 0;
 
-  while (JSON.stringify(current).length > maxBytes) {
+  while (emittedLength(current) > maxBytes) {
     const path = largestArrayPath(current);
     if (path === undefined) break;
     const list = arrayAt(current, path);
@@ -57,7 +150,7 @@ export function budget(
     current = withArrayAt(current, path, list.slice(0, keep));
   }
 
-  if (JSON.stringify(current).length > maxBytes) {
+  if (emittedLength(current) > maxBytes) {
     // Nothing left to drop, and the remainder still does not fit. That is a
     // refusal, so it becomes an error result — not an envelope of a shape the
     // tool never declared.

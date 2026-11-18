@@ -32,12 +32,29 @@ import { randomUUID } from 'node:crypto';
 export const MAX_TEXT_CHARS = 2_000;
 
 /**
- * Zero-width and directional-override characters. They are invisible to the
- * human reading the summary but not to the model, which makes them the cheapest
- * way to hide an instruction inside otherwise innocent text.
+ * Characters a human reader cannot see but the model can: every format
+ * character (zero-width, directional overrides and the Unicode tag block, which
+ * spells out ASCII invisibly), both line separators, lone surrogate halves, and
+ * every other default-ignorable code point — the variation selectors, which
+ * carry a hidden byte each after any character, the Hangul fillers, the
+ * Mongolian free variation selectors. A hand-written list of ranges missed the
+ * tag block, so the classes are used.
+ *
+ * U+FE0E and U+FE0F stay: they pick text or emoji presentation, and without
+ * them a heart renders as a black glyph. Two values carry one bit; the
+ * variation selectors that smuggle a byte each are the other 254.
  */
 const INVISIBLE_CHARS =
-  /[\u00ad\u180e\u200b-\u200f\u202a-\u202e\u2060-\u2064\u2066-\u2069\ufeff]/g;
+  /(?![\uFE0E\uFE0F])[\p{Cf}\p{Cs}\p{Zl}\p{Zp}\p{Default_Ignorable_Code_Point}]/gu;
+
+/**
+ * U+FE0E and U+FE0F anywhere but straight after a pictographic emoji or in
+ * front of a keycap mark. A run of them after any letter, or after a digit,
+ * which `\p{Emoji}` counts as an emoji, carries one hidden bit each. Stripping
+ * applies this after the other passes, which can make two selectors adjacent.
+ */
+const STRAY_SELECTORS =
+  /(?<!\p{Extended_Pictographic})[\uFE0E\uFE0F](?!\u20E3)/gu;
 
 /**
  * C0/C1 control characters, tab and newline excepted.
@@ -150,7 +167,10 @@ export interface SecuritySignals {
  * `list_calendars` long before anybody opens an event in it.
  */
 export function stripInvisible(input: string): string {
-  return input.replace(INVISIBLE_CHARS, '').replace(CONTROL_CHARS, '');
+  return input
+    .replace(INVISIBLE_CHARS, '')
+    .replace(CONTROL_CHARS, '')
+    .replace(STRAY_SELECTORS, '');
 }
 
 /**
@@ -164,14 +184,20 @@ export function stripInvisible(input: string): string {
  * `Work` they know.
  */
 export function escapeInvisible(input: string): string {
+  // Stray selectors first, on the original neighbours: an escape written by
+  // the other passes ends in a hex digit, and a selector after it must not
+  // read as one after a keycap digit.
   return input
+    .replace(STRAY_SELECTORS, escapeCodePoint)
     .replace(INVISIBLE_CHARS, escapeCodePoint)
     .replace(CONTROL_CHARS, escapeCodePoint);
 }
 
-/** One character as the `\uXXXX` a person can read. */
+/** One character as a readable `\uXXXX`, or `\u{XXXXX}` past the BMP. */
 function escapeCodePoint(match: string): string {
-  return `\\u${(match.codePointAt(0) as number).toString(16).padStart(4, '0')}`;
+  const code = match.codePointAt(0) as number;
+  const hex = code.toString(16);
+  return code > 0xffff ? `\\u{${hex}}` : `\\u${hex.padStart(4, '0')}`;
 }
 
 /**
@@ -199,7 +225,18 @@ export function quoted(input: string, max = 200): string {
   // read. Zero-width and directional characters are not `\s`, so they still
   // meet the escaper.
   const escaped = escapeInvisible(input.replace(/\s+/g, ' '));
-  return escaped.length > max ? `${escaped.slice(0, max)}…` : escaped;
+  return escaped.length > max ? `${cutAt(escaped, max)}…` : escaped;
+}
+
+/**
+ * The first `max` UTF-16 units of `text`, one fewer when the cut would split a
+ * surrogate pair. A slice by code unit leaves half a pair behind, which is the
+ * lone surrogate the cleaning had just removed.
+ */
+export function cutAt(text: string, max: number): string {
+  if (text.length <= max) return text;
+  const last = text.charCodeAt(max - 1);
+  return text.slice(0, last >= 0xd800 && last <= 0xdbff ? max - 1 : max);
 }
 
 /**
@@ -234,6 +271,10 @@ export function defuseAutoFetch(text: string): string {
         (_match, alt: string) =>
           `[inline image removed — not fetched. alt="${alt}"]`
       )
+      // Whatever is left: an alt text past the bounds above, which CommonMark
+      // does not limit, still opens an image. The opener itself is broken,
+      // without a bound, so no length gets one through.
+      .replace(/!\[/g, '!\\[')
   );
 }
 
@@ -245,13 +286,33 @@ export function defuseAutoFetch(text: string): string {
  * valid markdown image syntax, so defusing before normalising would miss it.
  */
 export function sanitizeText(input: string, maxChars = MAX_TEXT_CHARS): string {
-  const normalized = defuseAutoFetch(stripInvisible(input.normalize('NFKC')))
+  return cleanText(input, maxChars).text;
+}
+
+/**
+ * Raw text read before it is cleaned. Cleaning is linear but not cheap, and a
+ * stored entry can carry megabytes in one field; NFKC rarely more than
+ * quadruples what is left after invisibles are removed.
+ */
+const RAW_FACTOR = 4;
+
+/** {@link sanitizeText}, and whether it had to cut. */
+export function cleanText(
+  input: string,
+  maxChars = MAX_TEXT_CHARS
+): { text: string; cut: boolean } {
+  const raw = cutAt(input, maxChars * RAW_FACTOR);
+  const normalized = defuseAutoFetch(stripInvisible(raw.normalize('NFKC')))
     .replace(/[ \t]+/g, ' ')
     .replace(/\n{3,}/g, '\n\n')
     .trim();
-  return normalized.length > maxChars
-    ? `${normalized.slice(0, maxChars)}\n… (truncated at ${maxChars} characters — get_event returns the full text)`
-    : normalized;
+  if (normalized.length <= maxChars && raw.length === input.length) {
+    return { text: normalized, cut: false };
+  }
+  return {
+    text: `${cutAt(normalized, maxChars)}\n… (truncated at ${maxChars} characters — get_event returns the full text)`,
+    cut: true,
+  };
 }
 
 /** Names of the injection shapes present in `text`. */

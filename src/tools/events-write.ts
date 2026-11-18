@@ -31,6 +31,7 @@ import {
   instantOfProperty,
   instantsOfProperty,
   parseRecurrenceId,
+  walkableRule,
 } from '../recurrence.js';
 import {
   alarmsParam,
@@ -711,7 +712,7 @@ async function describeTarget(
       resourceUrl(calendar, entity.resourceName),
       true
     );
-    const root = parseCalendar(resource.ics, 'the entry');
+    const root = parseCalendar(resource.ics, 'the stored entry');
     const components = componentsOf(root, entity.kind);
     const { master, overrides } = splitSeries(components);
     // Two shapes hold more than one occurrence, and the dialog has to name
@@ -959,6 +960,13 @@ function setRecurrence(component: ICAL.Component, rule: string): void {
         'Write the rule the way RFC 5545 spells it, with each part once.'
     );
   }
+  if (!walkableRule(recur)) {
+    throw new ToolInputError(
+      `caldav-mcp: "${quoted(rule)}" repeats only every few hundred years or ` +
+        'more. This server reads such a rule as its first occurrence alone, ' +
+        'so it does not write one; use a smaller INTERVAL.'
+    );
+  }
   const property = new ICAL.Property('rrule', component);
   property.setValue(recur);
   component.addProperty(property);
@@ -1026,7 +1034,7 @@ async function excludeOccurrence(
         'was deleted.'
     );
   }
-  const root = parseCalendar(resource.ics, `the entry ${entity.resourceName}`);
+  const root = parseCalendar(resource.ics, 'the stored entry');
   const { master, overrides } = splitSeries(componentsOf(root, entity.kind));
   if (master === undefined) {
     throw new ToolInputError(

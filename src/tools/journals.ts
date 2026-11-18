@@ -21,6 +21,7 @@ import {
 import {
   errorResult,
   fencedUntrustedResult,
+  fittedListingResult,
   ownWordsResult,
   run,
   untrustedResult,
@@ -98,18 +99,18 @@ export function registerJournalReadTools(
           limit: args.limit ?? context.config.maxEntries,
           after: args.after,
         });
-        return untrustedResult({
-          journals: listing.entries,
-          count: listing.entries.length,
+        return fittedListingResult(listing, (page) => ({
+          journals: page.entries,
+          count: page.entries.length,
           window: {
             from: window.from.toISOString(),
             to: window.to.toISOString(),
           },
-          ...(listing.notes.length > 0 ? { notes: listing.notes } : {}),
-          ...(listing.truncated === undefined
+          ...(page.notes.length > 0 ? { notes: page.notes } : {}),
+          ...(page.truncated === undefined
             ? {}
-            : { truncated: listing.truncated }),
-        });
+            : { truncated: page.truncated }),
+        }));
       })
   );
 

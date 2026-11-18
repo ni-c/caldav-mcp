@@ -21,6 +21,7 @@ import {
 import {
   errorResult,
   fencedUntrustedResult,
+  fittedListingResult,
   ownWordsResult,
   run,
   untrustedResult,
@@ -65,6 +66,29 @@ import { loadEntry, resolveWindow } from './common.js';
  * has to describe both ends up with every field optional, which tells a model
  * nothing about what it may send.
  */
+/**
+ * The note a windowed task listing adds when the server returned tasks without
+ * a start or due date. RFC 4791 9.9 matches such a task through CREATED or
+ * COMPLETED, or always, so the server does return them; no window can place
+ * them, so they are not listed. The note says only what the server returned.
+ */
+function undatedHint(
+  count: number,
+  includeCompleted: boolean | undefined
+): string | undefined {
+  if (count === 0) return undefined;
+  const tasks = `${count}${includeCompleted === true ? '' : ' open'} task${count === 1 ? '' : 's'}`;
+  const flags =
+    includeCompleted === true
+      ? '`undated: true` and `include_completed: true`'
+      : '`undated: true`';
+  return (
+    `The server also returned ${tasks} without a start or due date. No time ` +
+    `range can place them, so they are not in \`tasks\`; call list_tasks ` +
+    `with ${flags} to list them.`
+  );
+}
+
 export function registerTaskReadTools(
   server: McpServer,
   context: ToolContext
@@ -74,11 +98,10 @@ export function registerTaskReadTools(
     {
       title: 'List tasks',
       description:
-        'Tasks with a start or due date inside a time range. Tasks with no ' +
-        'date at all are not returned by a time-range query — the CalDAV ' +
-        'specification defines the filter against the dates, and a task with ' +
-        'none of them matches no window. Set `undated` to list exactly those ' +
-        'instead.',
+        'Tasks with a start or due date inside a time range. A task with ' +
+        'neither has no place in a window: the server may well return it, but ' +
+        'a windowed listing leaves it out and says how many it was given. Set ' +
+        '`undated` to list exactly those instead.',
       inputSchema: z.object({
         from: instantParam.optional(),
         to: instantParam.optional(),
@@ -93,9 +116,8 @@ export function registerTaskReadTools(
           .optional()
           .describe(
             'List only the tasks that have neither a start nor a due date, ' +
-              'which no time range can return. Takes no time range: it cannot ' +
-              'be combined with `from`, `to` or `timezone`, and it reads every ' +
-              'task in the calendars rather than a window of them.'
+              'which a windowed listing leaves out. Takes no time range: it ' +
+              'cannot be combined with `from`, `to` or `timezone`.'
           ),
         limit: limitParam,
         after: afterParam,
@@ -148,30 +170,38 @@ export function registerTaskReadTools(
                 to: window.to,
                 limit,
                 after: args.after,
+                includeCompleted: args.include_completed === true,
               });
-        const entries =
-          args.include_completed === true
-            ? listing.entries
-            : listing.entries.filter(
-                (entry) =>
-                  String(entry.status ?? '').toUpperCase() !== 'COMPLETED'
-              );
-        return untrustedResult({
-          tasks: entries,
-          count: entries.length,
-          ...(window === undefined
-            ? {}
-            : {
-                window: {
-                  from: window.from.toISOString(),
-                  to: window.to.toISOString(),
-                },
-              }),
-          ...(listing.notes.length > 0 ? { notes: listing.notes } : {}),
-          ...(listing.truncated === undefined
-            ? {}
-            : { truncated: listing.truncated }),
-        });
+        const hint =
+          window === undefined
+            ? undefined
+            : undatedHint(listing.undatedTasks ?? 0, args.include_completed);
+        return fittedListingResult(
+          listing,
+          (page) => ({
+            tasks: page.entries,
+            count: page.entries.length,
+            ...(window === undefined
+              ? {}
+              : {
+                  window: {
+                    from: window.from.toISOString(),
+                    to: window.to.toISOString(),
+                  },
+                }),
+            ...(hint === undefined && page.notes.length === 0
+              ? {}
+              : {
+                  notes: [...(hint === undefined ? [] : [hint]), ...page.notes],
+                }),
+            ...(page.truncated === undefined
+              ? {}
+              : { truncated: page.truncated }),
+          }),
+          window === undefined
+            ? 'Name fewer calendars in `calendars`, or ask for a smaller `limit`.'
+            : undefined
+        );
       })
   );
 
@@ -317,8 +347,18 @@ export function registerTaskWriteTools(
       inputSchema: z.object({
         id: entityIdParam,
         summary: summaryParam.optional(),
-        due: instantParam.optional(),
-        start: instantParam.optional(),
+        due: instantParam
+          .nullish()
+          .describe(
+            'When it is due. Pass null to remove it, leave it out to keep it.'
+          ),
+        start: instantParam
+          .nullish()
+          .describe(
+            'When work on it can begin. Pass null to remove it, leave it out ' +
+              'to keep it; refused while a recurrence rule or a duration ' +
+              'depends on it.'
+          ),
         timezone: timezoneParam,
         description: textParam('Longer text.'),
         priority: z.number().int().min(0).max(9).optional(),
@@ -344,7 +384,24 @@ export function registerTaskWriteTools(
         const loaded = await loadForWrite(context, entity, 'entire_series');
         const target = loaded.target;
 
-        if (args.start !== undefined) {
+        if (args.start === null) {
+          // RFC 5545 anchors a rule at DTSTART and a DURATION needs one, so
+          // removing the start alone would leave either meaningless. Refused
+          // before anything is written.
+          if (
+            ['rrule', 'rdate', 'duration'].some(
+              (name) => target.getFirstProperty(name) !== null
+            )
+          ) {
+            throw new ToolInputError(
+              'caldav-mcp: this task has a recurrence rule or a duration that ' +
+                'depends on its start, so the start cannot be removed on its ' +
+                'own. Nothing was written. Change the start instead, or remove ' +
+                'the rule in a calendar client.'
+            );
+          }
+          target.removeAllProperties('dtstart');
+        } else if (args.start !== undefined) {
           const start = parseInstant(
             args.start,
             'start',
@@ -357,7 +414,9 @@ export function registerTaskWriteTools(
             allDay: start.allDay,
           });
         }
-        if (args.due !== undefined) {
+        if (args.due === null) {
+          target.removeAllProperties('due');
+        } else if (args.due !== undefined) {
           const due = parseInstant(
             args.due,
             'due',

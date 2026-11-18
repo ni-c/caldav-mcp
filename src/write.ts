@@ -1,7 +1,7 @@
 import { randomUUID } from 'node:crypto';
 
 import { quoted } from './analyze.js';
-import { CalDavApiError } from './api.js';
+import { CalDavApiError, ResponseTooLargeError } from './api.js';
 import { resourceUrl } from './calendars.js';
 import type { CalendarEntry } from './calendars.js';
 import type { ToolContext } from './entries.js';
@@ -93,7 +93,7 @@ export async function loadForWrite(
   try {
     resource = await context.api.get(url, true);
   } catch (error) {
-    if (error instanceof Error && /larger than/.test(error.message)) {
+    if (error instanceof ResponseTooLargeError) {
       throw new ToolInputError(
         'caldav-mcp: this entry carries more inline attachment data than this ' +
           'server will read, and editing it here would lose the attachment. ' +
@@ -111,7 +111,7 @@ export async function loadForWrite(
     );
   }
 
-  const root = parseCalendar(resource.ics, `the entry ${id.resourceName}`);
+  const root = parseCalendar(resource.ics, 'the stored entry');
   const components = componentsOf(root, id.kind);
   const { master, overrides } = splitSeries(components);
 

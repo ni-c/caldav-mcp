@@ -44,6 +44,88 @@ const MAX_ELAPSED_MS = 5_000;
  */
 const MAX_OVERRIDES = 2_000;
 
+/**
+ * Rule checks one series may cost in ical.js, across every step of its walk.
+ *
+ * `RecurIterator.next()` loops on `check_contracting_rules()` until a candidate
+ * passes, and only MONTHLY and YEARLY count their misses. A finer frequency
+ * with BY-parts that never match — `FREQ=MINUTELY;BYMONTH=2;BYMONTHDAY=30` —
+ * loops inside one `next()` for ever, out of reach of every check between
+ * steps: one invitation froze this single-threaded process. The check itself
+ * is wrapped, so the walk is stopped from inside.
+ */
+const MAX_RULE_CHECKS = 100_000;
+
+class RuleTooExpensive extends Error {}
+
+let ruleGuard: { left: number; deadline: number } | undefined;
+
+/**
+ * Spends `weight` of the guard and checks the clock on every call: a single
+ * call can cost milliseconds, and checking only every so often multiplied that
+ * by the stride.
+ */
+function spendGuard(weight: number): void {
+  if (ruleGuard === undefined) return;
+  ruleGuard.left -= weight;
+  if (ruleGuard.left < 0 || Date.now() > ruleGuard.deadline) {
+    throw new RuleTooExpensive();
+  }
+}
+
+const checkContractingRules =
+  ICAL.RecurIterator.prototype.check_contracting_rules;
+ICAL.RecurIterator.prototype.check_contracting_rules = function (
+  this: ICAL.RecurIterator
+): boolean {
+  spendGuard(1);
+  return checkContractingRules.call(this);
+};
+
+// The other unbounded loop: a YEARLY iterator searches up to the year 20000
+// for a year its parts match, in its constructor, one whole year of days per
+// call. An impossible rule cost two seconds per RRULE line, and the error at
+// the end is swallowed by ical.js, so every further line paid again.
+const expandYearDays = ICAL.RecurIterator.prototype.expand_year_days;
+ICAL.RecurIterator.prototype.expand_year_days = function (
+  this: ICAL.RecurIterator,
+  ...args: Parameters<typeof expandYearDays>
+): ReturnType<typeof expandYearDays> {
+  spendGuard(64);
+  return expandYearDays.apply(this, args);
+};
+
+/**
+ * The longest step this server walks: four hundred years. ical.js moves a
+ * DAILY, WEEKLY or finer rule forward one day at a time per step, `INTERVAL`
+ * days at once, and `INTERVAL` has no upper bound — fifteen nines froze the
+ * process inside one step, before any check could run.
+ */
+const MAX_STEP_DAYS = 146_097;
+
+const DAYS_PER_UNIT: Record<string, number> = {
+  SECONDLY: 1 / 86_400,
+  MINUTELY: 1 / 1440,
+  HOURLY: 1 / 24,
+  DAILY: 1,
+  WEEKLY: 7,
+};
+
+/** Whether one step of the rule is short enough to walk. */
+export function walkableRule(recur: ICAL.Recur): boolean {
+  const days = DAYS_PER_UNIT[String(recur.freq)];
+  if (days === undefined) return true;
+  return (recur.interval ?? 1) * days <= MAX_STEP_DAYS;
+}
+
+const UNWALKABLE_NOTE =
+  'A recurrence rule in this window repeats only every few hundred years or ' +
+  'more, so only its first occurrence is considered.';
+
+const TOO_EXPENSIVE_NOTE =
+  'A recurrence rule in this window could not be walked within its budget — ' +
+  'its parts rarely or never match — so the series is incomplete.';
+
 const TOO_LONG_NOTE =
   'Expanding the recurring entries took too long, so the result is ' +
   'incomplete. Ask for a shorter range or fewer calendars.';
@@ -229,23 +311,28 @@ function keyOf(time: RawTime): number {
 }
 
 /**
- * The one occurrence of an entry that has no date at all: no DTSTART, no DUE
- * and no rule or date list to generate one from.
+ * The one occurrence of an entry that has no date at all: no DTSTART and no DUE
+ * this server can read.
  *
- * `expandSeries` answers a window, and such an entry is in no window, so it is
- * left out there on purpose. Reading one back by id, and listing the ones a
- * `time-range` query can never return, both come through here instead. An
- * entry that carries any date is not undated, whatever else it lacks.
+ * `expandSeries` answers a window and drops such an entry, so reading one back
+ * by id, and listing the ones a windowed listing leaves out, both come through
+ * here. "No date" means no *readable* date: a DTSTART or DUE that is present but
+ * unreadable throws, so the caller reports a broken entry instead of passing it
+ * over in silence. An RRULE or RDATE without either date has nothing to anchor
+ * it, so it does not make the entry dated; the caller says the rule is ignored.
  */
 export function undatedOccurrence(
-  components: readonly ICAL.Component[]
+  components: readonly ICAL.Component[],
+  fallbackZone: string
 ): UndatedOccurrence | undefined {
   const { master } = splitSeries([...components]);
   if (master === undefined) return undefined;
-  const dated = ['dtstart', 'due', 'rrule', 'rdate'].some(
-    (name) => master.getFirstProperty(name) !== null
-  );
-  if (dated) return undefined;
+  if (
+    readTime(master, 'dtstart', fallbackZone) !== undefined ||
+    readTime(master, 'due', fallbackZone) !== undefined
+  ) {
+    return undefined;
+  }
   return {
     recurrenceId: undefined,
     start: undefined,
@@ -253,6 +340,14 @@ export function undatedOccurrence(
     component: master,
     isOverride: false,
   };
+}
+
+/** True when an undated entry carries a rule or date list nothing anchors. */
+export function hasUnanchoredRule(component: ICAL.Component): boolean {
+  return (
+    component.getFirstProperty('rrule') !== null ||
+    component.getFirstProperty('rdate') !== null
+  );
 }
 
 /** Expands one calendar resource into the occurrences inside a window. */
@@ -341,6 +436,23 @@ export function expandSeries(
   const rdates = master.getAllProperties('rdate');
   const recurring = rules.length > 0 || rdates.length > 0;
 
+  if (
+    rules.some((rule) => {
+      const value = rule.getFirstValue();
+      return value instanceof ICAL.Recur && !walkableRule(value);
+    })
+  ) {
+    const single = toOccurrence(master, options.fallbackZone, false);
+    return {
+      occurrences:
+        single !== undefined && overlaps(single, options) ? [single] : [],
+      recurring: true,
+      bounded: true,
+      truncated: false,
+      notes: [...notes, UNWALKABLE_NOTE],
+    };
+  }
+
   if (!recurring) {
     const single = toOccurrence(master, options.fallbackZone, false);
     const kept =
@@ -365,53 +477,62 @@ export function expandSeries(
   const occurrences: Occurrence[] = [];
   let truncated = false;
 
-  const expansion = new ICAL.RecurExpansion({
-    component: master,
-    dtstart: master.getFirstPropertyValue('dtstart') as ICAL.Time,
-  });
   const stopAfter = options.to.getTime() + WINDOW_SLACK_MS;
+  ruleGuard = { left: MAX_RULE_CHECKS, deadline };
+  try {
+    const expansion = new ICAL.RecurExpansion({
+      component: master,
+      dtstart: master.getFirstPropertyValue('dtstart') as ICAL.Time,
+    });
 
-  for (let steps = 0; ; steps += 1) {
-    if (steps >= MAX_ITERATIONS) {
-      bounded = true;
-      notes.push(
-        `This series generates more than ${MAX_ITERATIONS} occurrences in the ` +
-          'window asked for, so the walk was stopped. Ask for a shorter range.'
-      );
-      break;
+    for (let steps = 0; ; steps += 1) {
+      if (steps >= MAX_ITERATIONS) {
+        bounded = true;
+        notes.push(
+          `This series generates more than ${MAX_ITERATIONS} occurrences in the ` +
+            'window asked for, so the walk was stopped. Ask for a shorter range.'
+        );
+        break;
+      }
+      if (steps % 256 === 0 && Date.now() > deadline) {
+        bounded = true;
+        notes.push(TOO_LONG_NOTE);
+        break;
+      }
+
+      const next = expansion.next();
+      if (next === null || next === undefined) break;
+      const at = instantOfTime(next, masterStart.zone, options.fallbackZone);
+      if (at.instant.getTime() > stopAfter) break;
+
+      const key = keyOf(at);
+      if (exdates.has(key)) continue;
+
+      const override = overrideByKey.get(key);
+      const occurrence =
+        override === undefined
+          ? occurrenceFromMaster(master, at, masterStart, options.fallbackZone)
+          : toOccurrence(override, options.fallbackZone, true);
+      if (occurrence === undefined) continue;
+      emitted.add(key);
+
+      // The window is tested against the instance's own times, not against the
+      // point the rule generated: an override that moved this instance out of the
+      // window must not appear, even though its RECURRENCE-ID is inside it.
+      if (!overlaps(occurrence, options)) continue;
+
+      occurrences.push(occurrence);
+      if (occurrences.length >= options.cap) {
+        truncated = true;
+        break;
+      }
     }
-    if (steps % 256 === 0 && Date.now() > deadline) {
-      bounded = true;
-      notes.push(TOO_LONG_NOTE);
-      break;
-    }
-
-    const next = expansion.next();
-    if (next === null || next === undefined) break;
-    const at = instantOfTime(next, masterStart.zone, options.fallbackZone);
-    if (at.instant.getTime() > stopAfter) break;
-
-    const key = keyOf(at);
-    if (exdates.has(key)) continue;
-
-    const override = overrideByKey.get(key);
-    const occurrence =
-      override === undefined
-        ? occurrenceFromMaster(master, at, masterStart, options.fallbackZone)
-        : toOccurrence(override, options.fallbackZone, true);
-    if (occurrence === undefined) continue;
-    emitted.add(key);
-
-    // The window is tested against the instance's own times, not against the
-    // point the rule generated: an override that moved this instance out of the
-    // window must not appear, even though its RECURRENCE-ID is inside it.
-    if (!overlaps(occurrence, options)) continue;
-
-    occurrences.push(occurrence);
-    if (occurrences.length >= options.cap) {
-      truncated = true;
-      break;
-    }
+  } catch (error) {
+    if (!(error instanceof RuleTooExpensive)) throw error;
+    bounded = true;
+    notes.push(TOO_EXPENSIVE_NOTE);
+  } finally {
+    ruleGuard = undefined;
   }
 
   // Pass B — the overrides the rule walk could not reach. An instance moved a

@@ -568,6 +568,34 @@ export function calendarQueryBody(
 `;
 }
 
+/**
+ * A `calendar-query` for the tasks that have neither a start nor a due date.
+ *
+ * Asked of the server rather than worked out here, so a calendar with years of
+ * dated tasks does not have to be read whole to find the few undated ones.
+ * RFC 4791 combines sibling `prop-filter` elements with AND, which is the
+ * meaning wanted: no DTSTART and no DUE. A server that refuses the filter gets
+ * the unfiltered query instead, and the caller checks every task either way.
+ */
+export function undatedTaskQueryBody(): string {
+  return `${DECL}
+<C:calendar-query ${NS}>
+  <D:prop>
+    <D:getetag/>
+    <C:calendar-data/>
+  </D:prop>
+  <C:filter>
+    <C:comp-filter name="VCALENDAR">
+      <C:comp-filter name="VTODO">
+        <C:prop-filter name="DTSTART"><C:is-not-defined/></C:prop-filter>
+        <C:prop-filter name="DUE"><C:is-not-defined/></C:prop-filter>
+      </C:comp-filter>
+    </C:comp-filter>
+  </C:filter>
+</C:calendar-query>
+`;
+}
+
 /** The iCalendar properties `search_events` will match a term against. */
 export type SearchField = 'SUMMARY' | 'DESCRIPTION' | 'LOCATION' | 'CATEGORIES';
 
