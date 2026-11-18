@@ -95,10 +95,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   100 parameters. Behind that, ical.js's own steps, durations, normalisations
   and timezone expansions are bounded for the whole process.
 - Behind both, evaluating a stored entry runs under a hard time limit that V8
-  enforces, whichever loop it is in: a second per entry in a listing, after
-  which the entry is skipped with a note, and three seconds for a tool that
-  reads or writes one entry. A listing stops evaluating after three such
-  entries and says how many it left out. A fifth Sunday every 48 months from a
+  enforces, whichever loop it is in: three seconds per entry, after which the
+  entry is skipped with a note. A listing stops evaluating after three such
+  entries or twenty seconds of evaluation in all, and says how many it left
+  out. A fifth Sunday every 48 months from a
   February that is never a leap year, and ten thousand RDATE periods just under
   the duration cap, were each found by review after the guards above.
 - A note about an entry the parser refused quoted part of the refused line.

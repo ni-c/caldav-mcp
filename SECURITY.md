@@ -202,10 +202,10 @@ The third line does not depend on finding them: evaluating stored entries runs u
 hard time limit that V8 enforces. The work is the callback of a script started with a
 `timeout`; when the time is up, V8 terminates whatever is executing, whichever loop it
 is in. A listing puts a batch of entries under one limit, gives the entry it stopped in
-a second of its own, and skips that entry with a note if it runs over again; after
-three such entries in a call, or ten seconds of evaluation in all, it stops
-evaluating and says how many it left out. A tool
-that reads or writes one entry gives it three seconds.
+three seconds of its own, and skips that entry with a note if it runs over again;
+after three such entries in a call, or twenty seconds of evaluation in all, it stops
+evaluating and says how many it left out. A tool that reads or writes one entry gives
+it three seconds too.
 
 Recurrence is expanded in this process, never by asking the server to do it, and
 carries three independent bounds: 5000 occurrences per call (the earliest are kept, and
