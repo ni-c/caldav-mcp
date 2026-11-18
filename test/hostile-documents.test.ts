@@ -3,6 +3,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import { ToolInputError } from '../src/errors.js';
 import { componentsOf, parseCalendar, readTime } from '../src/ical.js';
+import { guarded } from '../src/ical-guard.js';
 import { expandSeries } from '../src/recurrence.js';
 import { connect, dataOf, FakeCalDav, type Connected } from './harness.js';
 
@@ -100,7 +101,17 @@ describe('the limits a document is held to', () => {
     ['a secondly rule', 'FREQ=SECONDLY'],
     ['a day no February has', 'FREQ=YEARLY;BYMONTH=2;BYMONTHDAY=30;BYDAY=SU'],
     ['two months', 'FREQ=YEARLY;BYMONTH=3,10;BYDAY=-1SU'],
-    ['an hour part', 'FREQ=YEARLY;BYMONTH=3;BYDAY=-1SU;BYHOUR=2'],
+    ['two hours', 'FREQ=YEARLY;BYMONTH=3;BYDAY=-1SU;BYHOUR=2,3'],
+    ['a 53rd Sunday', 'FREQ=YEARLY;BYMONTH=2;BYDAY=53SU'],
+    [
+      'a counted weekday in a week of days',
+      'FREQ=YEARLY;BYMONTH=3;BYMONTHDAY=8,9,10,11,12,13,14;BYDAY=2SU',
+    ],
+    [
+      'days that are not a week',
+      'FREQ=YEARLY;BYMONTH=3;BYMONTHDAY=1,3,5,7,9,11,13;BYDAY=SU',
+    ],
+    ['a list of fixed days', 'FREQ=YEARLY;BYMONTH=3;BYMONTHDAY=1,2'],
   ])('refuses a timezone with %s', (_label, rule) => {
     expect(
       refused(document(['DTSTART;TZID=X:20261102T090000'], zone(rule)))
@@ -115,6 +126,12 @@ describe('the limits a document is held to', () => {
     ],
     ['an end', 'FREQ=YEARLY;BYMONTH=4;BYDAY=1SU;UNTIL=20060402T070000Z'],
     ['a fixed day', 'FREQ=YEARLY;BYMONTH=9;BYMONTHDAY=21'],
+    [
+      'the Lotus Notes shape',
+      'FREQ=YEARLY;BYMINUTE=0;BYHOUR=2;BYDAY=-1SU;BYMONTH=3',
+    ],
+    ['a bare yearly rule', 'FREQ=YEARLY'],
+    ['a counted weekday from the end', 'FREQ=YEARLY;BYMONTH=10;BYDAY=-5SU'],
     ['no rule at all', ''],
   ])('accepts a timezone with %s', (_label, rule) => {
     expect(() =>
@@ -190,6 +207,93 @@ describe('the limits a document is held to', () => {
     expect((result as Error).message).toContain(
       'more parameters than a calendar writes'
     );
+  });
+
+  it('is not passed by a stray quote mark before the parameters', () => {
+    // The gate used to flip a quoted state on every quote; ical.js opens a
+    // quoted value only right after '='. One stray quote put the gate inside
+    // quotes while ical.js went on reading parameters.
+    const { result, ms } = timed(() =>
+      parseCalendar(
+        document([
+          'DTSTART:20261102T090000Z',
+          `X-A;P=a";Q=":"${';a=b'.repeat(200_000)}:v`,
+        ]),
+        'x'
+      )
+    );
+    expect(ms).toBeLessThan(1_000);
+    expect((result as Error).message).toContain(
+      'more parameters than a calendar writes'
+    );
+  });
+
+  it('counts a quoted list as one parameter, as ical.js does', () => {
+    const members = Array.from(
+      { length: 150 },
+      (_, i) => `"mailto:m${i}@example.net"`
+    ).join(',');
+    expect(() =>
+      parseCalendar(
+        document([
+          'DTSTART:20261102T090000Z',
+          `ATTENDEE;MEMBER=${members};CN=x:mailto:a@example.net`,
+        ]),
+        'x'
+      )
+    ).not.toThrow();
+  });
+
+  it('refuses an interval no calendar writes, in any rule', () => {
+    expect(
+      refused(
+        document([
+          'DTSTART:20261102T090000Z',
+          `RRULE:FREQ=MONTHLY;INTERVAL=${'9'.repeat(309)}`,
+        ])
+      )
+    ).toContain('an interval no calendar writes');
+  });
+
+  it('refuses a timezone with more than 5000 transitions', () => {
+    const transitions = Array.from(
+      { length: 5001 },
+      (_, i) =>
+        `RDATE:${1700 + Math.floor(i / 12)}${String((i % 12) + 1).padStart(2, '0')}01T000000`
+    );
+    expect(
+      refused(
+        document(
+          ['DTSTART;TZID=X:20261102T090000'],
+          [
+            'BEGIN:VTIMEZONE',
+            'TZID:X',
+            'BEGIN:STANDARD',
+            'DTSTART:16010101T000000',
+            'TZOFFSETFROM:+0100',
+            'TZOFFSETTO:+0100',
+            ...transitions,
+            'END:STANDARD',
+            'END:VTIMEZONE',
+          ]
+        )
+      )
+    ).toContain('more transitions than a calendar writes');
+  });
+
+  it('refuses a document of more than 20,000 components, without overflowing', () => {
+    const blocks = Array.from(
+      { length: 150_000 },
+      () => 'BEGIN:X-Y\r\nEND:X-Y'
+    ).join('\r\n');
+    expect(
+      refused(
+        document(['DTSTART:20261102T090000Z']).replace(
+          'BEGIN:VEVENT',
+          `${blocks}\r\nBEGIN:VEVENT`
+        )
+      )
+    ).toContain('more components than a calendar writes');
   });
 
   it('accepts a long value, which is not a parameter section', () => {
@@ -280,6 +384,66 @@ describe('the guards behind the limits', () => {
       'x'
     );
     const [event] = componentsOf(root, 'vevent');
+    expect(readTime(event!, 'dtstart', 'UTC')?.instant.toISOString()).toBe(
+      '2026-09-07T07:00:00.000Z'
+    );
+  });
+
+  it('stops a monthly rule with an interval of 309 digits', () => {
+    const { result, ms } = timed(() =>
+      expandSeries(
+        componentsOf(
+          unchecked(
+            document([
+              'DTSTART:20261102T090000Z',
+              `RRULE:FREQ=MONTHLY;INTERVAL=${'9'.repeat(309)}`,
+            ])
+          ),
+          'vevent'
+        ),
+        { ...WINDOW, cap: 100, fallbackZone: 'UTC' }
+      )
+    );
+    expect(ms).toBeLessThan(1_000);
+    expect(result).not.toBeInstanceOf(Error);
+  }, 20_000);
+
+  it('refuses to normalise a time whose month is not a number', () => {
+    const time = ICAL.Time.fromData({ year: 2026, month: 11, day: 2 });
+    time.month = Number.POSITIVE_INFINITY;
+    expect(() => time.adjust(0, 0, 0, 0)).toThrow(/could not be evaluated/);
+  });
+
+  it('does not condemn a zone when only the call ran out of time', () => {
+    const root = parseCalendar(
+      document(
+        ['DTSTART;TZID=Customized Time Zone:20260907T090000'],
+        [
+          'BEGIN:VTIMEZONE',
+          'TZID:Customized Time Zone',
+          'BEGIN:STANDARD',
+          'DTSTART:16010101T030000',
+          'TZOFFSETFROM:+0200',
+          'TZOFFSETTO:+0100',
+          'RRULE:FREQ=YEARLY;BYDAY=-1SU;BYMONTH=10',
+          'END:STANDARD',
+          'BEGIN:DAYLIGHT',
+          'DTSTART:16010101T020000',
+          'TZOFFSETFROM:+0100',
+          'TZOFFSETTO:+0200',
+          'RRULE:FREQ=YEARLY;BYDAY=-1SU;BYMONTH=3',
+          'END:DAYLIGHT',
+          'END:VTIMEZONE',
+        ]
+      ),
+      'x'
+    );
+    const [event] = componentsOf(root, 'vevent');
+    const spent = timed(() =>
+      guarded(0, () => readTime(event!, 'dtstart', 'UTC'))
+    );
+    expect(spent.ms).toBeLessThan(100);
+    expect(spent.result).toBeInstanceOf(ToolInputError);
     expect(readTime(event!, 'dtstart', 'UTC')?.instant.toISOString()).toBe(
       '2026-09-07T07:00:00.000Z'
     );

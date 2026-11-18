@@ -16,6 +16,7 @@ import {
 } from './dav-xml.js';
 import type { Discovery } from './discovery.js';
 import { ToolInputError } from './errors.js';
+import { guarded } from './ical-guard.js';
 import {
   COMPONENT_OF,
   componentsOf,
@@ -925,27 +926,32 @@ function expandOne(
 ) {
   const started = Date.now();
   try {
-    const root = parseCalendar(document.ics, 'the stored entry');
-    const components = componentsOf(root, options.kind);
-    const expansion = expandSeries(components, {
-      from: options.from,
-      to: options.to,
-      // The call's ceiling, not the page size: a series capped at `limit`
-      // lost every later occurrence on every page, because the next page
-      // expands the series again from the start of the window.
-      cap: MAX_COLLECTED,
-      fallbackZone,
-      deadline: budget.deadline(),
+    // Everything here under the call's deadline, not only the walk: a
+    // timezone in the entry is expanded by ical.js whenever a time in it is
+    // read, and once the budget is spent that must cost nothing more.
+    return guarded(budget.deadline(), () => {
+      const root = parseCalendar(document.ics, 'the stored entry');
+      const components = componentsOf(root, options.kind);
+      const expansion = expandSeries(components, {
+        from: options.from,
+        to: options.to,
+        // The call's ceiling, not the page size: a series capped at `limit`
+        // lost every later occurrence on every page, because the next page
+        // expands the series again from the start of the window.
+        cap: MAX_COLLECTED,
+        fallbackZone,
+        deadline: budget.deadline(),
+      });
+      return {
+        ...expansion,
+        uid: cleanedUid(components),
+        overrides: components.length > 1,
+        undated:
+          options.kind === 'vtodo' && expansion.occurrences.length === 0
+            ? undatedOccurrence(components, fallbackZone)
+            : undefined,
+      };
     });
-    return {
-      ...expansion,
-      uid: cleanedUid(components),
-      overrides: components.length > 1,
-      undated:
-        options.kind === 'vtodo' && expansion.occurrences.length === 0
-          ? undatedOccurrence(components, fallbackZone)
-          : undefined,
-    };
   } catch (error) {
     notes.push(skippedNote(document, error));
     return undefined;

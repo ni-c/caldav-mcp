@@ -51,13 +51,19 @@ const DAYS_PER_UNIT: Record<string, number> = {
   HOURLY: 1 / 24,
   DAILY: 1,
   WEEKLY: 7,
+  MONTHLY: 31,
+  YEARLY: 366,
 };
 
 /** Whether one step of the rule is short enough to walk. */
 export function walkableRule(recur: ICAL.Recur): boolean {
+  const interval = recur.interval ?? 1;
+  // ical.js reads 309 digits as Infinity, and a month count of Infinity
+  // turns into NaN in a normalisation that then never ends.
+  if (!Number.isSafeInteger(interval)) return false;
   const days = DAYS_PER_UNIT[String(recur.freq)];
   if (days === undefined) return true;
-  return (recur.interval ?? 1) * days <= MAX_STEP_DAYS;
+  return interval * days <= MAX_STEP_DAYS;
 }
 
 const UNWALKABLE_NOTE =

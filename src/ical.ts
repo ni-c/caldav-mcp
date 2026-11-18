@@ -87,8 +87,7 @@ function notEvaluable(what: string, problem: string): ToolInputError {
  * like an unreadable one: a listing names it and lists the rest.
  */
 const LIMITS = {
-  /** Characters before the value, and parameters, on one content line. */
-  parameterChars: 8192,
+  /** Parameters on one content line, as ical.js reads them. */
   parameters: 100,
   /** RRULE lines in one component; RFC 5545 says it SHOULD be one. */
   rules: 4,
@@ -98,36 +97,106 @@ const LIMITS = {
   dates: 10_000,
   /** Observances in one VTIMEZONE. */
   observances: 2000,
+  /** RDATE values across one VTIMEZONE; a real zone has a few hundred. */
+  zoneDates: 5000,
+  /** Components in one document. */
+  components: 20_000,
 };
 
 /**
- * A content line's parameter section, scanned once over the unfolded text:
- * ical.js looks for the value delimiter again for every parameter, which is
- * quadratic in a line of a hundred thousand of them.
+ * The parameters ical.js will read on each content line, counted the way its
+ * parser reads them: it looks for the value delimiter again for every
+ * parameter, which is quadratic in a line of a hundred thousand of them. The
+ * count follows the parser step by step — a gate that read quotes its own way
+ * was passed by one stray quote mark — but each search resumes where the last
+ * one ended, so it stays linear.
  */
 function parameterProblem(ics: string): string | undefined {
   for (const line of ics.replace(/\r?\n[ \t]/g, '').split(/\r?\n/)) {
-    let quoted = false;
-    let semicolons = 0;
-    for (let index = 0; index < line.length; index += 1) {
-      const char = line[index];
-      if (char === '"') quoted = !quoted;
-      else if (!quoted && char === ':') break;
-      else if (!quoted && char === ';') semicolons += 1;
-      if (index > LIMITS.parameterChars || semicolons > LIMITS.parameters) {
-        return 'has a content line with more parameters than a calendar writes';
-      }
+    if (parameterCount(line) > LIMITS.parameters) {
+      return 'has a content line with more parameters than a calendar writes';
     }
   }
   return undefined;
 }
 
+/** Parameters ical.js would read whose value is a quoted, comma-joined list. */
+const QUOTED_LISTS = new Set(['delegated-from', 'delegated-to', 'member']);
+
+/** `indexOf` for searches that only ever move forward, linear in total. */
+function forwardFinder(text: string): (char: string, from: number) => number {
+  const last = new Map<string, { from: number; at: number }>();
+  return (char, from) => {
+    const cached = last.get(char);
+    if (
+      cached !== undefined &&
+      cached.from <= from &&
+      (cached.at === -1 || from <= cached.at)
+    ) {
+      return cached.at;
+    }
+    const at = text.indexOf(char, from);
+    last.set(char, { from, at });
+    return at;
+  };
+}
+
+/** ical.js's `_parseParameters`, counting, stopped one past the limit. */
+function parameterCount(line: string): number {
+  const first = line.indexOf(';');
+  const colon = line.indexOf(':');
+  if (first === -1 || (colon !== -1 && first > colon)) return 0;
+  const text = line.slice(first);
+  const find = forwardFinder(text);
+  let count = 0;
+  let lastParam = 0;
+  let pos = 0;
+  for (;;) {
+    pos = find('=', pos + 1);
+    if (pos === -1) return count;
+    count += 1;
+    if (count > LIMITS.parameters) return count;
+    const name = text.slice(lastParam + 1, pos).toLowerCase();
+    if (text[pos + 1] === '"') {
+      pos = find('"', pos + 2);
+      while (
+        pos !== -1 &&
+        QUOTED_LISTS.has(name) &&
+        text[pos + 1] === ',' &&
+        text[pos + 2] === '"'
+      ) {
+        pos = find('"', pos + 3);
+      }
+      if (pos === -1) return count;
+      lastParam = find(';', pos);
+      const value = find(':', pos);
+      if (lastParam === -1 || (value !== -1 && lastParam > value)) {
+        return count;
+      }
+    } else {
+      const next = find(';', pos + 1);
+      const value = find(':', pos + 1);
+      if ((value !== -1 && next > value) || next === -1) return count;
+      lastParam = next;
+      pos = next;
+    }
+  }
+}
+
 /** The first limit the parsed document is past, as a phrase, or undefined. */
 function evaluableProblem(root: ICAL.Component): string | undefined {
   const pending = [root];
+  let seen = 0;
   while (pending.length > 0) {
     const component = pending.pop() as ICAL.Component;
-    pending.push(...component.getAllSubcomponents());
+    // One at a time: a spread of a hundred thousand children overflows.
+    for (const child of component.getAllSubcomponents()) {
+      seen += 1;
+      if (seen > LIMITS.components) {
+        return 'holds more components than a calendar writes';
+      }
+      pending.push(child);
+    }
     const rules = component.getAllProperties('rrule');
     if (rules.length > LIMITS.rules) {
       return `carries ${rules.length} recurrence rules in one entry`;
@@ -142,6 +211,9 @@ function evaluableProblem(root: ICAL.Component): string | undefined {
     for (const rule of rules) {
       const recur = rule.getFirstValue();
       if (!(recur instanceof ICAL.Recur)) continue;
+      if (!Number.isSafeInteger(recur.interval ?? 1)) {
+        return 'has a recurrence rule with an interval no calendar writes';
+      }
       if ((recur.parts.BYDAY?.length ?? 0) > LIMITS.byDay) {
         return 'has a recurrence rule with more weekdays than a calendar writes';
       }
@@ -150,6 +222,20 @@ function evaluableProblem(root: ICAL.Component): string | undefined {
       const observances = component.getAllSubcomponents();
       if (observances.length > LIMITS.observances) {
         return 'defines a timezone with more observances than a calendar writes';
+      }
+      const zoneDates = observances.reduce(
+        (sum, observance) =>
+          sum +
+          observance
+            .getAllProperties('rdate')
+            .reduce(
+              (count, property) => count + property.getValues().length,
+              0
+            ),
+        0
+      );
+      if (zoneDates > LIMITS.zoneDates) {
+        return 'defines a timezone with more transitions than a calendar writes';
       }
       for (const observance of observances) {
         for (const rule of observance.getAllProperties('rrule')) {
@@ -164,34 +250,61 @@ function evaluableProblem(root: ICAL.Component): string | undefined {
   return undefined;
 }
 
-const ZONE_RULE_PARTS = new Set(['BYMONTH', 'BYDAY', 'BYMONTHDAY', 'WKST']);
+const ZONE_RULE_PARTS = new Set([
+  'BYMONTH',
+  'BYDAY',
+  'BYMONTHDAY',
+  'BYHOUR',
+  'BYMINUTE',
+  'BYSECOND',
+]);
 const MONTH_DAYS = [31, 29, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31];
 
 /**
- * The shape every real timezone rule has: once a year, in one month, on one
- * weekday of it or on one week of days. ical.js expands a zone's rules itself
- * whenever a time in it is compared, so anything else — a minutely rule, an
- * interval of fifteen digits, a 30 February — is refused before it runs.
+ * The shape every real timezone rule has, and one that matches every year:
+ * once a year in one month, on a weekday counted from either end of it (at
+ * most the fifth), on a run of seven days and a plain weekday, or on a fixed
+ * day; a bare yearly rule repeats its start. ical.js expands a zone's rules
+ * itself whenever a time in it is compared, so anything else — a minutely
+ * rule, a fifteen-digit interval, a 30 February, a 53rd Sunday — is refused
+ * before it runs. Lotus Notes adds the hour and minute, once each.
  */
 function isZoneRule(recur: ICAL.Recur): boolean {
   if (recur.freq !== 'YEARLY' || (recur.interval ?? 1) !== 1) return false;
   const parts = recur.parts as Record<string, unknown[] | undefined>;
-  if (Object.keys(parts).some((part) => !ZONE_RULE_PARTS.has(part))) {
+  const names = Object.keys(parts);
+  if (names.some((part) => !ZONE_RULE_PARTS.has(part))) return false;
+  if (
+    ['BYHOUR', 'BYMINUTE', 'BYSECOND'].some(
+      (part) => (parts[part]?.length ?? 1) !== 1
+    )
+  ) {
     return false;
   }
   const months = (parts.BYMONTH ?? []) as number[];
   const days = (parts.BYDAY ?? []) as string[];
   const monthDays = (parts.BYMONTHDAY ?? []) as number[];
-  if (months.length !== 1 || days.length > 1 || monthDays.length > 7) {
-    return false;
+  if (months.length === 0) {
+    return days.length === 0 && monthDays.length === 0;
   }
+  if (months.length !== 1 || days.length > 1) return false;
   const length = MONTH_DAYS[(months[0] ?? 0) - 1];
   if (length === undefined) return false;
-  if (monthDays.some((day) => day === 0 || Math.abs(day) > length)) {
+  const [day] = days;
+  const ordinal = day === undefined ? 0 : Number(day.slice(0, -2) || '0');
+  if (Math.abs(ordinal) > 5) return false;
+  if (monthDays.length === 0) return true;
+  if (monthDays.some((value) => value === 0 || Math.abs(value) > length)) {
     return false;
   }
-  // A weekday within listed days has to be able to fall on one of them.
-  return monthDays.length === 0 || days.length === 0 || monthDays.length === 7;
+  if (day === undefined) return monthDays.length === 1;
+  // A plain weekday within a run of seven consecutive days falls in it once.
+  const sorted = [...monthDays].toSorted((left, right) => left - right);
+  return (
+    ordinal === 0 &&
+    sorted.length === 7 &&
+    sorted.every((value, index) => value === (sorted[0] ?? 0) + index)
+  );
 }
 
 /** Serialises a document back to the wire form. */

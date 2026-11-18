@@ -48,7 +48,21 @@ const MAX_RULE_CHECKS = 100_000;
 const MAX_ZONE_CHECKS = 200_000;
 const ZONE_BUDGET_MS = 250;
 
-export class RuleTooExpensive extends Error {}
+/**
+ * A guard tripped. A `ToolInputError`, so wherever it surfaces it reads as a
+ * stored entry this server cannot evaluate, never as a crash; a series walk
+ * catches it first and reports itself incomplete.
+ */
+export class RuleTooExpensive extends ToolInputError {
+  constructor(
+    message = 'caldav-mcp: the stored entry could not be evaluated within ' +
+      "this server's budget. This is the stored entry, not the arguments of " +
+      'this call.'
+  ) {
+    super(message);
+    this.name = 'RuleTooExpensive';
+  }
+}
 
 let ruleGuard: { left: number; deadline: number } | undefined;
 
@@ -154,6 +168,8 @@ patch(
 const TIME_FIELDS = '_time';
 
 interface TimeFields {
+  year: number;
+  month: number;
   day: number;
   hour: number;
   minute: number;
@@ -178,7 +194,11 @@ patch(
     ) {
       const fields = (time ??
         (this as Record<string, TimeFields>)[TIME_FIELDS]) as TimeFields;
+      if (!Number.isFinite(fields.month) || !Number.isFinite(fields.year)) {
+        throw new RuleTooExpensive();
+      }
       const total =
+        (Math.abs(fields.month) / 12) * 366 +
         fields.day +
         (days as number) +
         (fields.hour + (hours as number)) / 24 +
@@ -189,8 +209,14 @@ patch(
     }
 );
 
-/** Zones whose rules could not be expanded within their budget. */
+/** Zones whose rules could not be expanded within their own budget. */
 const brokenZones = new WeakSet<object>();
+
+/**
+ * Changes one zone may expand to. A real zone has a few hundred transitions;
+ * ical.js scans this list linearly for every time it converts.
+ */
+const MAX_ZONE_CHANGES = 20_000;
 
 const BROKEN_ZONE =
   'caldav-mcp: the stored entry defines a timezone whose rules this server ' +
@@ -204,25 +230,36 @@ patch(
   '_ensureCoverage',
   (original) =>
     function (this: unknown, year: unknown) {
-      const zone = this as object;
-      if (brokenZones.has(zone)) throw new ToolInputError(BROKEN_ZONE);
+      const zone = this as { changes?: unknown[] };
+      if (brokenZones.has(zone)) throw new RuleTooExpensive(BROKEN_ZONE);
       const outer = ruleGuard;
-      ruleGuard = {
+      const own = Date.now() + ZONE_BUDGET_MS;
+      const guard = {
         left: MAX_ZONE_CHECKS,
-        deadline: Math.min(
-          Date.now() + ZONE_BUDGET_MS,
-          outer?.deadline ?? Number.POSITIVE_INFINITY
-        ),
+        deadline: Math.min(own, outer?.deadline ?? Number.POSITIVE_INFINITY),
       };
+      ruleGuard = guard;
       try {
-        return original.call(this, year);
+        const result = original.call(this, year);
+        if ((zone.changes?.length ?? 0) > MAX_ZONE_CHANGES) {
+          brokenZones.add(zone);
+          throw new RuleTooExpensive(BROKEN_ZONE);
+        }
+        return result;
       } catch (error) {
         if (!(error instanceof RuleTooExpensive)) throw error;
-        brokenZones.add(zone);
-        // Inside a series walk the walk reports itself incomplete; anywhere
-        // else the entry is refused like any unreadable one.
-        if (outer !== undefined) throw error;
-        throw new ToolInputError(BROKEN_ZONE);
+        // Broken for good only when the zone spent its own budget; when the
+        // call's deadline ran out first, the zone may be fine next time.
+        const now = Date.now();
+        if (
+          guard.left < 0 ||
+          (now > own && (outer === undefined || now <= outer.deadline))
+        ) {
+          brokenZones.add(zone);
+        }
+        throw error instanceof RuleTooExpensive && error.message === BROKEN_ZONE
+          ? error
+          : new RuleTooExpensive(BROKEN_ZONE);
       } finally {
         ruleGuard = outer;
       }
