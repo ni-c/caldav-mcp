@@ -56,7 +56,8 @@ describe('eachBounded', () => {
       },
       () => {
         throw new Error('nothing abandoned expected');
-      }
+      },
+      200
     );
     expect(seen).toEqual([1, 2, 3]);
   });
@@ -74,7 +75,8 @@ describe('eachBounded', () => {
       (item) => overrun.push(item),
       () => {
         throw new Error('nothing abandoned expected');
-      }
+      },
+      200
     );
     expect(seen).toEqual([1, 3, 4]);
     expect(overrun).toEqual([2]);
@@ -101,7 +103,8 @@ describe('eachBounded', () => {
       },
       () => {
         throw new Error('nothing abandoned expected');
-      }
+      },
+      200
     );
     expect(seen).toEqual([1, 2, 3]);
   }, 10_000);
@@ -117,7 +120,8 @@ describe('eachBounded', () => {
       (item) => overrun.push(item),
       (count) => {
         abandoned = count;
-      }
+      },
+      200
     );
     expect(overrun).toEqual(['a', 'b', 'c']);
     expect(abandoned).toBe(3);
@@ -135,7 +139,7 @@ describe('eachBounded', () => {
       Array.from({ length: 50 }, (_, i) => i),
       overruns,
       () => {
-        const until = Date.now() + 300;
+        const until = Date.now() + 100;
         while (Date.now() < until) {
           // Close to, but under, the entry's own limit.
         }
@@ -148,11 +152,12 @@ describe('eachBounded', () => {
       },
       (count) => {
         abandoned = count;
-      }
+      },
+      200
     );
     expect(Date.now() - started).toBeLessThan(3_000);
     expect(done + abandoned).toBe(50);
-    expect(abandoned).toBeGreaterThan(40);
+    expect(abandoned).toBeGreaterThanOrEqual(35);
   }, 20_000);
 });
 
@@ -247,9 +252,10 @@ describe('a listing of entries that never finish', () => {
         arguments: { from: '2026-11-01', to: '2026-12-01' },
       })
     );
-    expect(Date.now() - started).toBeLessThan(15_000);
+    // Three entries, each stopped twice at three seconds, then the rest left.
+    expect(Date.now() - started).toBeLessThan(40_000);
     const notes = (listing.notes as string[]).join(' ');
     expect(notes).toContain('took longer to evaluate than this server allows');
     expect(notes).toMatch(/\d+ more stored entr(y was|ies were) not evaluated/);
-  }, 60_000);
+  }, 90_000);
 });

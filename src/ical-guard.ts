@@ -46,7 +46,9 @@ const MAX_RULE_CHECKS = 100_000;
  * the present, and must not eat the budget of the series being walked.
  */
 const MAX_ZONE_CHECKS = 200_000;
-const ZONE_BUDGET_MS = 250;
+// The check count bounds a zone; the clock is a backstop with room for a busy
+// host, where a real zone from 1601 took more than a quarter of a second.
+const ZONE_BUDGET_MS = 1000;
 
 /**
  * A guard tripped. A `ToolInputError`, so wherever it surfaces it reads as a
@@ -274,7 +276,7 @@ patch(
         // Broken for good unless the call's deadline ran out first; then
         // the zone may be fine next time.
         // Every trip but the call's own deadline is the zone's doing: its
-        // checks, its 250 ms, or a size no real zone has.
+        // checks, its own time, or a size no real zone has.
         if (outer === undefined || Date.now() <= outer.deadline) {
           brokenZones.add(zone);
         }

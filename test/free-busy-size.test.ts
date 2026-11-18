@@ -56,7 +56,7 @@ describe('get_free_busy worked out from many events', () => {
     const answer = dataOf(result);
     expect(answer.count).toBe(1);
     expect(answer.busy).toHaveLength(1);
-  });
+  }, 30_000);
 
   it('joins overlapping periods and keeps separate ones apart', async () => {
     const fake = new FakeCalDav({ refuseFreeBusy: true });

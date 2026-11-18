@@ -52,8 +52,13 @@ export function withHardLimit<T>(ms: number, work: () => T): T {
   return result as T;
 }
 
-/** The time one entry may take on its own, parse to last occurrence. */
-export const ENTRY_LIMIT_MS = 1000;
+/**
+ * The time one entry may take on its own, parse to last occurrence. A backstop
+ * for loops no guard knows, not the budget: the guards keep a real entry to a
+ * fraction of a second, and this leaves room for a slow or busy host, where a
+ * long series took a second under load.
+ */
+export const ENTRY_LIMIT_MS = 3000;
 
 /**
  * The same for a tool that reads or writes one entry, which may carry a large
@@ -69,7 +74,7 @@ export const MAX_OVERRUNS = 3;
  * their own limit never count as overruns, so without this a calendar of them
  * cost a second each.
  */
-export const CALL_EVALUATION_MS = 10_000;
+export const CALL_EVALUATION_MS = 20_000;
 
 /**
  * Overruns and evaluation time left, shared across one call. Time is counted
@@ -103,7 +108,8 @@ export function eachBounded<T>(
   overruns: Overruns,
   work: (item: T) => (() => void) | undefined,
   onOverrun: (item: T) => void,
-  onAbandoned: (count: number) => void
+  onAbandoned: (count: number) => void,
+  limitMs = ENTRY_LIMIT_MS
 ): void {
   const applied = new Set<number>();
   let index = 0;
@@ -116,7 +122,7 @@ export function eachBounded<T>(
     const progress = { index, expired: false };
     const batchStarted = Date.now();
     try {
-      withHardLimit(ENTRY_LIMIT_MS, () => {
+      withHardLimit(limitMs, () => {
         for (; progress.index < items.length; progress.index += 1) {
           if (Date.now() - batchStarted >= overruns.leftMs) {
             progress.expired = true;
