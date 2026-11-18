@@ -11,6 +11,7 @@ import { resourceUrl, type CalendarRegistry } from '../calendars.js';
 import { selfAddressesOf, type ToolContext } from '../entries.js';
 import { buildSeriesId, parseEntityId, type EntityId } from '../entity-id.js';
 import { ToolInputError } from '../errors.js';
+import { hardLimits, withHardLimit } from '../hard-limit.js';
 import {
   ICAL,
   componentsOf,
@@ -712,45 +713,48 @@ async function describeTarget(
       resourceUrl(calendar, entity.resourceName),
       true
     );
-    const root = parseCalendar(resource.ics, 'the stored entry');
-    const components = componentsOf(root, entity.kind);
-    const { master, overrides } = splitSeries(components);
-    // Two shapes hold more than one occurrence, and the dialog has to name
-    // both. The obvious one is a master carrying a rule. The other is a
-    // resource made *only* of detached occurrences, which is what a client
-    // writes after a "this and following" split and what `expandSeries`
-    // already handles in its standalone branch — there is no master at all,
-    // so reading the rule off `master` reported "an event" and then deleted a
-    // file holding N of them. Same contradiction as the series/occurrence
-    // one, one shape further out.
-    const recurring =
-      master === undefined
-        ? overrides.length > 1
-        : master.getFirstProperty('rrule') !== null ||
-          master.getFirstProperty('rdate') !== null;
-    if (!recurring) {
-      return { recurring: false, occurrences: undefined, unreadable: false };
-    }
-    const expansion = expandSeries(components, {
-      from: new Date(-8_640_000_000_000),
-      to: new Date(8_640_000_000_000),
-      cap: 500,
-      fallbackZone: context.config.timezone,
-      // Shared with the rest of the call rather than minted here. Without it
-      // this expansion starts its own full wall-clock budget, so describing
-      // the target for the dialog could cost as much time again as the work
-      // it describes — twice over on the two-call fallback path, on an entry
-      // somebody else wrote. A count for a dialog is worth a second, not a
-      // second budget.
-      deadline,
+    // Parse and expansion under one hard limit; an overrun reads as unknown.
+    return withHardLimit(hardLimits.singleEntry, () => {
+      const root = parseCalendar(resource.ics, 'the stored entry');
+      const components = componentsOf(root, entity.kind);
+      const { master, overrides } = splitSeries(components);
+      // Two shapes hold more than one occurrence, and the dialog has to name
+      // both. The obvious one is a master carrying a rule. The other is a
+      // resource made *only* of detached occurrences, which is what a client
+      // writes after a "this and following" split and what `expandSeries`
+      // already handles in its standalone branch — there is no master at all,
+      // so reading the rule off `master` reported "an event" and then deleted a
+      // file holding N of them. Same contradiction as the series/occurrence
+      // one, one shape further out.
+      const recurring =
+        master === undefined
+          ? overrides.length > 1
+          : master.getFirstProperty('rrule') !== null ||
+            master.getFirstProperty('rdate') !== null;
+      if (!recurring) {
+        return { recurring: false, occurrences: undefined, unreadable: false };
+      }
+      const expansion = expandSeries(components, {
+        from: new Date(-8_640_000_000_000),
+        to: new Date(8_640_000_000_000),
+        cap: 500,
+        fallbackZone: context.config.timezone,
+        // Shared with the rest of the call rather than minted here. Without it
+        // this expansion starts its own full wall-clock budget, so describing
+        // the target for the dialog could cost as much time again as the work
+        // it describes — twice over on the two-call fallback path, on an entry
+        // somebody else wrote. A count for a dialog is worth a second, not a
+        // second budget.
+        deadline,
+      });
+      return {
+        recurring: true,
+        occurrences: expansion.truncated
+          ? undefined
+          : expansion.occurrences.length,
+        unreadable: false,
+      };
     });
-    return {
-      recurring: true,
-      occurrences: expansion.truncated
-        ? undefined
-        : expansion.occurrences.length,
-      unreadable: false,
-    };
   } catch {
     return unknown;
   }
@@ -967,6 +971,12 @@ function setRecurrence(component: ICAL.Component, rule: string): void {
         'so it does not write one; use a smaller INTERVAL.'
     );
   }
+  if ((recur.parts.BYDAY?.length ?? 0) > 64) {
+    throw new ToolInputError(
+      `caldav-mcp: "${quoted(rule)}" names more than 64 weekdays. This server ` +
+        'does not read such a rule back, so it does not write one.'
+    );
+  }
   const property = new ICAL.Property('rrule', component);
   property.setValue(recur);
   component.addProperty(property);
@@ -1034,59 +1044,67 @@ async function excludeOccurrence(
         'was deleted.'
     );
   }
-  const root = parseCalendar(resource.ics, 'the stored entry');
-  const { master, overrides } = splitSeries(componentsOf(root, entity.kind));
-  if (master === undefined) {
-    throw new ToolInputError(
-      'caldav-mcp: this entry has no series to exclude an occurrence from.'
-    );
-  }
-  const zone = context.config.timezone;
-  const at = parseRecurrenceId(entity.recurrenceId ?? '', zone);
-  const wanted = at.instant.getTime();
-
-  // An override for this instance is removed as well, or the exception would
-  // leave a component behind that still claims the occurrence exists.
-  let removedOverride = false;
-  for (const override of overrides) {
-    const property = override.getFirstProperty('recurrence-id');
-    if (property === null) continue;
-    const instant = instantOfProperty(property, zone).instant.getTime();
-    if (Math.abs(instant - wanted) < 1000) {
-      root.removeSubcomponent(override);
-      removedOverride = true;
+  // Everything that reads times in the stored entry, under one hard limit.
+  const ics = withHardLimit(hardLimits.singleEntry, () => {
+    const root = parseCalendar(resource.ics, 'the stored entry');
+    const { master, overrides } = splitSeries(componentsOf(root, entity.kind));
+    if (master === undefined) {
+      throw new ToolInputError(
+        'caldav-mcp: this entry has no series to exclude an occurrence from.'
+      );
     }
-  }
+    const zone = context.config.timezone;
+    const at = parseRecurrenceId(entity.recurrenceId ?? '', zone);
+    const wanted = at.instant.getTime();
 
-  const alreadyExcluded = master
-    .getAllProperties('exdate')
-    .flatMap((property) => instantsOfProperty(property, zone))
-    .some((time) => Math.abs(time.instant.getTime() - wanted) < 1000);
-
-  if (alreadyExcluded && !removedOverride) {
-    // Nothing to write: the exception is there and no override contradicts it.
-    return;
-  }
-
-  if (!alreadyExcluded) {
-    const exdate = new ICAL.Property('exdate', master);
-    let value: ICAL.Time;
-    if (at.allDay) {
-      const [year, month, day] = formatDateInZone(at.instant, zone).split('-');
-      value = ICAL.Time.fromData({
-        year: Number(year),
-        month: Number(month),
-        day: Number(day),
-        isDate: true,
-      });
-    } else {
-      value = ICAL.Time.fromJSDate(at.instant, true);
+    // An override for this instance is removed as well, or the exception would
+    // leave a component behind that still claims the occurrence exists.
+    let removedOverride = false;
+    for (const override of overrides) {
+      const property = override.getFirstProperty('recurrence-id');
+      if (property === null) continue;
+      const instant = instantOfProperty(property, zone).instant.getTime();
+      if (Math.abs(instant - wanted) < 1000) {
+        root.removeSubcomponent(override);
+        removedOverride = true;
+      }
     }
-    exdate.setValue(value);
-    master.addProperty(exdate);
-  }
 
-  await context.api.put(url, serialize(root), { ifMatch: resource.etag });
+    const alreadyExcluded = master
+      .getAllProperties('exdate')
+      .flatMap((property) => instantsOfProperty(property, zone))
+      .some((time) => Math.abs(time.instant.getTime() - wanted) < 1000);
+
+    if (alreadyExcluded && !removedOverride) {
+      // Nothing to write: the exception is there and no override contradicts it.
+      return;
+    }
+
+    if (!alreadyExcluded) {
+      const exdate = new ICAL.Property('exdate', master);
+      let value: ICAL.Time;
+      if (at.allDay) {
+        const [year, month, day] = formatDateInZone(at.instant, zone).split(
+          '-'
+        );
+        value = ICAL.Time.fromData({
+          year: Number(year),
+          month: Number(month),
+          day: Number(day),
+          isDate: true,
+        });
+      } else {
+        value = ICAL.Time.fromJSDate(at.instant, true);
+      }
+      exdate.setValue(value);
+      master.addProperty(exdate);
+    }
+
+    return serialize(root);
+  });
+  // Undefined when the occurrence was already excluded: nothing to write.
+  if (ics === undefined) return;
+  await context.api.put(url, ics, { ifMatch: resource.etag });
 }
 
 /** The ATTENDEE line matching one of the addresses this account answers as. */

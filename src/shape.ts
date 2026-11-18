@@ -98,6 +98,40 @@ export function occurrenceKey(
   };
 }
 
+/**
+ * An entry by its id and times alone, for one whose fields took longer to
+ * shape than the hard limit allows. Marked, so it does not read as an entry
+ * without a summary.
+ */
+export function placeholderEntry(
+  occurrence: Occurrence | UndatedOccurrence,
+  options: Pick<
+    ShapeOptions,
+    'kind' | 'calendar' | 'resourceName' | 'fallbackZone'
+  >
+): Record<string, unknown> {
+  const entry: Record<string, unknown> = {
+    id: entryIdOf(occurrence, options),
+    series_id: buildSeriesId(
+      options.kind,
+      options.calendar.path,
+      options.resourceName
+    ),
+    calendar: options.calendar.path,
+    recurring: occurrence.recurrenceId !== undefined,
+    truncated_fields: ['all'],
+  };
+  if (occurrence.start !== undefined) {
+    setTime(
+      entry,
+      options.kind === 'vtodo' ? 'due' : 'start',
+      occurrence.start,
+      options.fallbackZone
+    );
+  }
+  return entry;
+}
+
 function entryIdOf(
   occurrence: Occurrence | UndatedOccurrence,
   options: Pick<ShapeOptions, 'kind' | 'calendar' | 'resourceName'>
@@ -377,6 +411,10 @@ function isoInstant(property: ICAL.Property): string | undefined {
   try {
     const value: unknown = property.getFirstValue();
     if (!(value instanceof ICAL.Time)) return undefined;
+    // Only a UTC value, as RFC 5545 requires here. A value in a zone the
+    // entry defines would run that zone's rules while a page is shaped, and
+    // a floating one would be read in the host's own zone.
+    if (value.zone !== ICAL.Timezone.utcTimezone) return undefined;
     return value.toJSDate().toISOString();
   } catch {
     return undefined;

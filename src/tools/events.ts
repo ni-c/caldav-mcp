@@ -3,6 +3,7 @@ import type { McpServer } from '@modelcontextprotocol/server';
 
 import { quoted } from '../analyze.js';
 import { freeBusyQueryBody } from '../dav-xml.js';
+import { newOverruns } from '../hard-limit.js';
 import {
   CALL_BUDGET_MS,
   ExpansionBudget,
@@ -275,6 +276,7 @@ export function registerEventReadTools(
         const refusals: Refusal[] = [];
         let method: 'server' | 'computed' = 'server';
         const expansion = new ExpansionBudget();
+        const overruns = newOverruns();
         const started = Date.now();
         let asked = 0;
 
@@ -306,6 +308,7 @@ export function registerEventReadTools(
                 to: window.to,
                 limit: MAX_COLLECTED,
                 expansion,
+                overruns,
               });
             } catch (error) {
               if (!isCalendarRefusal(error)) throw error;

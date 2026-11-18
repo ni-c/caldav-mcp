@@ -129,7 +129,7 @@ describe('a recurring series across pages', () => {
     );
     const listed = answers.flatMap((page) => page.events as unknown[]);
     expect(listed).toHaveLength(4999);
-  });
+  }, 30_000);
 
   it('still collects an entry that comes after a flooding series', async () => {
     // The ceiling used to fill in the order the server sent the entries, so

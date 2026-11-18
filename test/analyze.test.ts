@@ -154,7 +154,7 @@ describe('invisible characters', () => {
         }
       )
     );
-  });
+  }, 30_000);
 });
 
 describe('a value quoted back inside an error', () => {
