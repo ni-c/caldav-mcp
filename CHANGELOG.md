@@ -30,6 +30,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- CI's `npm audit` checks the runtime dependencies only, the ones the package
+  and the image ship. Advisories against development tools are still reported
+  by Dependabot, but no longer block a merge.
 - Require Node.js 24 or newer. CI tests the latest 24 and 26 LTS releases; Node 22 is no longer supported.
 - A listing is fitted to the size ceiling as it is emitted, indented, before it
   is counted. Pages that reach the ceiling hold fewer entries than before, and
