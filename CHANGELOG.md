@@ -11,7 +11,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
      marker last in the file so the link definitions come along. -->
 <!-- #region changelog -->
 
-## [Unreleased]
+## [0.2.0] - 2026-11-18
 
 ### Added
 
@@ -143,6 +143,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   cleaned like every other field, and at most twenty are named.
 - Notes about individual entries are capped at twenty, so a calendar full of
   broken entries cannot crowd the entries out of an answer.
+
+[0.2.0]: https://github.com/ni-c/caldav-mcp/releases/tag/v0.2.0
 
 ## [0.1.5] - 2026-10-13
 
