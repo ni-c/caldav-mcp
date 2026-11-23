@@ -11,7 +11,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
      marker last in the file so the link definitions come along. -->
 <!-- #region changelog -->
 
-## [Unreleased]
+## [0.2.1] - 2026-11-23
 
 ### Fixed
 
@@ -24,6 +24,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   own, as sabre/dav (Baikal, Nextcloud) and Cyrus do, see no change.
 - With `CALDAV_URL` on a collection that is not used after all, `list_calendars`
   now says why instead of only calling it a calendar collection.
+
+[0.2.1]: https://github.com/ni-c/caldav-mcp/releases/tag/v0.2.1
 
 ## [0.2.0] - 2026-11-18
 
