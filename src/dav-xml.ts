@@ -306,7 +306,8 @@ export function assertNoDoctype(xml: string, what: string): void {
  * collection, which still has to sit inside a home set on the same origin;
  * `subscribed` also makes it read-only and keeps it out of the default set,
  * which only narrows; `schedule-inbox`, `schedule-outbox`, `addressbook` and
- * `notification` from any namespace exclude, which only narrows too.
+ * `notification` from any namespace exclude a collection that is not also a
+ * `calendar`, which only narrows too.
  *
  * `parseTagValue: false` because an ETag of `"00123"` must stay a string, and
  * `stopNodes` because `calendar-data` is a document in its own right that has no
@@ -442,6 +443,20 @@ export function isCalendarCollection(type: unknown): boolean {
   return (
     resourceTypeHas(type, 'calendar') || resourceTypeHas(type, 'subscribed')
   );
+}
+
+/**
+ * The marker that keeps a collection out when it is not also a `calendar`: a
+ * scheduling inbox or outbox (RFC 6638), an address book (RFC 6352) or a
+ * notification collection. RFC 4791 §4.2 makes `calendar` decisive (#61).
+ */
+export function excludedType(type: unknown): string | undefined {
+  return [
+    'schedule-inbox',
+    'schedule-outbox',
+    'addressbook',
+    'notification',
+  ].find((name) => resourceTypeHas(type, name));
 }
 
 /** Whether a `resourcetype` value contains a given element, e.g. `calendar`. */

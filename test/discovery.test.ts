@@ -216,13 +216,14 @@ describe('what the principal says', () => {
 });
 
 describe('what a home set lists', () => {
-  it('drops the scheduling inbox and outbox, an address book and a notification collection', async () => {
+  it('drops a scheduling inbox and outbox, an address book and a notification collection that are not calendars', async () => {
     const { calendars, fake } = await listing({
       extraCollections: [
-        { href: '/tester/inbox/', types: ['calendar', 'schedule-inbox'] },
-        { href: '/tester/outbox/', types: ['calendar', 'schedule-outbox'] },
+        { href: '/tester/inbox/', types: ['schedule-inbox'] },
+        { href: '/tester/outbox/', types: ['schedule-outbox'] },
         { href: '/tester/contacts/', types: ['addressbook'] },
-        { href: '/tester/notes/', types: ['calendar', 'notification'] },
+        { href: '/tester/notes/', types: ['notification'] },
+        { href: '/tester/untyped/', types: [] },
         { href: '/tester/plain/', types: ['calendar'], displayName: 'Plain' },
         { href: 'https://elsewhere.example/tester/far/', types: ['calendar'] },
       ],
@@ -233,5 +234,108 @@ describe('what a home set lists', () => {
         (r) => new URL(r.url).origin === 'https://elsewhere.example'
       )
     ).toBe(false);
+  });
+
+  // RFC 4791 §4.2: a collection that reports `calendar` is a calendar, whatever
+  // else its resourcetype names. SOGo marks the account's own calendar with
+  // `schedule-outbox` as well (#61).
+  it('keeps a calendar that also carries a scheduling, address book or notification marker', async () => {
+    const { calendars } = await listing({
+      extraCollections: [
+        {
+          href: '/tester/personal/',
+          types: [
+            'calendar',
+            'vevent-collection',
+            'vtodo-collection',
+            'schedule-outbox',
+          ],
+        },
+        { href: '/tester/in-cal/', types: ['calendar', 'schedule-inbox'] },
+        { href: '/tester/book-cal/', types: ['calendar', 'addressbook'] },
+        { href: '/tester/note-cal/', types: ['calendar', 'notification'] },
+      ],
+    });
+    expect(calendars).toEqual([
+      '/tester/book-cal/',
+      '/tester/in-cal/',
+      '/tester/note-cal/',
+      '/tester/personal/',
+      ...BOTH,
+    ]);
+  });
+});
+
+describe('CALDAV_URL on one collection', () => {
+  it('uses a calendar that SOGo also marks as the scheduling outbox (#61)', async () => {
+    const { calendars, notes } = await listing(
+      {
+        calendars: [
+          {
+            name: 'personal',
+            extraTypes: [
+              'vevent-collection',
+              'vtodo-collection',
+              'schedule-outbox',
+            ],
+          },
+        ],
+      },
+      `${ORIGIN}/tester/personal`
+    );
+    expect(calendars).toEqual(['/tester/personal/']);
+    expect(notes.join(' ')).toMatch(/is a calendar collection/);
+    expect(notes.join(' ')).not.toMatch(/is not used/);
+  });
+
+  it('says so when the collection stops answering as a calendar', async () => {
+    const fake = new FakeCalDav();
+    fake.install();
+    const inner = globalThis.fetch;
+    let asked = 0;
+    vi.stubGlobal('fetch', (input: string | URL, init?: RequestInit) => {
+      const own =
+        String(input) === `${ORIGIN}/tester/work/` &&
+        init?.method === 'PROPFIND';
+      if (own && (asked += 1) === 2) {
+        return Promise.resolve(
+          new Response('<multistatus xmlns="DAV:"/>', {
+            status: 207,
+            headers: { 'content-type': 'application/xml' },
+          })
+        );
+      }
+      return inner(input, init);
+    });
+    const session = await connect({ url: `${ORIGIN}/tester/work` });
+    try {
+      const listed = dataOf(
+        await session.client.callTool({ name: 'list_calendars', arguments: {} })
+      );
+      expect(listed.calendars).toEqual([]);
+      expect((listed.notes as string[]).join(' ')).toMatch(
+        /did not answer as a calendar/
+      );
+    } finally {
+      await session.close();
+    }
+  });
+
+  it('says why a subscription that is also a scheduling inbox is not used', async () => {
+    const { calendars, notes } = await listing(
+      {
+        calendars: [
+          {
+            name: 'feed',
+            subscribed: 'only',
+            extraTypes: ['schedule-inbox'],
+          },
+        ],
+      },
+      `${ORIGIN}/tester/feed`
+    );
+    expect(calendars).toEqual([]);
+    expect(notes.join(' ')).toMatch(/schedule-inbox/);
+    expect(notes.join(' ')).toMatch(/is not used/);
   });
 });

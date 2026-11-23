@@ -8,6 +8,7 @@ import {
 import { describeCalendarEntry } from './config.js';
 import { AllowlistError } from './errors.js';
 import {
+  excludedType,
   hrefsOf,
   isCalendarCollection,
   privileges,
@@ -301,12 +302,14 @@ export class Discovery {
     const principal = await this.principal();
     const found: CalendarEntry[] = [];
     let outsideHome = 0;
+    let singleDropped: string | undefined;
 
     if (principal.singleCalendar) {
       const url = `${this.api.url}/`;
       const responses = await this.api.propfind(url, 0, COLLECTION_PROPS);
       const entry = this.toEntry(responses[0], url);
       if (entry !== undefined) found.push(entry);
+      else singleDropped = describeDropped(responses[0]?.props.resourcetype);
     } else {
       for (const home of principal.homes) {
         const responses = await this.api.propfind(home, 1, COLLECTION_PROPS);
@@ -352,6 +355,7 @@ export class Discovery {
           `${MAX_CALENDARS} are used, its own before subscriptions, each by path.`
       );
     }
+    if (singleDropped !== undefined) registry.notes.push(singleDropped);
     if (outsideHome > 0) {
       registry.notes.push(
         `${outsideHome} collection${outsideHome === 1 ? '' : 's'} the server ` +
@@ -415,6 +419,10 @@ export class Discovery {
    * a visible consequence — an invitation sitting unprocessed in the inbox is
    * invisible to this server — and it is written down in the README under
    * "Not exposed, on purpose" rather than left for someone to discover.
+   *
+   * A collection that reports `calendar` is a calendar (RFC 4791 §4.2), so the
+   * markers exclude only one that does not: SOGo marks the account's own
+   * calendar `schedule-outbox` as well, and it was dropped (#61).
    */
   private toEntry(
     response: { href: string; props: Record<string, unknown> } | undefined,
@@ -430,10 +438,8 @@ export class Discovery {
     const subscribed = resourceTypeHas(type, 'subscribed');
     if (!isCalendarCollection(type)) return undefined;
     if (
-      resourceTypeHas(type, 'schedule-inbox') ||
-      resourceTypeHas(type, 'schedule-outbox') ||
-      resourceTypeHas(type, 'addressbook') ||
-      resourceTypeHas(type, 'notification')
+      !resourceTypeHas(type, 'calendar') &&
+      excludedType(type) !== undefined
     ) {
       return undefined;
     }
@@ -506,4 +512,15 @@ function dedupe(entries: readonly CalendarEntry[]): CalendarEntry[] {
     }
   }
   return [...byPath.values()];
+}
+
+/** Why the collection `CALDAV_URL` names is not used after all. */
+function describeDropped(type: unknown): string {
+  const marker = resourceTypeHas(type, 'calendar')
+    ? undefined
+    : excludedType(type);
+  return marker === undefined
+    ? 'CALDAV_URL did not answer as a calendar on this origin, so it is not used.'
+    : `CALDAV_URL is a subscription the server also marks as ${marker}, and ` +
+        'only a calendar (RFC 4791) is read here, so it is not used.';
 }

@@ -46,6 +46,8 @@ export interface FakeCalendar {
    * `CS:source`. `also` carries both types and grants write.
    */
   subscribed?: 'only' | 'also';
+  /** More local names in `resourcetype`, e.g. SOGo's `schedule-outbox` (#61). */
+  extraTypes?: string[];
   resources?: Record<string, string>;
 }
 
@@ -449,9 +451,13 @@ export class FakeCalDav {
         : entry.subscribed === 'also'
           ? `<${cal}/><${cs}:subscribed/>`
           : `<${cal}/>`;
+    const ns = this.options.prefixes === 'sabre' ? 'cal' : 'C';
+    const extra = (entry.extraTypes ?? [])
+      .map((type) => `<${ns}:${type}/>`)
+      .join('');
     return this.response(
       path,
-      `<${rt}><${coll}/>${types}</${rt}>` +
+      `<${rt}><${coll}/>${types}${extra}</${rt}>` +
         `<${dn}>${entry.displayName ?? entry.name}</${dn}>` +
         `<${comps}>${components.map((c) => `<${comp} name="${c}"/>`).join('')}</${comps}>` +
         (entry.subscribed === 'only'
