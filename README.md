@@ -287,7 +287,9 @@ answer built from calendar content and deliberately absent from the rest — see
   behind it is neither fetched nor shown: this server talks to one origin.
 - **The scheduling inbox and outbox.** They are filtered out of the calendar
   list, so on a server with scheduling enabled an invitation sits there unseen by
-  this server until a real client processes it.
+  this server until a real client processes it. A collection that also reports
+  `calendar` is a calendar (RFC 4791) and is listed: SOGo marks the account's
+  own calendar as the scheduling outbox, too.
 - **CardDAV.** Contacts are a different specification with a different data
   format, and belong in a different server.
 

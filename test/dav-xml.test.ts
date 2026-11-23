@@ -6,6 +6,7 @@ import {
   decodeCalendarData,
   decodeXmlText,
   escapeXmlText,
+  excludedType,
   freeBusyQueryBody,
   hrefsOf,
   parseDavError,
@@ -585,5 +586,30 @@ describe('the request bodies', () => {
 
   it('builds a free-busy query', () => {
     expect(freeBusyQueryBody(RANGE)).toContain('<C:free-busy-query');
+  });
+});
+
+describe('the marker that keeps a non-calendar collection out', () => {
+  it('names each of the four', () => {
+    for (const name of [
+      'schedule-inbox',
+      'schedule-outbox',
+      'addressbook',
+      'notification',
+    ]) {
+      expect(excludedType({ collection: '', [name]: '' })).toBe(name);
+    }
+  });
+
+  it('names none on a plain calendar, an empty type or no object at all', () => {
+    expect(excludedType({ collection: '', calendar: '' })).toBeUndefined();
+    expect(excludedType({})).toBeUndefined();
+    expect(excludedType('')).toBeUndefined();
+    expect(excludedType(undefined)).toBeUndefined();
+    expect(excludedType(null)).toBeUndefined();
+  });
+
+  it('reads only own properties, not the prototype', () => {
+    expect(excludedType(Object.create({ addressbook: '' }))).toBeUndefined();
   });
 });

@@ -11,6 +11,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
      marker last in the file so the link definitions come along. -->
 <!-- #region changelog -->
 
+## [Unreleased]
+
+### Fixed
+
+- A calendar whose `resourcetype` also names `schedule-outbox` was left out of
+  the list (#61). SOGo marks the account's own calendar that way, so it never
+  showed, not even with `CALDAV_URL` pointing straight at it. Per RFC 4791 a
+  collection that reports `calendar` is a calendar; the scheduling inbox and
+  outbox, address book and notification markers now keep out only a collection
+  that does not. Servers that give the inbox and outbox collections of their
+  own, as sabre/dav (Baikal, Nextcloud) and Cyrus do, see no change.
+- With `CALDAV_URL` on a collection that is not used after all, `list_calendars`
+  now says why instead of only calling it a calendar collection.
+
 ## [0.2.0] - 2026-11-18
 
 ### Added

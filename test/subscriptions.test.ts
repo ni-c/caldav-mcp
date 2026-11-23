@@ -176,6 +176,24 @@ describe('a subscribed calendar', () => {
       expect(calendars.map((c) => c.id)).toEqual(['/tester/work/']);
     });
 
+    it('is listed read-only when it is also a calendar with a scheduling marker', async () => {
+      await start({
+        calendars: [
+          { name: 'work' },
+          {
+            name: 'holidays',
+            subscribed: 'also',
+            extraTypes: ['schedule-outbox'],
+          },
+        ],
+      });
+      const calendars = dataOf(await call('list_calendars'))
+        .calendars as Listed[];
+      expect(calendars.filter((c) => c.id === FEED)).toEqual([
+        expect.objectContaining({ read_only: true, subscribed: true }),
+      ]);
+    });
+
     it('never pushes the account’s own calendars out at the cap', async () => {
       const feeds = Array.from({ length: 260 }, (_, i) => ({
         name: `a-feed-${String(i).padStart(3, '0')}`,
